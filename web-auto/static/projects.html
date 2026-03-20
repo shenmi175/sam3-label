@@ -1,0 +1,71 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>web-auto 项目管理</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260319.02" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="row topbar-row">
+      <strong class="page-title">项目管理</strong>
+      <span class="muted">先创建或选择项目，再进入标注工作区</span>
+      <div class="spacer"></div>
+      <button id="themeToggleBtn" class="compact-btn" title="切换浅色/深色界面显示。">深色模式</button>
+    </div>
+    <div class="row topbar-row project-toolbar">
+      <div class="ctl-group project-form">
+        <label class="compact-field">项目名 <input id="projectName" class="input-project-name" placeholder="例如: demo-v2" /></label>
+        <label class="compact-field">类型
+          <select id="projectType" class="input-project-type">
+            <option value="image">图片项目</option>
+            <option value="video">视频项目</option>
+          </select>
+        </label>
+        <label id="imageDirWrap" class="compact-field">图片目录 <input id="imageDir" class="input-project-dir" placeholder="例如: J:\\datasets\\images" /></label>
+        <label id="videoPathWrap" class="compact-field hidden">视频路径 <input id="videoPath" class="input-project-dir" placeholder="例如: J:\\datasets\\demo.mp4" /></label>
+        <label class="compact-field">标注保存根目录 <input id="saveDir" class="input-project-save" placeholder="可选，不填使用默认" /></label>
+        <label class="compact-field">类别(=Prompt) <input id="classesText" class="input-project-classes" placeholder="dog, cat, person" /></label>
+      </div>
+      <div class="ctl-group project-toolbar-actions">
+        <button id="createProjectBtn" class="compact-btn" title="按输入的图片目录创建图片项目。">创建项目</button>
+        <button id="refreshProjectsBtn" class="compact-btn" title="刷新项目卡片与进度统计。">刷新</button>
+      </div>
+    </div>
+    <div class="row topbar-row status-row">
+      <span id="status" class="status"></span>
+    </div>
+  </header>
+
+  <main class="project-main">
+    <div id="projectCards" class="project-grid"></div>
+  </main>
+
+  <div id="uploadModal" class="modal-backdrop hidden">
+    <div class="modal-card upload-modal-card">
+      <h3>新增数据</h3>
+      <div class="modal-hint">先把图片加入待上传列表，确认后系统才会保存到项目图片目录并追加进项目。</div>
+      <div id="uploadProjectMeta" class="upload-target-card"></div>
+      <div id="uploadDropzone" class="upload-dropzone" tabindex="0">
+        <div class="upload-dropzone-badge">图片上传</div>
+        <div class="upload-dropzone-title">拖拽图片到这里</div>
+        <div class="upload-dropzone-subtitle">或使用下方按钮从本地选择多个图片文件</div>
+        <button id="uploadPickBtn" type="button" class="upload-pick-btn" title="从本地选择一个或多个图片文件加入待上传列表。">选择图片</button>
+      </div>
+      <input id="uploadFileInput" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,.tiff" multiple class="hidden" />
+      <div id="uploadQueueHint" class="modal-hint">支持 JPG / PNG / BMP / WEBP / TIFF。可以多次选择或拖拽，确认后才会真正写入项目。</div>
+      <div id="uploadList" class="upload-list">
+        <div class="item muted">尚未选择文件</div>
+      </div>
+      <div class="modal-actions">
+        <button id="uploadConfirmBtn" title="确认将待上传列表中的图片写入当前项目。">确认添加</button>
+        <button id="uploadCancelBtn" title="关闭新增数据窗口。">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/projects.js?v=20260319.02"></script>
+</body>
+</html>

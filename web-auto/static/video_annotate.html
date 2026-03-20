@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>web-auto 视频标注</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260319.03" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="row topbar-row">
+      <strong class="page-title">视频标注</strong>
+      <span id="projectMeta" class="muted">加载中...</span>
+      <div class="spacer"></div>
+      <button id="backBtn" class="compact-btn" title="返回项目管理页。">返回项目页</button>
+      <button id="themeToggleBtn" class="compact-btn" title="切换浅色/深色界面显示。">深色模式</button>
+    </div>
+    <div class="row topbar-row">
+      <div class="ctl-group">
+        <label class="compact-field">API地址 <input id="apiBaseUrl" class="input-api" value="http://172.16.1.65:8001" /></label>
+        <label class="compact-field">阈值 <input id="threshold" class="input-mini" type="number" step="0.01" min="0" max="1" value="0.5" /></label>
+        <label class="compact-field">imgsz <input id="imgsz" class="input-mini" type="number" step="1" min="128" value="640" /></label>
+        <label class="compact-field">分段帧数 <input id="segmentSize" class="input-mini" type="number" step="1" min="1" value="300" /></label>
+      </div>
+      <div class="ctl-group">
+        <button id="apiHealthBtn" class="compact-btn" title="检查 sam3-api 是否可用。">检查API</button>
+        <button id="transcodeBtn" class="compact-btn" title="把视频转成 H.264 便于浏览器和后端处理。">转码H.264</button>
+      </div>
+    </div>
+    <div class="row topbar-row">
+      <div class="ctl-group">
+        <label class="compact-field">提示方式
+          <select id="promptMode">
+            <option value="text">文本</option>
+            <option value="boxes">框</option>
+          </select>
+        </label>
+        <label class="compact-field">类别 <select id="activeClass"></select></label>
+        <label class="compact-field video-prompt-text-field">文本Prompt <input id="promptText" class="input-project-classes" placeholder="例如: person, forklift" /></label>
+      </div>
+      <div class="ctl-group">
+        <label class="compact-field">起始帧 <input id="startFrame" class="input-mini" type="number" step="1" min="0" value="0" /></label>
+        <label class="compact-field">结束帧 <input id="endFrame" class="input-mini" type="number" step="1" min="0" value="0" /></label>
+        <label class="compact-field">提示帧 <input id="promptFrame" class="input-mini" type="number" step="1" min="0" value="0" /></label>
+      </div>
+      <div class="ctl-group">
+        <button id="startJobBtn" class="compact-btn" title="启动视频文本/框跟踪任务。">开始跟踪</button>
+        <button id="stopJobBtn" class="compact-btn" title="强制中断当前传播任务；已完成帧会保留，可改参数后继续。">停止</button>
+        <button id="resumeJobBtn" class="compact-btn" title="从上次进度继续。">继续</button>
+        <button id="clearBoxesBtn" class="compact-btn" title="清空当前提示框。">清空提示框</button>
+      </div>
+    </div>
+    <div class="row topbar-row status-row">
+      <span id="status" class="status"></span>
+    </div>
+    <div class="row topbar-row progress-row">
+      <div class="progress-head">
+        <strong>任务状态</strong>
+        <span id="jobSummary" class="muted">尚未启动</span>
+      </div>
+      <div class="progress-track">
+        <div id="jobProgressBar" class="progress-bar"></div>
+      </div>
+      <div id="jobDetail" class="progress-params muted"></div>
+    </div>
+  </header>
+
+  <main class="video-layout">
+    <aside class="video-sidebar">
+      <h3>帧控制</h3>
+      <div class="ctl-group video-frame-controls">
+        <label class="compact-field">当前帧 <input id="frameSeekInput" class="input-mini" type="number" step="1" min="0" value="0" /></label>
+        <button id="seekFrameBtn" class="compact-btn" title="跳转到指定帧。">跳转</button>
+        <button id="prevFrameBtn" class="compact-btn" title="回退一帧。">上一帧</button>
+        <button id="nextFrameBtn" class="compact-btn" title="前进一帧。">下一帧</button>
+      </div>
+      <div id="videoMeta" class="meta"></div>
+
+      <h3>提示框</h3>
+      <div class="muted video-side-hint">框模式下直接在视频上拖拽；当前只保留正框，适配 Ultralytics 官方语义视频接口。</div>
+      <div id="promptBoxList" class="list video-box-list"></div>
+
+      <h3>当前帧标注</h3>
+      <div id="annotationList" class="list video-annotation-list"></div>
+    </aside>
+
+    <section class="video-stage">
+      <div class="video-shell">
+        <video id="videoPlayer" class="video-player" preload="metadata"></video>
+        <canvas id="videoOverlay" class="video-overlay"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/video_app.js?v=20260319.03"></script>
+</body>
+</html>
