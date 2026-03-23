@@ -30,9 +30,9 @@ export const VideoWorkspace = {
       this.classes = this.project.classes || [];
       if (this.classes.length > 0) this.selectedClass = this.classes[0];
       
-      this.renderLayout();
+      await this.renderLayout();
       this.initCanvas();
-      this.loadAnnotations();
+      await this.loadAnnotations();
     } catch (err) {
       console.error('Failed to load project:', err);
       if (!this.isUnmounted) {
@@ -41,123 +41,185 @@ export const VideoWorkspace = {
     }
   },
 
-  renderLayout() {
+  async renderLayout() {
     this.container.innerHTML = `
-      <div class="app-container" style="display: flex; height: 100vh; flex-direction: column;">
-        <!-- Header -->
-        <div class="neu-box" style="height: 60px; display: flex; align-items: center; padding: 0 20px; z-index: 10; border-radius: 0;">
-          <h2 style="margin:0; font-size: 18px; margin-right: 20px; display: flex; align-items: center; gap: 10px;">
-            <span>🎬</span> 
-            <span>Video Workspace</span>
-            <span style="font-weight: normal; font-size: 14px; color: var(--neu-text-light);">(${this.project.name})</span>
-          </h2>
-          <div style="flex: 1;"></div>
-          <div id="video-job-status" style="margin-right: 20px;"></div>
-          <button class="neu-button" onclick="window.location.hash='/'">← Dashboard</button>
-        </div>
-
-        <div style="flex:1; display:flex; overflow:hidden;">
-          <!-- Sidebar Left -->
-          <div class="neu-box" style="width: 280px; display:flex; flex-direction:column; border-radius:0; border-right: 1px solid var(--neu-shadow-dark);">
-            <div style="padding:15px; flex:1; overflow-y:auto;">
-              <h3 style="margin-top:0; font-size:14px; color:var(--neu-text-light); text-transform:uppercase;">Classes</h3>
-              <div id="video-classes-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:20px;">
-                ${this.classes.map(cls => `
-                  <button class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
-                          data-class="${cls}" style="justify-content:flex-start; text-align:left;">
-                    <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; margin-right:8px;"></span>
-                    ${cls}
-                  </button>
-                `).join('')}
-              </div>
-              <button class="neu-button" id="btn-add-class-video" style="width:100%; font-size:12px;">+ Add Class</button>
-
-              <hr style="border:0; border-top:1px solid var(--neu-shadow-dark); margin:20px 0;">
-
-              <h3 style="font-size:14px; color:var(--neu-text-light); text-transform:uppercase;">SAM Propagation</h3>
-              <div class="neu-card" style="padding:15px; margin-bottom:15px; font-size:13px;">
-                <p style="margin-top:0;">Annotate current frame, then propagate masks to others.</p>
-                <div style="display:flex; flex-direction:column; gap:10px;">
-                   <div>
-                     <label style="display:block; margin-bottom:4px; font-size:11px;">Target Frames</label>
-                     <input type="text" class="neu-input" id="propagate-range" value="0-100" style="width:100%;">
-                   </div>
-                   <button class="neu-button-primary" id="btn-propagate" style="width:100%;">🚀 Propagate</button>
+      <div class="workspace-layout v-workspace" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden;">
+        <!-- Top Navigation / Task Progress -->
+        <div class="neu-box" style="height: 64px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px;">
+          <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
+            <span style="font-size: 20px;">🎬</span>
+            <div style="display: flex; flex-direction: column;">
+              <span style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${this.project.name}</span>
+              <span style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">${this.projectId}</span>
+            </div>
+          </div>
+          
+          <!-- Task Progress Area -->
+          <div style="flex: 1; display: flex; justify-content: center;">
+             <div class="neu-box" style="width: 50%; height: 40px; border-radius: 20px; display: flex; align-items: center; padding: 0 15px; background: var(--neu-bg); box-shadow: var(--neu-inset); gap: 10px;">
+                <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden;">
+                   <div id="v-progress-bar" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.3s ease;"></div>
                 </div>
-              </div>
+                <span id="v-progress-text" style="font-size: 12px; font-weight: 600; min-width: 80px; text-align: right; color: var(--neu-text-light);">0 / 0 Frames</span>
+             </div>
+          </div>
+
+          <div style="display: flex; gap: 12px; align-items: center;">
+             <div id="backend-health" class="health-indicator" style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--neu-text-light);">
+                <span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span> Checking...
+             </div>
+             <button id="btn-toggle-theme" class="neu-button" title="Toggle Mode" style="padding: 8px 12px;">
+                <span id="theme-icon">🌓</span>
+             </button>
+             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 8px 16px;">Dashboard</button>
+          </div>
+        </div>
+        
+        <!-- Main Workspace Area -->
+        <div style="display: flex; flex: 1; overflow: hidden;">
+          
+          <!-- Left Column: Classes & Propagation -->
+          <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
+            <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg);">
+               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Classes</h3>
+               <div id="video-classes-list" style="display: flex; flex-direction: column; gap: 10px;">
+                  <!-- Class items -->
+               </div>
+               <button class="neu-button" id="btn-add-class-video" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">+ New Class</button>
             </div>
             
-            <div style="padding:15px; border-top: 1px solid var(--neu-shadow-dark);">
-              <button class="neu-button" id="btn-save-video" style="width:100%; margin-bottom:10px;">Save Annotations</button>
-              <button class="neu-button" id="btn-export-video" style="width:100%;">Export Results</button>
+            <div style="flex: 1; overflow-y: auto; padding: 20px;">
+               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Propagation</h3>
+               <div class="neu-box" style="padding: 15px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--neu-outset-sm);">
+                  <div>
+                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">RANGE (FRAMES)</label>
+                    <input type="text" class="neu-input" id="propagate-range" value="0-100" />
+                  </div>
+                  <div>
+                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">IMG SIZE / SEGMENT</label>
+                    <div style="display: flex; gap: 6px;">
+                       <select id="v-imgsz" class="neu-input" style="padding: 8px; font-size:12px;">
+                          <option value="640">640</option>
+                          <option value="1024" selected>1024</option>
+                       </select>
+                       <input type="number" id="v-segment" class="neu-input" value="16" style="padding: 8px; font-size:12px; width: 60px;" />
+                    </div>
+                  </div>
+                  <button class="neu-button" id="btn-propagate" style="width: 100%; margin-top: 5px; color: var(--neu-text-active); font-weight: 700;">🚀 START PROPAGATION</button>
+               </div>
+
+               <div style="margin-top: 30px;">
+                  <button class="neu-button" id="btn-save-video" style="width: 100%; margin-bottom: 12px;">SAVE ALL CHANGES</button>
+                  <button class="neu-button" id="btn-export-video" style="width: 100%;">EXPORT DATASET</button>
+               </div>
             </div>
           </div>
-
-          <!-- Main Workspace -->
-          <div style="flex:1; display:flex; flex-direction:column; background: var(--neu-bg); position:relative;">
-             <div id="video-canvas-container" style="flex:1; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden;">
-               <!-- CanvasViewer will be here -->
-               <div id="video-player-container" style="display:none; width:100%; height:100%;">
-                 <video id="main-video" controls style="width:100%; height:100%; object-fit:contain;">
-                    <source src="/api/projects/${this.projectId}/video/stream" type="video/mp4">
-                 </video>
-               </div>
+          
+          <!-- Middle Column: Canvas & Timeline -->
+          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #1a1c1e;">
+             <!-- Canvas Area -->
+             <div id="video-canvas-container" style="flex: 1; position: relative;">
+                <!-- CanvasViewer will be here -->
+                
+                <!-- Hovering Toolbar -->
+                <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); background: rgba(30, 33, 36, 0.9); border: 1px solid rgba(255,255,255,0.1);">
+                   <button class="neu-button active" id="btn-vtool-point" title="Point" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
+                   <button class="neu-button" id="btn-vtool-box" title="Box" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                   <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1); margin: 0 5px;"></div>
+                   <button class="neu-button" id="btn-vtool-clear" title="Clear" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
+                </div>
              </div>
 
-             <!-- Bottom Controls -->
-             <div class="neu-box" style="height:120px; border-radius:0; border-top:1px solid var(--neu-shadow-dark); padding:15px; display:flex; flex-direction:column; gap:10px;">
-               <div style="display:flex; align-items:center; gap:15px;">
-                 <button class="neu-button" id="btn-toggle-mode" style="min-width:120px;">🖼️ Edit Frame</button>
-                 <div style="flex:1; display:flex; align-items:center; gap:10px;">
-                    <span id="video-time-current" style="font-family:monospace; min-width:60px;">0:00</span>
-                    <input type="range" class="neu-range" id="video-scrubber" min="0" max="100" value="0" style="flex:1;">
-                    <span id="video-time-total" style="font-family:monospace; min-width:60px;">0:00</span>
-                 </div>
-                 <div style="display:flex; gap:5px;">
-                   <button class="neu-button" id="btn-prev-frame">前一帧</button>
-                   <button class="neu-button" id="btn-next-frame">后一帧</button>
-                 </div>
-               </div>
-               
-               <div style="display:flex; justify-content:center; gap:10px;">
-                  <div class="prompt-tool-group neu-box" style="display:flex; padding:5px; border-radius:12px;">
-                    <button class="neu-button prompt-btn active" data-tool="point">🎯 Point</button>
-                    <button class="neu-button prompt-btn" data-tool="box">📦 Box</button>
-                  </div>
-                  <button class="neu-button-accent" id="btn-infer-frame">SAM Infer</button>
-                  <button class="neu-button" id="btn-clear-frame">Clear Frame</button>
-               </div>
+             <!-- Timeline Area -->
+             <div class="neu-box" style="height: 140px; border-radius: 0; background: var(--neu-bg); z-index: 100; display: flex; flex-direction: column; padding: 15px 25px; gap: 15px; box-shadow: 0 -4px 20px rgba(0,0,0,0.1);">
+                <div style="display: flex; align-items: center; gap: 20px;">
+                   <div style="display: flex; gap: 10px;">
+                      <button class="neu-button" id="btn-v-prev" style="width: 44px; height: 44px; border-radius: 50%;">⏪</button>
+                      <button class="neu-button" id="btn-v-play" style="width: 54px; height: 44px; border-radius: 22px;">▶️</button>
+                      <button class="neu-button" id="btn-v-next" style="width: 44px; height: 44px; border-radius: 50%;">⏩</button>
+                   </div>
+                   
+                   <div style="flex: 1; position: relative; padding: 0 10px;">
+                      <input type="range" class="neu-range" id="video-scrubber" min="0" max="100" value="0" style="width: 100%; height: 6px;" />
+                      <div id="timeline-keyframes" style="position: absolute; top: 0; left: 10px; right: 10px; height: 6px; pointer-events: none;"></div>
+                   </div>
+
+                   <div style="display: flex; flex-direction: column; align-items: flex-end; min-width: 80px;">
+                      <span id="v-time-current" style="font-weight: 700; font-size: 16px; font-family: monospace;">0:00</span>
+                      <span id="v-frame-info" style="font-size: 11px; opacity: 0.6;">FRAME 0</span>
+                   </div>
+                </div>
+
+                <div style="display: flex; justify-content: center; gap: 12px; align-items: center;">
+                   <button class="neu-button" id="btn-infer-frame" style="padding: 10px 24px; font-weight: 700; color: var(--neu-text-active);">INFER CURRENT FRAME</button>
+                   <div id="v-action-bar" style="display: none;">
+                      <button class="neu-button" id="btn-vsubmit" style="padding: 10px 24px; font-weight: 800; border: 2px solid var(--neu-text-active);">SUBMIT PREVIEW</button>
+                   </div>
+                </div>
+             </div>
+          </div>
+          
+          <!-- Right Column: Previews & Keyframes -->
+          <div class="neu-box" id="right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
+             <div style="padding: 20px; border-bottom: 3px solid var(--neu-bg); box-shadow: var(--neu-inset);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Keyframes</h3>
+                   <span id="v-keyframe-count" style="font-size: 12px; font-weight: 700;">0</span>
+                </div>
+             </div>
+             
+             <div id="v-preview-list" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px;">
+                <!-- Frame Previews -->
+                <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
+                   <div style="font-size: 32px; margin-bottom: 15px; opacity: 0.3;">🖼️</div>
+                   <div style="font-size: 13px;">Annotated frames (keyframes) will appear here. Press 'Propagate' to fill the gaps.</div>
+                </div>
              </div>
           </div>
         </div>
+
+        <!-- Hidden Video for Frame Extraction -->
+        <video id="main-video" style="display:none;"></video>
       </div>
     `;
 
     this.videoElement = document.getElementById('main-video');
+    this.canvasContainer = document.getElementById('video-canvas-container');
+    
     this.bindEvents();
+    this.initCanvas();
+    this.startHealthCheck();
+    
+    await this.loadAnnotations();
+    this.renderClasses();
+  },
+
+  startHealthCheck() {
+    const check = async () => {
+      const el = document.getElementById('backend-health');
+      if (!el) return;
+      try {
+        const res = await api.getHealth();
+        const dot = el.querySelector('.dot');
+        if (res.status === 'ok') {
+          dot.style.background = '#10b981';
+          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> Backend Online';
+        } else {
+          dot.style.background = '#ef4444';
+          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Error';
+        }
+      } catch (e) {
+        el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Offline';
+      }
+    };
+    check();
+    this.healthInterval = setInterval(check, 10000);
   },
 
   initCanvas() {
-    const container = document.getElementById('video-canvas-container');
-    this.canvasViewer = new CanvasViewer(container);
+    this.canvasViewer = new CanvasViewer('video-canvas-container');
+    this.canvasViewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
     this.updateFrameInCanvas();
-  },
-
-  updateFrameInCanvas() {
-    const frameUrl = `/api/projects/${this.projectId}/video/frame/${this.currentFrame}?t=${Date.now()}`;
-    this.canvasViewer.setImage(frameUrl);
-    // TODO: Apply existing annotations for this frame
-    const frameData = this.annotations.find(f => f.frame_index === this.currentFrame);
-    if (frameData && frameData.objects) {
-       this.canvasViewer.setMasks(frameData.objects.map(obj => ({
-         id: obj.id,
-         label: obj.class_name,
-         color: this.getClassColor(obj.class_name),
-         points: obj.mask_rle || [] // Simplification
-       })));
-    } else {
-       this.canvasViewer.setMasks([]);
-    }
   },
 
   async loadAnnotations() {
@@ -166,126 +228,279 @@ export const VideoWorkspace = {
       if (this.isUnmounted) return;
       this.annotations = data.frames || [];
       this.updateFrameInCanvas();
+      this.renderKeyframes();
+      this.updateTaskProgress();
     } catch (err) {
       console.error('Failed to load annotations:', err);
     }
   },
 
+  updateTaskProgress() {
+    const total = this.project?.num_images || 0; // num_images is used for frames in video projects
+    const labeled = (this.annotations || []).length;
+    const progress = total > 0 ? (labeled / total) * 100 : 0;
+    
+    const bar = document.getElementById('v-progress-bar');
+    const text = document.getElementById('v-progress-text');
+    if (bar) bar.style.width = `${progress}%`;
+    if (text) text.innerText = `${labeled} / ${total} Frames`;
+  },
+
   bindEvents() {
     // Classes
-    this.container.querySelectorAll('.class-item').forEach(btn => {
-      btn.onclick = () => {
-        this.selectedClass = btn.dataset.class;
-        this.container.querySelectorAll('.class-item').forEach(b => b.classList.toggle('active', b === btn));
-      };
-    });
-
-    // Add Class
-    const btnAddClass = document.getElementById('btn-add-class-video');
-    if (btnAddClass) {
-      btnAddClass.onclick = async () => {
-        const name = prompt('Enter new class name:');
-        if (name) {
-          try {
-            await api.addClass(this.projectId, name);
-            this.classes.push(name);
-            this.renderLayout(); // Re-render to update list
-          } catch (err) {
-            alert('Failed to add class: ' + err.message);
-          }
-        }
-      };
-    }
-
-    // Toggle Mode (Edit vs Play)
-    const btnToggle = document.getElementById('btn-toggle-mode');
-    const playerContainer = document.getElementById('video-player-container');
-    btnToggle.onclick = () => {
-       const isEdit = playerContainer.style.display === 'none';
-       if (isEdit) {
-         // Switch to Play
-         playerContainer.style.display = 'block';
-         btnToggle.innerText = '🖼️ Edit Frame';
-         this.canvasViewer.container.style.display = 'none';
-       } else {
-         // Switch to Edit
-         playerContainer.style.display = 'none';
-         btnToggle.innerText = '🎥 Play Video';
-         this.canvasViewer.container.style.display = 'flex';
-         this.currentFrame = Math.floor(this.videoElement.currentTime * 25); // Assume 25fps for now
-         this.updateFrameInCanvas();
-       }
+    document.getElementById('btn-add-class-video').onclick = async () => {
+      const name = prompt('New class name:');
+      if (name) {
+        try {
+          await api.addClass(this.projectId, name);
+          this.classes.push(name);
+          this.renderClasses();
+        } catch (err) { alert(err.message); }
+      }
     };
+
+    // Playback
+    document.getElementById('btn-v-play').onclick = () => this.togglePlay();
+    document.getElementById('btn-v-prev').onclick = () => this.seekFrame(this.currentFrame - 1);
+    document.getElementById('btn-v-next').onclick = () => this.seekFrame(this.currentFrame + 1);
 
     // Scrubber
     const scrubber = document.getElementById('video-scrubber');
     scrubber.oninput = () => {
-      this.currentFrame = parseInt(scrubber.value);
-      this.updateFrameInCanvas();
+      this.seekFrame(parseInt(scrubber.value));
     };
 
-    // Save
-    document.getElementById('btn-save-video').onclick = async () => {
-      try {
-        await api.saveVideoAnnotations(this.projectId, this.annotations);
-        alert('Annotations saved successfully!');
-      } catch (err) {
-        alert('Failed to save: ' + err.message);
-      }
+    // Tools
+    document.getElementById('btn-vtool-point').onclick = () => this.setPromptMode('point');
+    document.getElementById('btn-vtool-box').onclick = () => this.setPromptMode('box');
+    document.getElementById('btn-vtool-clear').onclick = () => {
+      this.currentPrompts = [];
+      this.previews = [];
+      this.canvasViewer.setPrompts([]);
+      this.canvasViewer.setPreviews([]);
+      this.updateActionBar();
     };
 
-    // Export
-    document.getElementById('btn-export-video').onclick = async () => {
-      try {
-        const res = await api.request('/api/export', {
-          method: 'POST',
-          body: JSON.stringify({ project_id: this.projectId, format: 'json' })
-        });
-        alert('Export started! Check: ' + res.filepath);
-      } catch (err) {
-        alert('Export failed: ' + err.message);
-      }
+    // Action
+    document.getElementById('btn-infer-frame').onclick = () => this.inferFrame();
+    document.getElementById('btn-vsubmit').onclick = () => this.submitPreview();
+    document.getElementById('btn-propagate').onclick = () => this.startPropagation();
+    document.getElementById('btn-save-video').onclick = () => this.saveAll();
+    
+    // Theme
+    const btnTheme = document.getElementById('btn-toggle-theme');
+    const updateThemeIcon = () => {
+       const icon = document.getElementById('theme-icon');
+       if (icon) icon.innerText = store.state.config.theme === 'dark' ? '☀️' : '🌓';
+    };
+    updateThemeIcon();
+
+    btnTheme.onclick = () => {
+      const next = store.state.config.theme === 'dark' ? 'light' : 'dark';
+      store.setConfig('theme', next);
+      updateThemeIcon();
+      if (window.showToast) window.showToast(`Switched to ${next} mode`);
     };
 
-    // Frame Nav
-    document.getElementById('btn-prev-frame').onclick = () => {
-      if (this.currentFrame > 0) {
-        this.currentFrame--;
-        this.updateScrubber();
-        this.updateFrameInCanvas();
-      }
-    };
-    document.getElementById('btn-next-frame').onclick = () => {
-      if (this.currentFrame < 1000) { // Assume max for now or get from metadata
-        this.currentFrame++;
-        this.updateScrubber();
-        this.updateFrameInCanvas();
-      }
-    };
-
-    // Video events
+    // Video Metadata
     this.videoElement.onloadedmetadata = () => {
       const dur = this.videoElement.duration;
-      document.getElementById('video-time-total').innerText = this.formatTime(dur);
       const fps = 25; // Default assumption
       const totalFrames = Math.floor(dur * fps);
-      const scrubber = document.getElementById('video-scrubber');
-      if (scrubber) scrubber.max = totalFrames;
-    };
-
-    this.videoElement.ontimeupdate = () => {
-      document.getElementById('video-time-current').innerText = this.formatTime(this.videoElement.currentTime);
-      if (this.videoElement.style.display !== 'none') {
-         // Auto update frame index in Play mode
-         this.currentFrame = Math.floor(this.videoElement.currentTime * 25);
-         this.updateScrubber();
-      }
+      document.getElementById('video-scrubber').max = totalFrames;
+      this.updateTaskProgress();
     };
   },
 
-  updateScrubber() {
-    const scrubber = document.getElementById('video-scrubber');
-    if (scrubber) scrubber.value = this.currentFrame;
+  togglePlay() {
+    this.isPlaying = !this.isPlaying;
+    const btn = document.getElementById('btn-v-play');
+    btn.innerText = this.isPlaying ? '⏸️' : '▶️';
+    if (this.isPlaying) {
+      this.playInterval = setInterval(() => {
+        this.seekFrame(this.currentFrame + 1);
+      }, 1000 / 25);
+    } else {
+      clearInterval(this.playInterval);
+    }
+  },
+
+  seekFrame(index) {
+    if (index < 0) index = 0;
+    const max = parseInt(document.getElementById('video-scrubber').max || 0);
+    if (index > max) index = max;
+    
+    this.currentFrame = index;
+    document.getElementById('video-scrubber').value = index;
+    document.getElementById('v-frame-info').innerText = `FRAME ${index}`;
+    
+    const sec = index / 25;
+    document.getElementById('v-time-current').innerText = this.formatTime(sec);
+    
+    this.updateFrameInCanvas();
+  },
+
+  async updateFrameInCanvas() {
+    if (!this.canvasViewer) return;
+    const frameUrl = `/api/projects/${this.projectId}/video/frame/${this.currentFrame}`;
+    await this.canvasViewer.loadImage(frameUrl);
+    
+    const frameData = this.annotations.find(f => f.frame_index === this.currentFrame);
+    if (frameData && frameData.objects) {
+       this.canvasViewer.setAnnotations(frameData.objects.map(obj => ({
+          ...obj,
+          color: this.getClassColor(obj.class_name)
+       })));
+    } else {
+       this.canvasViewer.setAnnotations([]);
+    }
+  },
+
+  setPromptMode(mode) {
+    this.promptMode = mode;
+    document.querySelectorAll('[id^="btn-vtool-"]').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(`btn-vtool-${mode}`).classList.add('active');
+    if (this.canvasViewer) this.canvasViewer.setPromptMode(mode);
+  },
+
+  addPrompt(type, data) {
+    if (!this.currentPrompts) this.currentPrompts = [];
+    this.currentPrompts.push({type, data, timestamp: new Date().getTime()});
+    if (this.canvasViewer) this.canvasViewer.setPrompts(this.currentPrompts);
+  },
+
+  async inferFrame() {
+    if (!this.currentPrompts || this.currentPrompts.length === 0) return alert("Add prompts first");
+    const btn = document.getElementById('btn-infer-frame');
+    try {
+      btn.innerText = 'INFERRING...';
+      btn.disabled = true;
+      const res = await api.infer({
+        project_id: this.projectId,
+        frame_index: this.currentFrame,
+        class_name: this.selectedClass || (this.classes[0] || 'Object'),
+        prompts: this.currentPrompts
+      });
+      
+      if (res.annotations) {
+        this.previews = res.annotations;
+        this.canvasViewer.setPreviews(this.previews);
+        this.updateActionBar();
+      }
+    } catch(e) { alert(e.message); }
+    finally {
+      btn.innerText = 'INFER CURRENT FRAME';
+      btn.disabled = false;
+    }
+  },
+
+  updateActionBar() {
+    const bar = document.getElementById('v-action-bar');
+    bar.style.display = (this.previews?.length > 0) ? 'block' : 'none';
+  },
+
+  async submitPreview() {
+    if (!this.previews || this.previews.length === 0) return;
+    const className = this.selectedClass || (this.classes[0] || 'Object');
+    
+    let frameData = this.annotations.find(f => f.frame_index === this.currentFrame);
+    if (!frameData) {
+      frameData = { frame_index: this.currentFrame, objects: [] };
+      this.annotations.push(frameData);
+    }
+    
+    this.previews.forEach(p => {
+       frameData.objects.push({
+         ...p,
+         id: 'obj_' + Math.random().toString(36).substr(2, 9),
+         class_name: className
+       });
+    });
+    
+    this.previews = [];
+    this.currentPrompts = [];
+    this.canvasViewer.setPrompts([]);
+    this.canvasViewer.setPreviews([]);
+    this.updateActionBar();
+    this.renderKeyframes();
+    this.updateFrameInCanvas();
+  },
+
+  renderClasses() {
+    const list = document.getElementById('video-classes-list');
+    if (!list) return;
+    list.innerHTML = this.classes.map(cls => `
+      <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
+           style="justify-content: flex-start; padding: 10px 15px; border-radius: 12px;"
+           onclick="window.currentWorkspace.selectClass('${cls}')">
+        <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; margin-right:10px;"></span>
+        <span style="font-weight: 600;">${cls}</span>
+      </div>
+    `).join('');
+  },
+
+  selectClass(cls) {
+    this.selectedClass = cls;
+    this.renderClasses();
+  },
+
+  renderKeyframes() {
+    const list = document.getElementById('v-preview-list');
+    const sortedAnns = [...this.annotations].sort((a, b) => a.frame_index - b.frame_index);
+    document.getElementById('v-keyframe-count').innerText = sortedAnns.length;
+
+    if (sortedAnns.length === 0) {
+      list.innerHTML = `
+        <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
+           <div style="font-size: 32px; margin-bottom: 15px; opacity: 0.3;">🖼️</div>
+           <div style="font-size: 13px;">Annotated frames (keyframes) will appear here. Press 'Propagate' to fill the gaps.</div>
+        </div>
+      `;
+      return;
+    }
+
+    list.innerHTML = sortedAnns.map(ann => `
+      <div class="neu-box" style="padding: 12px; border-radius: 12px; background: var(--neu-bg); box-shadow: var(--neu-outset-sm); cursor: pointer;" onclick="window.currentWorkspace.seekFrame(${ann.frame_index})">
+         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <span style="font-weight: 700; font-size: 12px;">FRAME ${ann.frame_index}</span>
+            <button class="neu-button" style="width: 20px; height: 20px; padding: 0; font-size: 10px; color: #ef4444;" onclick="event.stopPropagation(); window.currentWorkspace.deleteKeyframe(${ann.frame_index})">×</button>
+         </div>
+         <div style="font-size: 11px; color: var(--neu-text-light);">
+            Objects: ${ann.objects.length}
+         </div>
+      </div>
+    `).join('');
+  },
+
+  deleteKeyframe(frameIndex) {
+    this.annotations = this.annotations.filter(a => a.frame_index !== frameIndex);
+    this.renderKeyframes();
+    this.updateFrameInCanvas();
+    this.updateTaskProgress();
+  },
+
+  async startPropagation() {
+    const range = document.getElementById('propagate-range').value;
+    const imgsz = document.getElementById('v-imgsz').value;
+    const segment = document.getElementById('v-segment').value;
+    
+    try {
+      await api.startVideoJob({
+        project_id: this.projectId,
+        range: range,
+        imgsz: parseInt(imgsz),
+        segment_size: parseInt(segment),
+        keyframes: this.annotations // Backend will use these as propagation seeds
+      });
+      alert("Propagation job started! Track it in Dashboard.");
+    } catch(e) { alert(e.message); }
+  },
+
+  async saveAll() {
+    try {
+      await api.saveVideoAnnotations(this.projectId, this.annotations);
+      alert("All changes saved!");
+    } catch(e) { alert(e.message); }
   },
 
   formatTime(seconds) {
@@ -294,45 +509,22 @@ export const VideoWorkspace = {
     return `${min}:${sec.toString().padStart(2, '0')}`;
   },
 
-  async startPropagation() {
-    const rangeStr = document.getElementById('propagate-range').value;
-    const prompts = this.canvasViewer.getPrompts();
-    if (prompts.length === 0) return alert('No prompts to propagate.');
-
-    try {
-      // Start video job (tracker + SAM)
-      const payload = {
-        project_id: this.projectId,
-        classes: this.classes,
-        prompt_added: true,
-        prompt_frame_index: this.currentFrame,
-        prompt_boxes: prompts.filter(p => p.type === 'box').map((p, i) => ({
-            id: 'obj_' + i,
-            class_name: this.selectedClass,
-            box: [p.x1, p.y1, p.x2, p.y2]
-        })),
-        prompt_points: prompts.filter(p => p.type === 'point').map((p, i) => ({
-            id: 'obj_' + i, // In unified tracking, multiple points might mean one object
-            class_name: this.selectedClass,
-            points: [p.x, p.y, p.label === null ? 1 : p.label]
-        }))
-      };
-      await api.startVideoJob(payload);
-      alert('Propagation job started! Check Task Manager.');
-    } catch (err) {
-      alert('Failed to start propagation: ' + err.message);
-    }
-  },
-
   getClassColor(className) {
-    const idx = this.classes.indexOf(className);
-    return `hsl(${ (idx * 137.5) % 360 }, 70%, 50%)`;
+    let hash = 0;
+    const str = String(className || 'unknown');
+    for (let i = 0; i < str.length; i++) {
+       hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = Math.abs(hash) % 360;
+    return `hsl(${hue}, 70%, 50%)`;
   },
 
   unmount() {
     this.isUnmounted = true;
-    if (this.abortController) this.abortController.abort();
+    if (this.healthInterval) clearInterval(this.healthInterval);
+    if (this.playInterval) clearInterval(this.playInterval);
     if (this.canvasViewer) this.canvasViewer.destroy();
     this.container = null;
+    window.currentWorkspace = null;
   }
 };

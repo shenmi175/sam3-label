@@ -32,6 +32,11 @@ export const api = {
   
   getImages(projectId, offset=0, limit=200) { return this.request('GET', `/projects/${projectId}/images?offset=${offset}&limit=${limit}`); },
   refreshImages(projectId) { return this.request('POST', `/projects/${projectId}/images/refresh`); },
+  uploadImage(projectId, file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.request('POST', `/projects/${projectId}/images/upload`, fd, true);
+  },
   importImages(projectId, sourceDir) { return this.request('POST', `/projects/${projectId}/images/import`, {source_dir: sourceDir}); },
   deleteImage(projectId, imageId) { return this.request('DELETE', `/projects/${projectId}/images/${imageId}`); },
   

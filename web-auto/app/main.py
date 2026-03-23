@@ -3783,6 +3783,48 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get('/api/health')
+def health_check() -> dict[str, Any]:
+    return {'status': 'ok', 'timestamp': now_ts()}
+
+
+@app.post('/api/projects/{project_id}/images/upload')
+async def upload_project_image(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    project = storage.get_project(project_id, enrich=False, include_images=False)
+    if not project:
+        raise HTTPException(status_code=404, detail='project not found')
+
+    if project.get('project_type') != 'image':
+        raise HTTPException(status_code=400, detail='only image projects support uploads')
+
+    image_dir = Path(project['image_dir'])
+    if not image_dir.exists():
+        ensure_dir(image_dir)
+
+    original_filename = file.filename or 'upload.jpg'
+    stem = Path(original_filename).stem
+    suffix = Path(original_filename).suffix
+
+    target_path = image_dir / original_filename
+    if target_path.exists():
+        counter = 1
+        while True:
+            new_name = f'{stem}_upload{counter}{suffix}'
+            target_path = image_dir / new_name
+            if not target_path.exists():
+                break
+            counter += 1
+
+    try:
+        with target_path.open('wb') as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'failed to save file: {exc}') from exc
+
+    storage.refresh_project_images(project_id)
+    return {'ok': True, 'filename': target_path.name}
+
+
 @app.delete('/api/projects/{project_id}')
 def delete_project(project_id: str) -> dict[str, Any]:
     try:

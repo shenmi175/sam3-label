@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import shutil
@@ -779,6 +779,29 @@ class Storage:
         projects.append(project)
         self._save_projects(projects)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
+
+    def refresh_project_images(self, project_id: str) -> int:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            return 0
+        if project.get('project_type') != 'image':
+            return 0
+        image_dir = Path(project['image_dir'])
+        if not image_dir.exists():
+            return 0
+        images = list_images_recursive(image_dir)
+        # Update DB
+        self._replace_project_images_db(project_id, 'image', images)
+        # Recount and save to projects.json
+        full_p = self._enrich_project(project)
+        projects = self._load_projects()
+        for p in projects:
+            if p.get('id') == project_id:
+                p['num_images'] = full_p['num_images']
+                p['labeled_images'] = full_p['labeled_images']
+                p['unlabeled_images'] = full_p['unlabeled_images']
+        self._save_projects(projects)
+        return len(images)
 
     def add_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
         incoming = parse_classes_text(classes_text)
