@@ -205,13 +205,13 @@ export const VideoWorkspace = {
         const dot = el.querySelector('.dot');
         if (res.status === 'ok') {
           dot.style.background = '#10b981';
-          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> Backend Online';
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${i18n.t('backend_online')}`;
         } else {
           dot.style.background = '#ef4444';
-          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Error';
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_error')}`;
         }
       } catch (e) {
-        el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Offline';
+        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_offline')}`;
       }
     };
     check();
@@ -245,7 +245,7 @@ export const VideoWorkspace = {
     const bar = document.getElementById('v-progress-bar');
     const text = document.getElementById('v-progress-text');
     if (bar) bar.style.width = `${progress}%`;
-    if (text) text.innerText = `${labeled} / ${total} Frames`;
+    if (text) text.innerText = `${labeled} / ${total}`;
   },
 
   bindEvents() {

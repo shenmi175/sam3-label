@@ -14,7 +14,7 @@ export const ProjectsPage = {
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; border-bottom: 1px solid rgba(0,0,0,0.05);">
            <div>
              <h1 style="margin:0; font-size: 28px; font-weight: 800; letter-spacing: -1.5px; display: inline-block;">web-auto</h1>
-             <span style="margin-left: 12px; color: var(--neu-text-light); font-size: 14px; font-weight: 500;">${i18n.t('backend_checking')}</span>
+             <span id="health-status-header" style="margin-left: 12px; color: var(--neu-text-light); font-size: 14px; font-weight: 500;">${i18n.t('backend_checking')}</span>
            </div>
            <div style="display: flex; gap: 16px; align-items: center;">
               <div id="health-indicator" title="Backend Health">
@@ -69,8 +69,8 @@ export const ProjectsPage = {
           <!-- Right Panel: Project List (65%) -->
           <div style="width: 65%; padding: 30px; overflow-y: auto;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
-              <h2 style="margin:0; font-size: 20px;">项目列表</h2>
-              <div style="font-size: 13px; color: var(--neu-text-light);">共 <span id="pj-count">0</span> 个项目</div>
+              <h2 style="margin:0; font-size: 20px;">${i18n.t('project_list')}</h2>
+              <div id="pj-count-label" style="font-size: 13px; color: var(--neu-text-light);">${i18n.t('total_projects', {count: '<span id="pj-count">0</span>'})}</div>
             </div>
             <div id="projects-list-container" style="display: flex; flex-direction: column; gap: 20px;">
                <!-- Projects will load here -->
@@ -135,15 +135,23 @@ export const ProjectsPage = {
   async checkHealth() {
     const dot = document.getElementById('health-dot');
     const text = document.getElementById('health-text');
+    const headerStatus = document.getElementById('health-status-header');
+    if (!dot || !text) return;
     try {
-      const start = Date.now();
-      await api.getProjects(); // Simple ping
-      const ms = Date.now() - start;
-      dot.style.background = '#48bb78'; // Green
-      text.textContent = `Online (${ms}ms)`;
+      const res = await api.getHealth();
+      if (res.status === 'ok') {
+        dot.style.background = '#10b981';
+        text.innerText = i18n.t('backend_online');
+        if (headerStatus) headerStatus.innerText = i18n.t('backend_online');
+      } else {
+        dot.style.background = '#fbbf24';
+        text.innerText = i18n.t('backend_error');
+        if (headerStatus) headerStatus.innerText = i18n.t('backend_error');
+      }
     } catch(e) {
-      dot.style.background = '#f56565'; // Red
-      text.textContent = 'Offline';
+      dot.style.background = '#ef4444';
+      text.innerText = i18n.t('backend_offline');
+      if (headerStatus) headerStatus.innerText = i18n.t('backend_offline');
     }
     if (!this._healthTimer) {
       this._healthTimer = setInterval(() => this.checkHealth(), 10000);
@@ -273,18 +281,17 @@ export const ProjectsPage = {
     const projectId = this._uploadingProjectId;
     if (!projectId) return;
 
-    status.textContent = `Uploading ${files.length} items...`;
+    status.textContent = i18n.t('uploading', {count: files.length});
     try {
-      for (const file of files) {
-        await api.uploadImage(projectId, file);
+      for (let i = 0; i < files.length; i++) {
+        await api.uploadImage(projectId, files[i]);
       }
-      status.textContent = 'Upload complete! Refreshing...';
+      this.loadProjects();
       setTimeout(() => {
         document.getElementById('modal-upload').style.display = 'none';
-        this.loadProjects();
       }, 1000);
     } catch(e) {
-      status.textContent = 'Upload failed: ' + e.message;
+      status.textContent = i18n.t('upload_failed', {error: e.message});
     }
   },
 
@@ -298,7 +305,7 @@ export const ProjectsPage = {
       countSpan.textContent = projects.length;
 
       if (projects.length === 0) {
-        listCont.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--neu-text-light);">No projects found. Create one to start.</div>';
+        listCont.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--neu-text-light);">${i18n.t('no_projects')}</div>`;
         return;
       }
       

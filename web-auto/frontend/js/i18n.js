@@ -83,6 +83,8 @@ export const i18n = {
     
     // Toasts
     switch_lang: '已切换到中文',
+    uploading: '正在上传 {count} 个文件...',
+    upload_failed: '上传失败: {error}',
     project_deleted: '项目已删除',
     save_success: '保存成功',
     delete_failed: '删除失败: {error}'
@@ -171,6 +173,8 @@ export const i18n = {
 
     // Toasts
     switch_lang: 'Switched to English',
+    uploading: 'Uploading {count} files...',
+    upload_failed: 'Upload failed: {error}',
     project_deleted: 'Project deleted',
     save_success: 'Save successful',
     delete_failed: 'Delete failed: {error}'
