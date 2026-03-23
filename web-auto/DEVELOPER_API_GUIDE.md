@@ -1,108 +1,26 @@
 # web-auto Developer API Guide
 
-`web-auto` 现在是纯后端 API 服务。默认无鉴权，默认返回 JSON，文件下载接口返回二进制流。
+`web-auto` 现在是纯后端 API 服务，默认无鉴权，默认返回 JSON。
 
-OpenAPI:
+基础信息：
 
-- `/docs`
-- `/openapi.json`
+- Base URL: `http://127.0.0.1:8000`
+- OpenAPI: `/docs`
+- OpenAPI JSON: `/openapi.json`
 
-Base URL:
-
-- `http://127.0.0.1:8000`
-
-## General
-
-- 所有业务接口前缀均为 `/api`
-- 图片和视频项目共用项目体系，通过 `project_type` 区分
-- 图片列表采用分页接口，不建议一次拉全量图片
-- 大批量任务优先使用任务接口，不建议前端直接调用同步批处理接口
-
-## CORS
-
-通过环境变量控制：
-
-```bash
-WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
-```
-
-默认 `*`。
-
-## Core Data Shapes
-
-### Project
-
-```json
-{
-  "id": "prj_xxx",
-  "name": "demo",
-  "project_type": "image",
-  "image_dir": "D:/dataset/images",
-  "video_path": "",
-  "classes": ["cat", "dog"],
-  "num_images": 12000,
-  "labeled_images": 3180,
-  "unlabeled_images": 8820,
-  "content_rev": 42,
-  "images": []
-}
-```
-
-### Image Item
-
-```json
-{
-  "id": "013ae78f871958ff",
-  "rel_path": "subdir/a.jpg",
-  "abs_path": "D:/dataset/images/subdir/a.jpg",
-  "width": 1920,
-  "height": 1080,
-  "status": "labeled"
-}
-```
-
-### Annotation
-
-```json
-{
-  "id": "det_0001",
-  "class_name": "person",
-  "raw_label": "person",
-  "score": 0.975594,
-  "bbox": [0.0, 98.76, 249.11, 464.12],
-  "polygon": [[182.0, 102.0], [158.0, 100.0]]
-}
-```
-
-说明：
-
-- `bbox` 为 `[x1, y1, x2, y2]`
-- `polygon` 为二维点序列；无掩码时可为空或缺失
-- 前端自定义标注时建议沿用这个结构
-
-## Health
+## 1. 服务与配置
 
 ### `GET /`
 
-服务元信息。可用于前端启动时探测服务模式。
+返回服务元信息。
 
 ### `GET /api/health`
 
-返回：
-
-```json
-{
-  "status": "ok",
-  "service": "web-auto-api",
-  "mode": "api_only",
-  "projects": 3,
-  "allowed_origins": ["*"]
-}
-```
+返回服务健康状态。
 
 ### `POST /api/sam3/health`
 
-检查远端 `sam3-api` 是否可用。
+测试远端 `sam3-api` 是否可用。
 
 请求：
 
@@ -112,7 +30,51 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 }
 ```
 
-## Projects
+说明：
+
+- 这就是前端“API测试”按钮应调用的接口
+
+### `GET /api/config/cache_dir`
+
+查看当前后端数据目录。
+
+响应：
+
+```json
+{
+  "cache_dir": "J:/project_code/sam3/web-auto/data",
+  "default_dir": "J:/project_code/sam3/web-auto"
+}
+```
+
+### `POST /api/config/cache_dir`
+
+切换后端数据目录。
+
+请求：
+
+```json
+{
+  "cache_dir": "D:/web-auto-data"
+}
+```
+
+响应：
+
+```json
+{
+  "ok": true,
+  "cache_dir": "D:/web-auto-data",
+  "message": "Storage directory updated successfully."
+}
+```
+
+说明：
+
+- 切换时要求当前没有后台任务在运行
+- 后端会重新实例化 `Storage`
+
+## 2. 项目管理
 
 ### `GET /api/projects`
 
@@ -120,12 +82,11 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `GET /api/projects/{project_id}?include_images=false`
 
-获取单项目元数据。
+获取单项目。
 
 说明：
 
-- 大项目前端应始终使用 `include_images=false`
-- 只有极小项目或特殊调试场景才建议 `include_images=true`
+- 大数据集前端应始终使用 `include_images=false`
 
 ### `POST /api/projects/open`
 
@@ -138,7 +99,7 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
   "name": "demo-image",
   "project_type": "image",
   "image_dir": "D:/dataset/images",
-  "save_dir": "D:/dataset/web-auto-output",
+  "save_dir": "D:/dataset/output",
   "classes_text": "cat,dog,person"
 }
 ```
@@ -150,7 +111,7 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
   "name": "demo-video",
   "project_type": "video",
   "video_path": "D:/dataset/video/demo.mp4",
-  "save_dir": "D:/dataset/web-auto-output",
+  "save_dir": "D:/dataset/output",
   "classes_text": "person,car"
 }
 ```
@@ -159,7 +120,32 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 删除项目数据，不删除原始图片或原始视频。
 
-## Image Pagination And Files
+## 3. 类别管理
+
+### `POST /api/projects/{project_id}/classes`
+
+### `POST /api/projects/{project_id}/classes/add`
+
+添加类别。
+
+请求：
+
+```json
+{
+  "classes_text": "cat,dog,person"
+}
+```
+
+说明：
+
+- 这就是前端“类别添加”功能应调用的接口
+- `/classes` 与 `/classes/add` 当前行为一致，推荐统一使用 `/classes/add`
+
+### `DELETE /api/projects/{project_id}/classes/{class_name}`
+
+删除单个类别。
+
+## 4. 图片列表与文件
 
 ### `GET /api/projects/{project_id}/images`
 
@@ -167,9 +153,9 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 - `offset`
 - `limit`
-- `image_id`，可用于反查所在页
+- `image_id`
 
-返回：
+响应：
 
 ```json
 {
@@ -183,45 +169,29 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `POST /api/projects/{project_id}/images/refresh`
 
-刷新图片目录，补录新图片。
+刷新图片目录。
 
 ### `POST /api/projects/{project_id}/images/import`
 
-从另一个目录导入图片到当前项目图片目录。
+导入图片目录。
 
 ### `POST /api/projects/{project_id}/images/upload`
 
-表单上传图片文件。
+表单上传图片。
 
 ### `GET /api/projects/{project_id}/images/{image_id}/file`
 
-获取原始图片文件。
+获取原图文件。
 
 ### `DELETE /api/projects/{project_id}/images/{image_id}`
 
-删除项目中的一张图片及其标注。
+删除图片及其标注。
 
-## Classes
-
-### `POST /api/projects/{project_id}/classes`
-
-### `POST /api/projects/{project_id}/classes/add`
-
-请求：
-
-```json
-{
-  "classes_text": "cat,dog,person"
-}
-```
-
-### `DELETE /api/projects/{project_id}/classes/{class_name}`
-
-## Annotations
+## 5. 标注读写
 
 ### `GET /api/projects/{project_id}/images/{image_id}/annotations`
 
-读取单图标注。
+获取单图标注。
 
 ### `POST /api/annotations/save`
 
@@ -237,13 +207,15 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `POST /api/annotations/append`
 
-追加标注，后端会补唯一 `id`。
+追加保存标注。
 
-## Image Inference
+## 6. 图片推理
+
+### 6.1 单图推理
 
 ### `POST /api/infer`
 
-单图直接推理并保存。
+单图推理并保存。
 
 请求：
 
@@ -261,6 +233,11 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 }
 ```
 
+说明：
+
+- `threshold` 就是前端的阈值设定
+- `api_base_url` 就是前端填写的 `sam3-api` 地址
+
 `mode` 支持：
 
 - `text`
@@ -269,7 +246,7 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `POST /api/infer/preview`
 
-与 `/api/infer` 类似，但只返回检测结果，不保存。
+单图推理预览，不保存。
 
 ### `POST /api/infer/example_preview`
 
@@ -289,17 +266,28 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 }
 ```
 
+说明：
+
+- 这就是前端“范例分割”按钮应调用的接口
+
+## 7. 图片批量推理
+
+### 同步接口
+
 ### `POST /api/infer/batch`
 
-同步全图文本批量推理。大项目前端不建议直接使用。
+同步全图文本批推。
 
 ### `POST /api/infer/batch_example`
 
-同步范例传播。大项目前端不建议直接使用。
+同步范例传播。
 
-## Batch Infer Jobs
+说明：
 
-推荐使用任务接口。
+- 这就是前端“范例传播”对应的同步接口
+- 大项目不建议直接用同步接口，推荐任务接口
+
+### 任务接口
 
 ### `POST /api/infer/jobs/start_batch`
 
@@ -311,11 +299,11 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `GET /api/infer/jobs/active?project_id=...`
 
-获取当前项目活动任务或暂停任务。
+获取项目当前活动任务或暂停任务。
 
 ### `GET /api/infer/jobs/{job_id}`
 
-轮询任务进度。
+轮询任务详情。
 
 ### `POST /api/infer/jobs/stop`
 
@@ -323,15 +311,22 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `POST /api/infer/jobs/resume`
 
-继续剩余任务。继续时可带新的 `threshold`、`batch_size`、`api_base_url`。
+继续任务。
 
-任务公共字段：
+说明：
+
+- 继续时可以带新的 `threshold`
+- 继续时可以带新的 `batch_size`
+- 继续时可以带新的 `api_base_url`
+- 继续范例传播时也可以调整 `active_class`、`boxes`、`pure_visual`
+
+任务公共字段示例：
 
 ```json
 {
   "job_id": "job_xxx",
   "project_id": "prj_xxx",
-  "job_type": "text_batch",
+  "job_type": "example_batch",
   "status": "running",
   "message": "处理中 10/12000: a.jpg",
   "progress_done": 10,
@@ -343,16 +338,14 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 }
 ```
 
-## Intelligent Filter
+## 8. 智能过滤
 
-支持同步接口和任务接口。前端建议使用任务接口。
-
-### Sync
+### 同步接口
 
 - `POST /api/filter/intelligent/preview`
 - `POST /api/filter/intelligent/apply`
 
-### Job
+### 任务接口
 
 - `POST /api/filter/intelligent/jobs/start_preview`
 - `POST /api/filter/intelligent/jobs/start_apply`
@@ -376,15 +369,14 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 说明：
 
 - `start_preview` 完成后会返回 `preview_token`
-- `start_apply` 必须带上这个 `preview_token`
-- 若预览后标注发生变化，或规则配置变化，后端会拒绝复用并要求重新预览
-- `start_apply` 会直接复用上一次预览缓存结果，不再重复扫描项目
+- `start_apply` 必须带同一次预览返回的 `preview_token`
+- 确认合并会直接复用预览缓存结果，不再重复扫描项目
 
-## Export
+## 9. 导出
 
 ### `POST /api/export`
 
-图片项目：
+图片项目导出：
 
 ```json
 {
@@ -400,15 +392,80 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 - `format=json`
 
-## Video
+## 10. 视频文件与帧
 
 ### `GET /api/projects/{project_id}/video/file`
 
-支持 Range 请求的视频流。
+视频文件流，支持 `Range`。
+
+### `GET /api/projects/{project_id}/video/stream`
+
+与 `/video/file` 等价，给前端播放器使用。
+
+### `GET /api/projects/{project_id}/video/frame/{frame_index}`
+
+读取指定帧，返回 `image/jpeg`。
 
 ### `POST /api/projects/{project_id}/video/transcode_h264`
 
-将视频转成更适合浏览器播放的 H.264。
+转码为更适合浏览器播放的 H.264。
+
+## 11. 视频标注数据
+
+### `GET /api/projects/{project_id}/video/annotations`
+
+获取整段视频标注数据。
+
+响应示例：
+
+```json
+{
+  "annotations": {
+    "project_id": "prj_xxx",
+    "project_type": "video",
+    "video_name": "demo",
+    "num_frames": 100,
+    "classes": ["person"],
+    "frames": [
+      {
+        "frame_index": 0,
+        "image_id": "img_xxx",
+        "file_name": "demo_000000.jpg",
+        "annotations": []
+      }
+    ]
+  },
+  "annotation_json_path": "D:/output/prj_xxx/demo_annotations.json"
+}
+```
+
+### `POST /api/projects/{project_id}/video/annotations/save`
+
+保存整段视频标注或部分帧标注。
+
+请求：
+
+```json
+{
+  "project_id": "prj_xxx",
+  "replace_all": true,
+  "frames": [
+    {
+      "frame_index": 0,
+      "image_id": "img_xxx",
+      "annotations": []
+    }
+  ]
+}
+```
+
+说明：
+
+- `replace_all=true` 时，未出现在 `frames` 里的帧会被清空
+- `replace_all=false` 时，只更新请求中给出的帧
+- 保存后后端会同步更新导出的 `video_annotations.json`
+
+## 12. 视频传播任务
 
 ### `GET /api/video/jobs/{project_id}`
 
@@ -416,30 +473,68 @@ WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
 
 ### `POST /api/video/jobs/start`
 
-启动视频语义传播任务。
+启动视频传播任务。
+
+请求字段包括：
+
+- `classes`
+- `prompt_mode`
+- `active_class`
+- `points`
+- `boxes`
+- `threshold`
+- `imgsz`
+- `segment_size_frames`
+- `start_frame_index`
+- `end_frame_index`
+- `prompt_frame_index`
+- `api_base_url`
 
 ### `POST /api/video/jobs/stop`
 
-### `POST /api/video/jobs/resume`
-
 ### `POST /api/video/jobs/pause`
 
-与 `stop` 同义。
+暂停/停止视频任务。
 
-## UI State
+### `POST /api/video/jobs/resume`
 
-这组接口是可选能力，供前端保存用户界面状态。
+继续视频任务，并允许更新：
+
+- `classes`
+- `threshold`
+- `imgsz`
+- `api_base_url`
+- `prompt_mode`
+- `prompt_frame_index`
+- `active_class`
+- `boxes`
+- `segment_size_frames`
+
+## 13. UI 状态
+
+这组接口是可选能力，供前端保存界面状态。
 
 - `GET /api/ui_state`
 - `POST /api/ui_state`
 
-如果你自己的前端不需要服务端存 UI 状态，可以不接。
+如果你的新前端不需要服务端存 UI 状态，可以不接。
 
-## Frontend Integration Advice
+## 14. 结论：你提到的能力是否缺失
 
-- 列表页只拉项目元数据和图片分页，不要拉全量图片
-- 图片内容用 `/images/{image_id}/file`
-- 标注面板切图时只拉单图标注
-- 大任务统一走任务接口，并轮询 `job_id`
-- 智能过滤确认合并必须复用 `preview_token`
-- 前端应自行处理大列表虚拟滚动、图片缓存和任务恢复
+这些能力已经有后端接口，不缺：
+
+- 阈值设定
+- API测试
+- 类别添加
+- 范例分割
+- 范例传播
+- 批量推理停止/继续
+- 智能过滤任务化与预览复用
+
+这次新增补齐的能力：
+
+- 视频流别名接口 `/api/projects/{project_id}/video/stream`
+- 视频帧读取接口 `/api/projects/{project_id}/video/frame/{frame_index}`
+- 视频标注读取接口 `/api/projects/{project_id}/video/annotations`
+- 视频标注保存接口 `/api/projects/{project_id}/video/annotations/save`
+- 全局缓存目录接口 `/api/config/cache_dir`

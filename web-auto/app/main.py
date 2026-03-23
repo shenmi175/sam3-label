@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.exports import export_coco, export_video_json, export_yolo
@@ -42,6 +41,7 @@ if not logger.handlers:
 
 storage = Storage(DATA_DIR)
 sam3 = Sam3Client(timeout_sec=180)
+CURRENT_DATA_DIR = Path(DATA_DIR)
 
 VIDEO_JOB_LOCK = threading.Lock()
 VIDEO_JOB_THREADS: dict[str, dict[str, Any]] = {}
@@ -54,6 +54,7 @@ SMART_FILTER_JOB_THREADS: dict[str, dict[str, Any]] = {}
 SMART_FILTER_JOB_STATES: dict[str, dict[str, Any]] = {}
 SMART_FILTER_PROJECT_ACTIVE: dict[str, str] = {}
 SMART_FILTER_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
+CONFIG_LOCK = threading.Lock()
 
 def _parse_allowed_origins(raw: str) -> list[str]:
     text = str(raw or '').strip()
@@ -174,6 +175,10 @@ class HealthApiIn(BaseModel):
     api_base_url: str = DEFAULT_API_BASE_URL
 
 
+class CacheDirUpdateIn(BaseModel):
+    cache_dir: str
+
+
 class UIStateIn(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     project_id: Optional[str] = None
@@ -198,6 +203,12 @@ class VideoJobStartIn(BaseModel):
 
 class VideoJobControlIn(BaseModel):
     project_id: str
+
+
+class VideoAnnotationsSaveIn(BaseModel):
+    project_id: str
+    frames: list[dict[str, Any]] = Field(default_factory=list)
+    replace_all: bool = True
 
 
 class InferJobControlIn(BaseModel):
@@ -1998,6 +2009,136 @@ def _read_video_frame_jpeg(video_path: str, frame_index: int) -> bytes:
     return bytes(buf.tobytes())
 
 
+def _count_running_infer_jobs() -> int:
+    with INFER_JOB_LOCK:
+        total = 0
+        for holder in INFER_JOB_THREADS.values():
+            thread = holder.get('thread') if isinstance(holder, dict) else None
+            if thread and thread.is_alive():
+                total += 1
+        return total
+
+
+def _count_running_smart_filter_jobs() -> int:
+    with SMART_FILTER_JOB_LOCK:
+        total = 0
+        for holder in SMART_FILTER_JOB_THREADS.values():
+            thread = holder.get('thread') if isinstance(holder, dict) else None
+            if thread and thread.is_alive():
+                total += 1
+        return total
+
+
+def _count_running_video_jobs() -> int:
+    with VIDEO_JOB_LOCK:
+        total = 0
+        for holder in VIDEO_JOB_THREADS.values():
+            thread = holder.get('thread') if isinstance(holder, dict) else None
+            if thread and thread.is_alive():
+                total += 1
+        return total
+
+
+def _ensure_no_active_jobs_for_config_change() -> None:
+    active = _count_running_infer_jobs() + _count_running_smart_filter_jobs() + _count_running_video_jobs()
+    if active > 0:
+        raise HTTPException(status_code=409, detail='cannot change cache_dir while background jobs are running')
+
+
+def _set_storage_data_dir(path_text: str) -> Path:
+    global storage, CURRENT_DATA_DIR
+    new_dir = ensure_dir(Path(str(path_text or '')).expanduser().resolve())
+    storage = Storage(new_dir)
+    CURRENT_DATA_DIR = new_dir
+    return new_dir
+
+
+def _cache_dir_info() -> dict[str, Any]:
+    return {
+        'cache_dir': str(CURRENT_DATA_DIR),
+        'default_dir': str(BASE_DIR),
+    }
+
+
+def _build_video_annotations_payload(project_id: str) -> dict[str, Any]:
+    project = _get_project_or_404(project_id, include_images=True)
+    if project.get('project_type') != 'video':
+        raise HTTPException(status_code=400, detail='project is not video type')
+    images = project.get('images', [])
+    all_anns = storage.all_annotations(project_id)
+    frames: list[dict[str, Any]] = []
+    for idx, img in enumerate(images):
+        frame_index = int(img.get('frame_index', idx))
+        image_id = str(img.get('id') or '')
+        frames.append(
+            {
+                'frame_index': frame_index,
+                'image_id': image_id,
+                'file_name': str(img.get('rel_path') or ''),
+                'annotations': all_anns.get(image_id, []),
+            }
+        )
+    return {
+        'project_id': project.get('id'),
+        'project_name': project.get('name'),
+        'project_type': 'video',
+        'video_name': str(project.get('video_name') or project.get('name') or 'video'),
+        'video_path': str(project.get('video_path') or ''),
+        'num_frames': len(frames),
+        'classes': project.get('classes', []),
+        'frames': frames,
+        'updated_at': now_ts(),
+    }
+
+
+def _save_video_annotations_payload(payload: VideoAnnotationsSaveIn) -> dict[str, Any]:
+    project = _get_project_or_404(payload.project_id, include_images=True)
+    if project.get('project_type') != 'video':
+        raise HTTPException(status_code=400, detail='project is not video type')
+
+    images = project.get('images', [])
+    by_image_id: dict[str, dict[str, Any]] = {}
+    by_frame_index: dict[int, dict[str, Any]] = {}
+    for idx, img in enumerate(images):
+        image_id = str(img.get('id') or '').strip()
+        if image_id:
+            by_image_id[image_id] = img
+        by_frame_index[int(img.get('frame_index', idx))] = img
+
+    touched: set[str] = set()
+    saved_frames = 0
+    for frame in payload.frames:
+        if not isinstance(frame, dict):
+            continue
+        image_id = str(frame.get('image_id') or '').strip()
+        target = by_image_id.get(image_id) if image_id else None
+        if target is None:
+            try:
+                idx = int(frame.get('frame_index'))
+            except Exception:
+                idx = -1
+            target = by_frame_index.get(idx)
+        if target is None:
+            continue
+        target_image_id = str(target.get('id') or '').strip()
+        anns = frame.get('annotations', [])
+        storage.save_annotations(payload.project_id, target_image_id, anns if isinstance(anns, list) else [])
+        touched.add(target_image_id)
+        saved_frames += 1
+
+    if payload.replace_all:
+        for img in images:
+            image_id = str(img.get('id') or '').strip()
+            if image_id and image_id not in touched:
+                storage.save_annotations(payload.project_id, image_id, [])
+
+    _write_video_default_json(payload.project_id)
+    out = _build_video_annotations_payload(payload.project_id)
+    out['saved_frames'] = saved_frames
+    out['replace_all'] = bool(payload.replace_all)
+    return out
+
+
 def _video_default_state(project: dict[str, Any]) -> dict[str, Any]:
     total = len(project.get('images', []))
     return {
@@ -2411,7 +2552,7 @@ def _video_job_worker(project_id: str, stop_event: threading.Event) -> None:
         )
         if use_segmented:
             source_video = _resolve_video_file_from_resource(resource_path)
-            segments_dir = ensure_dir(Path(project.get('workspace_dir') or DATA_DIR) / 'cache' / 'video_segments')
+            segments_dir = ensure_dir(Path(project.get('workspace_dir') or CURRENT_DATA_DIR) / 'cache' / 'video_segments')
 
             while next_idx < stop_idx:
                 if stop_event.is_set():
@@ -3582,6 +3723,23 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get('/api/config/cache_dir')
+def get_cache_dir_config() -> dict[str, Any]:
+    return _cache_dir_info()
+
+
+@app.post('/api/config/cache_dir')
+def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
+    with CONFIG_LOCK:
+        _ensure_no_active_jobs_for_config_change()
+        new_dir = _set_storage_data_dir(payload.cache_dir)
+    return {
+        'ok': True,
+        'cache_dir': str(new_dir),
+        'message': 'Storage directory updated successfully.',
+    }
+
+
 @app.get('/api/projects')
 def list_projects() -> dict[str, Any]:
     return {'projects': storage.list_projects()}
@@ -3779,6 +3937,55 @@ def get_video_file(project_id: str, request: Request) -> Response:
         media_type=media_type,
         headers=headers,
     )
+
+
+@app.get('/api/projects/{project_id}/video/stream')
+def get_video_stream(project_id: str, request: Request) -> Response:
+    return get_video_file(project_id, request)
+
+
+@app.get('/api/projects/{project_id}/video/frame/{frame_index}')
+def get_video_frame(project_id: str, frame_index: int) -> Response:
+    project = _get_project_or_404(project_id, enrich=False, include_images=False)
+    if project.get('project_type') != 'video':
+        raise HTTPException(status_code=400, detail='project is not video type')
+    try:
+        video_path = _resolve_project_video_file(project)
+        jpeg = _read_video_frame_jpeg(str(video_path), frame_index)
+        return Response(content=jpeg, media_type='image/jpeg', headers={'Cache-Control': 'no-cache'})
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get('/api/projects/{project_id}/video/annotations')
+def get_video_annotations(project_id: str) -> dict[str, Any]:
+    payload = _build_video_annotations_payload(project_id)
+    try:
+        path = storage.video_annotation_json_path(project_id)
+    except ValueError:
+        path = Path('')
+    return {
+        'annotations': payload,
+        'annotation_json_path': str(path) if str(path) else '',
+    }
+
+
+@app.post('/api/projects/{project_id}/video/annotations/save')
+def save_video_annotations(project_id: str, payload: VideoAnnotationsSaveIn) -> dict[str, Any]:
+    if str(payload.project_id or '').strip() != str(project_id or '').strip():
+        raise HTTPException(status_code=400, detail='project_id in path/body mismatch')
+    out = _save_video_annotations_payload(payload)
+    try:
+        path = storage.video_annotation_json_path(project_id)
+    except ValueError:
+        path = Path('')
+    return {
+        'ok': True,
+        'annotations': out,
+        'annotation_json_path': str(path) if str(path) else '',
+    }
 
 
 @app.post('/api/projects/{project_id}/video/transcode_h264')
@@ -4414,13 +4621,6 @@ def resume_video_job(payload: VideoJobResumeIn) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {'job': _get_video_state(payload.project_id)}
-
-
-frontend_dir = BASE_DIR / 'frontend'
-if frontend_dir.exists():
-    app.mount('/', StaticFiles(directory=str(frontend_dir), html=True), name='frontend')
-else:
-    logger.warning(f'Frontend directory not found at {frontend_dir}')
 
 def create_app() -> FastAPI:
     return app
