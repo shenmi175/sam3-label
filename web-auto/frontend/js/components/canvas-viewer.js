@@ -61,7 +61,7 @@ export class CanvasViewer {
     this.draw();
   }
   
-  loadImage(src) {
+  async setImage(src) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
@@ -87,6 +87,26 @@ export class CanvasViewer {
   setPrompts(prompts) {
     this.prompts = prompts || [];
     this.draw();
+  }
+
+  clearPrompts() {
+    this.prompts = [];
+    this.draw();
+  }
+
+  getPrompts() {
+    return this.prompts.map(p => ({
+      type: p.type,
+      // Map back to expected API format if needed, but keeping it simple for now
+      x: p.type === 'point' ? p.data[0] : null,
+      y: p.type === 'point' ? p.data[1] : null,
+      label: p.type === 'point' ? p.data[2] : null,
+      x1: p.type === 'box' ? p.data[0] : null,
+      y1: p.type === 'box' ? p.data[1] : null,
+      x2: p.type === 'box' ? p.data[2] : null,
+      y2: p.type === 'box' ? p.data[3] : null,
+      data: p.data // Raw data [x,y,l] or [x1,y1,x2,y2]
+    }));
   }
   
   fitToScreen() {
@@ -241,13 +261,24 @@ export class CanvasViewer {
   }
   
   drawAnnotation(ann) {
-    const color = this.getColorForClass(ann.class_name);
+    const color = ann.color || this.getColorForClass(ann.class_name);
     
-    if (ann.polygon && ann.polygon.length > 2) {
+    // Handle SAM points/polygon
+    const points = ann.points || ann.polygon;
+    if (points && points.length > 2) {
       this.ctx.beginPath();
-      this.ctx.moveTo(ann.polygon[0][0], ann.polygon[0][1]);
-      for (let i = 1; i < ann.polygon.length; i++) {
-        this.ctx.lineTo(ann.polygon[i][0], ann.polygon[i][1]);
+      // points is flattened [x1,y1, x2,y2, ...]
+      if (typeof points[0] === 'number') {
+        this.ctx.moveTo(points[0], points[1]);
+        for (let i = 2; i < points.length; i += 2) {
+          this.ctx.lineTo(points[i], points[i+1]);
+        }
+      } else {
+        // points is [[x1,y1], [x2,y2], ...]
+        this.ctx.moveTo(points[0][0], points[0][1]);
+        for (let i = 1; i < points.length; i++) {
+          this.ctx.lineTo(points[i][0], points[i][1]);
+        }
       }
       this.ctx.closePath();
       
@@ -256,25 +287,25 @@ export class CanvasViewer {
       this.ctx.strokeStyle = color;
       this.ctx.lineWidth = 2 / this.transform.scale;
       this.ctx.stroke();
-    } else if (ann.bbox && ann.bbox.length === 4) {
-      const [x1, y1, x2, y2] = ann.bbox;
+    } 
+    
+    // Bounding Box
+    const bbox = ann.bbox || (ann.box); 
+    if (bbox && bbox.length === 4) {
+      const [x1, y1, x2, y2] = bbox;
       this.ctx.strokeStyle = color;
       this.ctx.lineWidth = 2 / this.transform.scale;
       this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     }
     
     // Text label
-    if (ann.bbox) {
-       const [x1, y1] = ann.bbox;
+    const labelPos = bbox ? [bbox[0], bbox[1]] : (points ? [points[0], points[1]] : null);
+    if (labelPos) {
        this.ctx.fillStyle = color;
        const fontSize = 14 / this.transform.scale;
        this.ctx.font = `${fontSize}px Arial`;
-       this.ctx.fillText(`${ann.class_name} ${ann.score ? (ann.score).toFixed(2) : ''}`, x1, y1 - 4/this.transform.scale);
-    } else if (ann.polygon && ann.polygon.length > 0) {
-       this.ctx.fillStyle = color;
-       const fontSize = 14 / this.transform.scale;
-       this.ctx.font = `${fontSize}px Arial`;
-       this.ctx.fillText(`${ann.class_name}`, ann.polygon[0][0], ann.polygon[0][1] - 4/this.transform.scale);
+       const text = ann.class_name || ann.label || 'Object';
+       this.ctx.fillText(`${text} ${ann.score ? (ann.score).toFixed(2) : ''}`, labelPos[0], labelPos[1] - 4 / this.transform.scale);
     }
   }
   

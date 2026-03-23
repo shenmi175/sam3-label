@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.exports import export_coco, export_video_json, export_yolo
@@ -4624,3 +4625,9 @@ def resume_video_job(payload: VideoJobResumeIn) -> dict[str, Any]:
 
 def create_app() -> FastAPI:
     return app
+
+frontend_dir = BASE_DIR / 'frontend'
+if frontend_dir.exists():
+    app.mount('/', StaticFiles(directory=str(frontend_dir), html=True), name='frontend')
+else:
+    logger.warning(f'Frontend directory not found at {frontend_dir}')

@@ -77,6 +77,28 @@ export const ImageWorkspace = {
                   </div>
                 </div>
 
+                <!-- Classes Section -->
+                <div style="padding: 16px; border-bottom: 2px solid var(--neu-bg);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <h3 style="margin:0; font-size: 16px;">Classes</h3>
+                    <button class="neu-button" id="btn-add-class-img" style="padding: 4px 8px; font-size: 12px;">+ Add</button>
+                  </div>
+                  <div id="classes-list" style="display:flex; flex-direction:column; gap:6px;">
+                     <!-- Classes will be rendered here -->
+                  </div>
+                </div>
+
+                <!-- Classes Section -->
+                <div style="padding: 16px; border-bottom: 2px solid var(--neu-bg);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <h3 style="margin:0; font-size: 16px;">Classes</h3>
+                    <button class="neu-button" id="btn-add-class-img" style="padding: 4px 8px; font-size: 12px;">+ Add</button>
+                  </div>
+                  <div id="classes-list" style="display:flex; flex-direction:column; gap:6px;">
+                     <!-- Classes will be rendered here -->
+                  </div>
+                </div>
+
                 <!-- Tools Section -->
                 <div style="padding: 16px;">
                   <h3 style="margin-top:0; font-size: 16px;">Prompting Tools</h3>
@@ -130,6 +152,7 @@ export const ImageWorkspace = {
     window.currentWorkspace = this;
     
     await this.loadProjectInfo();
+    this.renderClasses();
     await this.loadImages();
   },
 
@@ -200,6 +223,7 @@ export const ImageWorkspace = {
         const payload = {
            project_id: this.projectId,
            image_id: this.selectedImageId,
+           class_name: this.selectedClass,
            prompts: prompts.map(p => ({
               type: p.type,
               data: p.data
@@ -257,6 +281,49 @@ export const ImageWorkspace = {
         btn.disabled = false;
       }
     };
+
+    document.getElementById('btn-add-class-img').onclick = async () => {
+      const name = prompt("New class name:");
+      if (name) {
+        try {
+          await api.addClass(this.projectId, name);
+          await this.loadProjectInfo();
+          this.renderClasses();
+        } catch(e) { alert(e.message); }
+      }
+    };
+  },
+
+  renderClasses() {
+    const list = document.getElementById('classes-list');
+    const classes = this.projectMeta?.classes || [];
+    if (classes.length === 0) {
+      list.innerHTML = '<div style="color:var(--neu-text-light); font-size:12px; text-align:center;">No classes defined</div>';
+      return;
+    }
+    
+    if (!this.selectedClass && classes.length > 0) {
+      this.selectedClass = classes[0];
+    }
+
+    list.innerHTML = classes.map(cls => `
+      <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
+           style="justify-content:flex-start; padding: 8px 12px; font-size: 13px;"
+           onclick="window.currentWorkspace.selectClass('${cls}')">
+        <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${this.getClassColor(cls)}; margin-right:8px;"></span>
+        ${cls}
+      </div>
+    `).join('');
+  },
+
+  selectClass(cls) {
+    this.selectedClass = cls;
+    this.renderClasses();
+  },
+
+  getClassColor(className) {
+    const idx = (this.projectMeta?.classes || []).indexOf(className);
+    return `hsl(${ (idx * 137.5) % 360 }, 70%, 50%)`;
   },
 
   setPromptMode(mode) {
