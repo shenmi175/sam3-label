@@ -35,6 +35,7 @@ export const ImageWorkspace = {
             <span style="font-size: 20px;">🖼️</span>
             <div style="display: flex; flex-direction: column;">
               <span id="ws-pj-name" style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${i18n.t('backend_checking')}</span>
+              <span id="ws-pj-id" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">--</span>
               <span id="health-status-header-ws" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">${i18n.t('backend_checking')}</span>
             </div>
           </div>
@@ -225,9 +226,13 @@ export const ImageWorkspace = {
       }
     };
     
-    document.getElementById('btn-tool-point').onclick = () => this.setPromptMode('point');
-    document.getElementById('btn-tool-box').onclick = () => this.setPromptMode('box');
-    document.getElementById('btn-tool-clear').onclick = () => {
+    const btnPointPrimary = document.getElementById('btn-tool-point');
+    const btnBoxPrimary = document.getElementById('btn-tool-box');
+    const btnClearPrimary = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
+
+    if (btnPointPrimary) btnPointPrimary.onclick = () => this.setPromptMode('point');
+    if (btnBoxPrimary) btnBoxPrimary.onclick = () => this.setPromptMode('box');
+    if (btnClearPrimary) btnClearPrimary.onclick = () => {
       this.currentPrompts = [];
       this.previews = [];
       this.viewer.setPrompts([]);
@@ -255,31 +260,39 @@ export const ImageWorkspace = {
         btn.textContent = i18n.t('inferring');
         btn.disabled = true;
         
+        const points = [];
+        const boxes = [];
+        (this.currentPrompts || []).forEach((p) => {
+          if (!p || typeof p !== 'object') return;
+          if (p.type === 'point' && Array.isArray(p.data) && p.data.length >= 3) {
+            points.push(p.data);
+          } else if (p.type === 'box' && Array.isArray(p.data) && p.data.length >= 4) {
+            boxes.push(p.data);
+          }
+        });
+
         const payload = {
-           project_id: this.projectId,
-           image_id: this.selectedImageId,
-           class_name: this.selectedClass || (this.projectMeta.classes?.[0] || 'Object'),
-           prompts: this.currentPrompts.map(p => ({
-              type: p.type,
-              data: p.data
-           }))
+          project_id: this.projectId,
+          image_id: this.selectedImageId,
+          mode: boxes.length > 0 ? 'boxes' : 'points',
+          active_class: this.selectedClass || (this.projectMeta.classes?.[0] || 'Object'),
+          points,
+          boxes,
+          threshold: 0.5,
+          api_base_url: store.state.config.sam3ApiUrl
         };
         
-        const res = await api.infer(payload);
-        if (res.job_id) {
-           alert("Batch job started: " + res.job_id);
-        } else if (res.annotations) {
-           // Pure Vision: Add to previews
-           this.previews = res.annotations.map(a => ({
-             ...a,
-             id: 'preview_' + Math.random().toString(36).substr(2, 9),
-             timestamp: new Date().getTime()
-           }));
-           this.viewer.setPreviews(this.previews);
-           this.renderPreviews();
-           this.updateActionBar();
-           showToast(`Found ${this.previews.length} possible matching results`);
-        }
+        const res = await api.inferPreview(payload);
+        const detections = Array.isArray(res?.detections) ? res.detections : [];
+        this.previews = detections.map(a => ({
+          ...a,
+          id: 'preview_' + Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().getTime()
+        }));
+        this.viewer.setPreviews(this.previews);
+        this.renderPreviews();
+        this.updateActionBar();
+        if (window.showToast) window.showToast(`Found ${this.previews.length} possible matching results`);
       } catch(err) {
         alert("Inference failed: " + err.message);
       } finally {
@@ -514,8 +527,10 @@ export const ImageWorkspace = {
       this.projectMeta = res.project;
       if (this.isUnmounted) return;
       
-      document.getElementById('ws-pj-name').innerText = this.projectMeta.name;
-      document.getElementById('ws-pj-id').innerText = this.projectId;
+      const projectNameEl = document.getElementById('ws-pj-name');
+      const projectIdEl = document.getElementById('ws-pj-id');
+      if (projectNameEl) projectNameEl.innerText = this.projectMeta.name || this.projectId;
+      if (projectIdEl) projectIdEl.innerText = this.projectId;
       
       const total = this.projectMeta.num_images || 0;
       const labeled = this.projectMeta.labeled_images || 0;

@@ -51,6 +51,7 @@ export const api = {
   inferSingle(data) { return this.request('POST', '/infer', data); },
   inferPreview(data) { return this.request('POST', '/infer/preview', data); },
   inferExamplePreview(data) { return this.request('POST', '/infer/example_preview', data); },
+  infer(data) { return this.inferPreview(data); },
   
   startBatchInfer(data) { return this.request('POST', '/infer/jobs/start_batch', data); },
   startBatchExample(data) { return this.request('POST', '/infer/jobs/start_batch_example', data); },
@@ -70,6 +71,14 @@ export const api = {
   getVideoJob(projectId) { return this.request('GET', `/video/jobs/${projectId}`); },
   stopVideoJob(projectId) { return this.request('POST', '/video/jobs/stop', {project_id: projectId}); },
   resumeVideoJob(data) { return this.request('POST', '/video/jobs/resume', data); },
+  getVideoAnnotations(projectId) { return this.request('GET', `/projects/${projectId}/video/annotations`); },
+  saveVideoAnnotations(projectId, frames, replaceAll = true) {
+    return this.request('POST', `/projects/${projectId}/video/annotations/save`, {
+      project_id: projectId,
+      frames,
+      replace_all: replaceAll
+    });
+  },
 
   // Configuration
   getCacheDir() { return this.request('GET', '/config/cache_dir'); },
