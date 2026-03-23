@@ -3558,7 +3558,7 @@ def on_startup() -> None:
     return None
 
 
-@app.get('/')
+@app.get('/api/info')
 def root_info() -> dict[str, Any]:
     return {
         'service': 'web-auto-api',
