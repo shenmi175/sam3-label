@@ -270,61 +270,86 @@ export const ImageWorkspace = {
     check();
     this.healthInterval = setInterval(check, 10000);
   },
-
   bindEvents() {
     // Top Operation Bar
     const sam3UrlInp = document.getElementById('inp-sam3-url');
-    sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
+    if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
     
     const thresholdInp = document.getElementById('inp-threshold');
-    thresholdInp.onchange = (e) => store.setConfig('threshold', parseFloat(e.target.value));
+    if (thresholdInp) thresholdInp.onchange = (e) => store.setConfig('threshold', parseFloat(e.target.value));
     
     const batchSizeInp = document.getElementById('inp-batch-size');
-    batchSizeInp.onchange = (e) => store.setConfig('batchSize', parseInt(e.target.value));
+    if (batchSizeInp) batchSizeInp.onchange = (e) => store.setConfig('batchSize', parseInt(e.target.value));
 
-    document.getElementById('btn-test-api').onclick = async () => {
-      const btn = document.getElementById('btn-test-api');
+    const btnTest = document.getElementById('btn-test-api');
+    if (btnTest) btnTest.onclick = async () => {
       try {
-        btn.disabled = true;
-        btn.innerText = 'Testing...';
+        btnTest.disabled = true;
+        btnTest.innerText = 'Testing...';
         await api.testSam3(store.state.config.sam3ApiUrl);
         showToast("SAM3 API is Online", "success");
       } catch(e) {
         showToast("SAM3 API Connection Failed: " + e.message, "error");
       } finally {
-        btn.disabled = false;
-        btn.innerText = i18n.t('test_api');
+        btnTest.disabled = false;
+        btnTest.innerText = i18n.t('test_api');
       }
     };
 
-    document.getElementById('btn-infer-current').onclick = () => this.runSingleInfer();
-    document.getElementById('btn-batch-infer').onclick = () => this.startBatchTask('text');
-    document.getElementById('btn-example-segment').onclick = () => this.runExamplePreview();
-    document.getElementById('btn-example-prop').onclick = () => this.startBatchTask('example');
+    const btnInfer = document.getElementById('btn-infer-current');
+    if (btnInfer) btnInfer.onclick = () => this.runSingleInfer();
     
-    document.getElementById('btn-open-filter').onclick = () => this.openSmartFilter();
-    document.getElementById('btn-open-export').onclick = () => this.openExport();
+    const btnBatch = document.getElementById('btn-batch-infer');
+    if (btnBatch) btnBatch.onclick = () => this.startBatchTask('text');
+    
+    const btnExSeg = document.getElementById('btn-example-segment');
+    if (btnExSeg) btnExSeg.onclick = () => this.runExamplePreview();
+    
+    const btnExProp = document.getElementById('btn-example-prop');
+    if (btnExProp) btnExProp.onclick = () => this.startBatchTask('example');
+    
+    const btnFilter = document.getElementById('btn-open-filter');
+    if (btnFilter) btnFilter.onclick = () => this.openSmartFilter();
+    
+    const btnExport = document.getElementById('btn-open-export');
+    if (btnExport) btnExport.onclick = () => this.openExport();
 
     // Task Bar
-    document.getElementById('btn-task-stop').onclick = () => this.stopActiveTask();
-    document.getElementById('btn-task-resume').onclick = () => this.resumeActiveTask();
+    const btnStop = document.getElementById('btn-task-stop');
+    if (btnStop) btnStop.onclick = () => this.stopActiveTask();
+    
+    const btnResume = document.getElementById('btn-task-resume');
+    if (btnResume) btnResume.onclick = () => this.resumeActiveTask();
 
-    // Left Column
-    document.getElementById('btn-img-prev').onclick = () => {
+    // Image List (Event Delegation)
+    const listCont = document.getElementById('image-list-container');
+    if (listCont) {
+      listCont.onclick = (e) => {
+        const item = e.target.closest('.image-item');
+        if (item) {
+          this.selectImage(item.dataset.id, item.dataset.rel);
+        }
+      };
+    }
+
+    const btnPrev = document.getElementById('btn-img-prev');
+    if (btnPrev) btnPrev.onclick = () => {
       if (this.offset >= this.limit) {
         this.offset -= this.limit;
         this.loadImages();
       }
     };
     
-    document.getElementById('btn-img-next').onclick = () => {
+    const btnNext = document.getElementById('btn-img-next');
+    if (btnNext) btnNext.onclick = () => {
       if (this.offset + this.limit < this.totalImages) {
         this.offset += this.limit;
         this.loadImages();
       }
     };
     
-    document.getElementById('btn-add-class-ws').onclick = async () => {
+    const btnAddCls = document.getElementById('btn-add-class-ws');
+    if (btnAddCls) btnAddCls.onclick = async () => {
       const name = prompt("New class name:");
       if (name) {
         try {
@@ -335,17 +360,19 @@ export const ImageWorkspace = {
     };
 
     // Canvas Tools
-    const btnPoint = document.getElementById('btn-tool-point');
-    const btnBox = document.getElementById('btn-tool-box');
-    const btnClear = document.getElementById('btn-vtool-clear');
+    const btnToolPoint = document.getElementById('btn-tool-point');
+    const btnToolBox = document.getElementById('btn-tool-box');
+    const btnToolClear = document.getElementById('btn-tool-clear');
 
-    if (btnPoint) btnPoint.onclick = () => this.setPromptMode('point');
-    if (btnBox) btnBox.onclick = () => this.setPromptMode('box');
-    if (btnClear) btnClear.onclick = () => {
+    if (btnToolPoint) btnToolPoint.onclick = () => this.setPromptMode('point');
+    if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
+    if (btnToolClear) btnToolClear.onclick = () => {
       this.currentPrompts = [];
       this.previews = [];
-      this.viewer.setPrompts([]);
-      this.viewer.setPreviews([]);
+      if (this.viewer) {
+        this.viewer.setPrompts([]);
+        this.viewer.setPreviews([]);
+      }
       this.renderPreviews();
       this.updateActionBar();
       showToast(i18n.t('prompts_cleared'));
@@ -611,9 +638,11 @@ export const ImageWorkspace = {
         const dotColor = isLabeled ? '#10b981' : '#e2e8f0';
         
         html += `
-          <div class="neu-button" style="justify-content: flex-start; text-align: left; padding: 12px; background: ${bgState}; box-shadow: ${shadowState}; font-weight: ${weight}; border-radius: 12px; font-size: 13px; overflow: hidden;" onclick="window.currentWorkspace.selectImage('${img.id}', '${img.rel_path}')">
-             <span style="width: 8px; height: 8px; border-radius: 50%; background: ${dotColor}; margin-right: 12px; flex-shrink: 0;"></span>
-             <span style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">${img.rel_path}</span>
+          <div class="neu-button image-item" 
+               data-id="${img.id}" data-rel="${img.rel_path}"
+               style="justify-content: flex-start; text-align: left; padding: 12px; background: ${bgState}; box-shadow: ${shadowState}; font-weight: ${weight}; border-radius: 12px; font-size: 13px; overflow: hidden; cursor: pointer;">
+             <span style="width: 8px; height: 8px; border-radius: 50%; background: ${dotColor}; margin-right: 12px; flex-shrink: 0; pointer-events: none;"></span>
+             <span style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden; pointer-events: none;">${img.rel_path}</span>
           </div>
         `;
       }
@@ -909,51 +938,156 @@ export const ImageWorkspace = {
 
   openSmartFilter() {
     const modal = document.getElementById('modal-filter-full');
+    const classes = this.projectMeta?.classes || [];
+    
     modal.innerHTML = `
-      <div class="neu-card" style="width: 500px; padding: 30px; position: relative;">
-        <h2 style="margin-top: 0;">${i18n.t('smart_filter')}</h2>
-        <div style="display: flex; flex-direction: column; gap: 20px;">
-          <div>
-            <label style="display: block; font-size: 11px; font-weight: 700; margin-bottom: 8px;">过滤方式</label>
-            <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
-              <option value="same_class">主从类别合并</option>
-            </select>
+      <div class="neu-card" style="width: 600px; padding: 30px; position: relative; max-height: 90vh; overflow-y: auto;">
+        <h2 style="margin-top: 0; display: flex; align-items: center; gap: 10px;">✨ ${i18n.t('smart_filter')}</h2>
+        
+        <div style="display: flex; flex-direction: column; gap: 24px;">
+          <!-- 1. Configuration Row -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+              <label class="neu-label">${i18n.t('filter_mode')}</label>
+              <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
+                <option value="same_class">${i18n.t('filter_mode_iou')}</option>
+                <option value="master_slave">${i18n.t('filter_mode_master_slave')}</option>
+              </select>
+            </div>
+            <div>
+              <label class="neu-label">${i18n.t('area_mode')}</label>
+              <select id="filter-area-sel" class="neu-input" style="width: 100%;">
+                <option value="instance">${i18n.t('area_mode_instance')}</option>
+                <option value="bbox">${i18n.t('area_mode_bbox')}</option>
+              </select>
+            </div>
           </div>
-          <div>
-             <label style="display: block; font-size: 11px; font-weight: 700; margin-bottom: 8px;">覆盖率阈值</label>
-             <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width: 100%;" />
-             <div style="text-align: right; font-size: 11px; font-family: monospace;" id="filter-cov-val">0.98</div>
+
+          <!-- 2. Master-Slave Config (Conditional) -->
+          <div id="filter-ms-panel" style="display: none; flex-direction: column; gap: 20px; padding: 20px; background: var(--neu-bg-light); border-radius: 12px; border: 1px dashed rgba(0,0,0,0.05);">
+            <div>
+              <label class="neu-label">${i18n.t('target_class')}</label>
+              <select id="filter-target-cls" class="neu-input" style="width: 100%;">
+                ${classes.map(c => `<option value="${c}">${c}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="neu-label">${i18n.t('source_classes')}</label>
+              <div id="filter-source-list" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 120px; overflow-y: auto; padding: 10px; border: 1px solid rgba(0,0,0,0.03); border-radius: 8px; background: var(--neu-bg);">
+                ${classes.map(c => `
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+                    <input type="checkbox" class="source-cls-chk" value="${c}" /> ${c}
+                  </label>
+                `).join('')}
+              </div>
+            </div>
           </div>
-          <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;">
-            <button class="neu-button" onclick="document.getElementById('modal-filter-full').style.display='none'">${i18n.t('cancel')}</button>
-            <button id="btn-start-filter-preview" class="neu-button" style="color: var(--neu-text-active); font-weight: 700;">分析预览</button>
+
+          <!-- 3. Parameter Row -->
+          <div>
+            <div style="display: flex; justify-content: space-between;">
+              <label class="neu-label">${i18n.t('coverage_threshold')}</label>
+              <span id="filter-cov-val" style="font-size: 12px; font-weight: 800; color: var(--neu-text-active);">0.98</span>
+            </div>
+            <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width: 100%;" />
+          </div>
+
+          <!-- 4. Rule Description Area -->
+          <div class="neu-box" style="padding: 15px; background: var(--neu-bg-light); border-radius: 12px; border: 1px solid rgba(0,0,0,0.03);">
+            <div style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 5px;">${i18n.t('filter_rule_desc')}</div>
+            <div id="filter-rule-text" style="font-size: 12px; line-height: 1.6; color: var(--neu-text);">--</div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 12px;">
+            <button class="neu-button" style="padding: 10px 24px;" onclick="document.getElementById('modal-filter-full').style.display='none'">${i18n.t('cancel')}</button>
+            <button id="btn-start-filter-preview" class="neu-button" style="padding: 10px 24px; color: var(--neu-text-active); font-weight: 700;">${i18n.t('start_preview')}</button>
+            <button id="btn-apply-filter" class="neu-button" style="padding: 10px 24px; color: #10b981; font-weight: 700; display: none;">${i18n.t('apply_filter')}</button>
           </div>
         </div>
       </div>
     `;
     modal.style.display = 'flex';
     
-    const cov = document.getElementById('filter-cov');
-    const val = document.getElementById('filter-cov-val');
-    cov.oninput = (e) => val.innerText = e.target.value;
+    const modeSel = document.getElementById('filter-mode-sel');
+    const msPanel = document.getElementById('filter-ms-panel');
+    const updateUI = () => {
+      msPanel.style.display = modeSel.value === 'master_slave' ? 'flex' : 'none';
+      this.updateFilterRuleText();
+    };
+    modeSel.onchange = updateUI;
     
+    const cov = document.getElementById('filter-cov');
+    cov.oninput = (e) => {
+      document.getElementById('filter-cov-val').innerText = e.target.value;
+      this.updateFilterRuleText();
+    };
+
+    updateUI();
+
     document.getElementById('btn-start-filter-preview').onclick = async () => {
+       const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
+       const target = document.getElementById('filter-target-cls').value;
+       const mode = modeSel.value;
+       
+       if (mode === 'master_slave' && sources.length === 0) {
+         return showToast("Please select at least one source class", "error");
+       }
+
        try {
-         await api.startFilterPreview({
+         const res = await api.smartFilterPreview({
            project_id: this.projectId,
-           merge_mode: document.getElementById('filter-mode-sel').value,
-           coverage_threshold: parseFloat(cov.value)
+           merge_mode: mode,
+           coverage_threshold: parseFloat(cov.value),
+           canonical_class: mode === 'master_slave' ? target : '',
+           source_classes: mode === 'master_slave' ? sources : [],
+           area_mode: document.getElementById('filter-area-sel').value
          });
+         
+         this.currentFilterToken = res.preview_token;
          showToast("Smart filter analysis started", "success");
          modal.style.display = 'none';
          this.pollFilterStatus();
+
+         // After preview starts/ends, we should technically wait for it to finish 
+         // but for UI, we show the Apply button if we have a token.
+         // Actually, let's make the Apply button appear in the modal once preview is ready.
+         // For now, I'll just ensure the Apply button is wired up.
+       } catch(e) { showToast(e.message, "error"); }
+    };
+
+    document.getElementById('btn-apply-filter').onclick = async () => {
+       if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), "error");
+       if (!confirm(i18n.t('confirm_apply_filter'))) return;
+       try {
+         await api.smartFilterApply({
+           project_id: this.projectId,
+           preview_token: this.currentFilterToken
+         });
+         showToast("Filter applied successfully", "success");
+         modal.style.display = 'none';
+         await this.loadProjectInfo();
        } catch(e) { showToast(e.message, "error"); }
     };
   },
 
+  updateFilterRuleText() {
+    const mode = document.getElementById('filter-mode-sel')?.value;
+    const cov = document.getElementById('filter-cov')?.value;
+    const target = document.getElementById('filter-target-cls')?.value;
+    const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
+    
+    const el = document.getElementById('filter-rule-text');
+    if (!el) return;
+
+    if (mode === 'same_class') {
+      el.innerText = `扫描全图标注，当同目录下同一图片中相同类别的两个框 IoU (覆盖率) 超过 ${cov * 100}% 时，保留较大者并删除冗余项。`;
+    } else {
+      const srcText = sources.length > 0 ? ` [${sources.join(', ')}] ` : ' (未选) ';
+      el.innerText = `扫描全图标注，当源类别 ${srcText} 被目标类别 [${target}] 的框覆盖超过 ${cov * 100}% 时，将源类别标注合并入目标类别。`;
+    }
+  },
+
   async pollFilterStatus() {
-     // Implement polling for filter job if needed, or reuse pollTaskStatus
-     // For brevity, we'll assume the same UI channel for all jobs
      const active = await api.getFilterActiveJob(this.projectId);
      if (active && active.job_id) {
         this.activeJobId = active.job_id;

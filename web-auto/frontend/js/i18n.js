@@ -61,6 +61,22 @@ export const i18n = {
     smart_filter: '智能过滤',
     export: '导出',
     
+    // Smart Filter Modal
+    filter_mode: '过滤方式',
+    filter_mode_iou: '高 IoU 过滤 (同类去重)',
+    filter_mode_master_slave: '主从类别合并',
+    coverage_threshold: '覆盖率阈值',
+    area_mode: '面积计算方式',
+    area_mode_instance: '实例面积 (Instance)',
+    area_mode_bbox: '外接矩形 (BBox)',
+    target_class: '目标类别 (Master)',
+    source_classes: '来源类别 (Slaves)',
+    start_preview: '开始分析预览',
+    apply_filter: '执行合并/过滤',
+    confirm_apply_filter: '预览结果已就绪，是否确认执行合并/删除操作？',
+    filter_preview_expired: '预览已过期或参数已更改，请重新点击预览。',
+    filter_rule_desc: '根据当前配置实时生成的规则说明：',
+    
     // Image Workspace - Task Progress
     task_header: '当前任务',
     task_status: '状态',
@@ -180,6 +196,22 @@ export const i18n = {
     example_propagate: 'Example Propagate',
     smart_filter: 'Smart Filter',
     export: 'Export',
+    
+    // Smart Filter Modal
+    filter_mode: 'Filter Mode',
+    filter_mode_iou: 'High IoU Dedup (Same Class)',
+    filter_mode_master_slave: 'Master-Slave Merge',
+    coverage_threshold: 'Coverage Threshold',
+    area_mode: 'Area Mode',
+    area_mode_instance: 'Instance Area',
+    area_mode_bbox: 'BBox Area',
+    target_class: 'Target Class (Master)',
+    source_classes: 'Source Classes (Slaves)',
+    start_preview: 'Start Preview',
+    apply_filter: 'Apply Filter',
+    confirm_apply_filter: 'Preview results ready. Confirm apply filter/merge?',
+    filter_preview_expired: 'Preview expired or params changed. Please re-preview.',
+    filter_rule_desc: 'Rule Description:',
     
     // Image Workspace - Task Progress
     task_header: 'Current Task',
