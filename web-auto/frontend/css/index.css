@@ -96,6 +96,23 @@ body {
   padding: 24px;
 }
 
+/* Modals */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  background: rgba(224, 229, 236, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.modal-content {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
 /* Scrollbar styling for Neumorphism */
 ::-webkit-scrollbar {
   width: 12px;

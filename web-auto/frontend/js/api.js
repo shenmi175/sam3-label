@@ -63,5 +63,9 @@ export const api = {
   startVideoJob(data) { return this.request('POST', '/video/jobs/start', data); },
   getVideoJob(projectId) { return this.request('GET', `/video/jobs/${projectId}`); },
   stopVideoJob(projectId) { return this.request('POST', '/video/jobs/stop', {project_id: projectId}); },
-  resumeVideoJob(data) { return this.request('POST', '/video/jobs/resume', data); }
+  resumeVideoJob(data) { return this.request('POST', '/video/jobs/resume', data); },
+
+  // Configuration
+  getCacheDir() { return this.request('GET', '/config/cache_dir'); },
+  setCacheDir(path) { return this.request('POST', '/config/cache_dir', {cache_dir: path}); }
 };

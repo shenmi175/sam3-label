@@ -51,8 +51,8 @@ export const TaskManager = {
       
       const newActive = new Map();
       [inferRes, filterRes, videoRes].forEach(res => {
-         if (res.status === 'fulfilled' && res.value && res.value.status && res.value.status !== 'finished' && res.value.status !== 'failed') {
-            newActive.set(res.value.job_id || 'video', res.value);
+         if (res.status === 'fulfilled' && res.value && res.value.job && res.value.job.status && res.value.job.status !== 'finished' && res.value.job.status !== 'failed') {
+            newActive.set(res.value.job.job_id || 'video', res.value.job);
          }
       });
       

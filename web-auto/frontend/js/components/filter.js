@@ -117,30 +117,33 @@ export const FilterUI = {
     
     this.pollLocalPreview = async (payload) => {
        status.innerText = 'Waiting for preview calculation...';
-       let interval = setInterval(async () => {
+       let interval;
+       const poll = async () => {
          try {
-           const job = await api.getFilterActiveJob(this.projectId);
-           if (!job) {
-             // Maybe it finished and cleared, actually we should get job by ID if we had it.
-             // We'll trust task manager context for now.
+           const res = await api.getFilterJob(this.jobId);
+           const data = res.job; // 'data' now refers to the job object
+           if (data.status === 'finished') {
              clearInterval(interval);
-           } else {
-             if (job.status === 'finished') {
-                clearInterval(interval);
-                currentPreviewToken = job.result && job.result.preview_token;
-                if (currentPreviewToken) {
-                  status.innerText = `Preview ready! Token: ${currentPreviewToken.substring(0,6)}...`;
-                  btnApp.style.display = 'block';
-                } else {
-                  status.innerText = 'No preview token in result.';
-                }
-             } else if (job.status === 'failed') {
-                clearInterval(interval);
-                status.innerText = 'Preview failed: ' + job.error;
+             currentPreviewToken = data.result && data.result.preview_token;
+             if (currentPreviewToken) {
+               status.innerText = `Preview ready! Token: ${currentPreviewToken.substring(0,6)}...`;
+               btnApp.style.display = 'block';
+             } else {
+               status.innerText = 'No preview token in result.';
              }
+           } else if (data.status === 'failed') {
+             clearInterval(interval);
+             document.getElementById('flt-status').innerHTML = `<span style="color: #e53e3e;">Failed: ${data.message || data.error}</span>`;
+           } else {
+             document.getElementById('flt-status').innerText = `Running... ${data.progress_pct || 0}%`;
            }
-         } catch(e) {}
-       }, 2000);
+         } catch(e) {
+           // Handle error during polling, e.g., job not found or network issue
+           clearInterval(interval);
+           document.getElementById('flt-status').innerText = 'Polling error: ' + e.message;
+         }
+       };
+       interval = setInterval(poll, 2000);
     }
   }
 };

@@ -66,11 +66,17 @@ export const ProjectsPage = {
       <div id="modal-settings" class="modal-overlay" style="display: none;">
         <div class="neu-card modal-content" style="width: 400px;">
           <h2 style="margin-top:0;">Global Settings</h2>
-          <div style="margin-bottom: 24px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 500;">sam3-api URL</label>
+          <div style="margin-bottom: 16px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 500;">sam3-api URL (Local)</label>
             <input type="text" id="inp-set-samurl" class="neu-input" />
           </div>
+          <div style="margin-bottom: 24px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 500;">Global Cache Directory (Server)</label>
+            <input type="text" id="inp-set-cachedir" class="neu-input" placeholder="/absolute/path/to/data" />
+            <div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">Default is 'web-auto/data' in the project root.</div>
+          </div>
           <div style="display: flex; justify-content: flex-end; gap: 12px;">
+            <button id="btn-save-settings" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">Save</button>
             <button id="btn-close-settings" class="neu-button">Close</button>
           </div>
         </div>
@@ -143,15 +149,42 @@ export const ProjectsPage = {
     const btnCloseSet = document.getElementById('btn-close-settings');
     const inpSamUrl = document.getElementById('inp-set-samurl');
 
-    btnSet.onclick = () => {
+    btnSet.onclick = async () => {
       inpSamUrl.value = store.state.config.sam3ApiUrl;
       modalSet.style.display = 'flex';
+      
+      // Attempt to load current cache dir from server
+      try {
+        const res = await api.getCacheDir();
+        if (res && res.cache_dir) {
+          document.getElementById('inp-set-cachedir').value = res.cache_dir;
+        }
+      } catch(e) {
+        console.warn("Backend cache_dir API not implemented yet.");
+      }
     };
-    btnCloseSet.onclick = () => {
+    
+    document.getElementById('btn-save-settings').onclick = async () => {
+      const newUrl = inpSamUrl.value;
+      const newCacheDir = document.getElementById('inp-set-cachedir').value;
+      
+      store.setConfig('sam3ApiUrl', newUrl);
+      
+      if (newCacheDir) {
+        try {
+          await api.setCacheDir(newCacheDir);
+          alert("Settings saved successfully!");
+        } catch(e) {
+          alert("Backend error (Save Cache Dir): " + e.message + "\n\n(This API might not be implemented by your backend yet.)");
+        }
+      } else {
+        alert("Settings saved locally.");
+      }
       modalSet.style.display = 'none';
     };
-    inpSamUrl.onchange = (e) => {
-      store.setConfig('sam3ApiUrl', e.target.value);
+
+    btnCloseSet.onclick = () => {
+      modalSet.style.display = 'none';
     };
   },
 
@@ -160,7 +193,7 @@ export const ProjectsPage = {
     const listCont = document.getElementById('projects-list-container');
     try {
       const data = await api.getProjects();
-      const projects = data.items || [];
+      const projects = data.projects || [];
       if (projects.length === 0) {
         listCont.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--neu-text-light);">No projects found. Create one to start.</div>';
         return;

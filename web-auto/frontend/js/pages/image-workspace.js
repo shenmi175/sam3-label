@@ -274,8 +274,9 @@ export const ImageWorkspace = {
       await this.viewer.loadImage(imgUrl);
       
       // Load Annotations
-      const anns = await api.getAnnotations(this.projectId, id);
-      this.viewer.setAnnotations(anns || []);
+      const annsRes = await api.getAnnotations(this.projectId, id);
+      const anns = annsRes.annotations || [];
+      this.viewer.setAnnotations(anns);
       
       // Render Annotations sidebar
       if (!anns || anns.length === 0) {
