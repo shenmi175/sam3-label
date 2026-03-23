@@ -3,7 +3,9 @@ export const store = {
     config: {
       sam3ApiUrl: localStorage.getItem('sam3ApiUrl') || 'http://127.0.0.1:8001',
       theme: localStorage.getItem('theme') || 'light',
-      language: localStorage.getItem('language') || 'zh'
+      language: localStorage.getItem('language') || 'zh',
+      threshold: parseFloat(localStorage.getItem('threshold')) || 0.5,
+      batchSize: parseInt(localStorage.getItem('batchSize')) || 10
     }
   },
   listeners: [],
@@ -24,6 +26,10 @@ export const store = {
       this.applyTheme(value);
     } else if (key === 'language') {
       localStorage.setItem('language', value);
+    } else if (key === 'threshold') {
+      localStorage.setItem('threshold', value);
+    } else if (key === 'batchSize') {
+      localStorage.setItem('batchSize', value);
     }
     this.notify();
   },

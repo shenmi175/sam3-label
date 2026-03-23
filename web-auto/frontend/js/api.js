@@ -48,11 +48,14 @@ export const api = {
   addClass(projectId, classes_text) { return this.request('POST', `/projects/${projectId}/classes/add`, {classes_text}); },
   deleteClass(projectId, class_name) { return this.request('DELETE', `/projects/${projectId}/classes/${encodeURIComponent(class_name)}`); },
   
-  inferSingle(data) { return this.request('POST', '/infer', data); },
-  inferPreview(data) { return this.request('POST', '/infer/preview', data); },
-  inferExamplePreview(data) { return this.request('POST', '/infer/example_preview', data); },
-  infer(data) { return this.inferPreview(data); },
+  // Samplers & Inference
+  testSam3(apiUrl) { return this.request('POST', '/sam3/health', { api_base_url: apiUrl }); },
   
+  infer(data) { return this.request('POST', '/infer', data); },
+  inferPreview(data) { return this.request('POST', '/infer/preview', data); },
+  inferExample(data) { return this.request('POST', '/infer/example_preview', data); },
+  
+  // Batch Jobs
   startBatchInfer(data) { return this.request('POST', '/infer/jobs/start_batch', data); },
   startBatchExample(data) { return this.request('POST', '/infer/jobs/start_batch_example', data); },
   getInferActiveJob(projectId) { return this.request('GET', `/infer/jobs/active?project_id=${projectId}`); },

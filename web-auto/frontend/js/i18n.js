@@ -48,7 +48,28 @@ export const i18n = {
     cache_dir: '服务器缓存目录 (Server)',
     language: '语言 (Language)',
     
-    // Workspaces
+    // Image Workspace - Top Bar
+    web_auto_api: 'web-auto API 地址',
+    sam3_api: 'sam3-api 地址',
+    test_api: '测试 API',
+    threshold: '阈值',
+    batch_size: '批大小',
+    infer_current: '当前图推理',
+    batch_infer: '全图文本批推',
+    example_segment: '当前图范例分割',
+    example_propagate: '范例传播',
+    smart_filter: '智能过滤',
+    export: '导出',
+    
+    // Image Workspace - Task Progress
+    task_header: '当前任务',
+    task_status: '状态',
+    task_progress: '进度',
+    task_params: '参数',
+    stop: '停止',
+    resume: '继续',
+    
+    // Image Workspace - Main
     annotations_summary: '标注统计',
     no_classes: '暂无类别',
     create_class: '+ 新建类别',
@@ -65,22 +86,30 @@ export const i18n = {
     submit_all: '全部提交',
     clear_prompts: '清除提示',
     filter_settings: '过滤设置',
-    smart_filter: '智能过滤',
     confidence_threshold: '置信度阈值',
     found_results: '找到 {count} 个可能的匹配结果',
     prompts_cleared: '提示已清除',
     preview_results_desc: '使用工具在图像上绘制提示点或框，结果将在此处显示为预览。',
+    locate: '定位',
+    delete_ann: '删除',
+    save_anns: '保存当前图标注',
+    clear_anns: '清空当前图标注',
     
     // Video Workspace
     propagation: '标注传播',
     keyframes: '关键帧列表',
     frame_range: '传播范围 (前/后/双向)',
-    imgsz: '工作比例 (Resize)',
+    imgsz: '工作比例 (imgsz)',
     segment_size: '缓存分段大小',
     propagate: '开始传播',
     propagate_desc: '已标注的帧(关键帧)将在此显示，点击"传播"填补空隙。',
     save_all: '保存全部',
     export_dataset: '导出数据集',
+    start_prop: '启动传播',
+    prompt_mode: '提示模式',
+    start_frame: '起始帧',
+    end_frame: '结束帧',
+    prompt_frame: '提示帧',
     
     // Toasts
     switch_lang: '已切换到中文',
@@ -139,7 +168,28 @@ export const i18n = {
     cache_dir: 'Server Cache Directory',
     language: 'Language',
     
-    // Workspaces
+    // Image Workspace - Top Bar
+    web_auto_api: 'web-auto API URL',
+    sam3_api: 'sam3-api URL',
+    test_api: 'Test API',
+    threshold: 'Threshold',
+    batch_size: 'Batch Size',
+    infer_current: 'Infer Current',
+    batch_infer: 'Full Text Batch Infer',
+    example_segment: 'Example Segment',
+    example_propagate: 'Example Propagate',
+    smart_filter: 'Smart Filter',
+    export: 'Export',
+    
+    // Image Workspace - Task Progress
+    task_header: 'Current Task',
+    task_status: 'Status',
+    task_progress: 'Progress',
+    task_params: 'Parameters',
+    stop: 'Stop',
+    resume: 'Resume',
+    
+    // Image Workspace - Main
     annotations_summary: 'Annotations Summary',
     no_classes: 'No classes defined',
     create_class: '+ Create New Class',
@@ -147,7 +197,7 @@ export const i18n = {
     loading_images: 'Loading images...',
     no_images: 'No images found',
     select_image_prompt: 'Select an image from the left to start',
-    pure_vision: 'Pure Vision',
+    pure_vision: 'Pure Vision Preview',
     preview_results: 'SAM Preview Results',
     select_all: 'All',
     run_inference: 'RUN INFERENCE',
@@ -156,22 +206,30 @@ export const i18n = {
     submit_all: 'Submit All',
     clear_prompts: 'Clear Prompts',
     filter_settings: 'Filter Settings',
-    smart_filter: 'Smart Filter',
     confidence_threshold: 'CONFIDENCE THRESHOLD',
     found_results: 'Found {count} possible matching results',
     prompts_cleared: 'Prompts cleared',
     preview_results_desc: 'Use tools to draw prompt points or boxes on the image. Results will appear here as previews.',
+    locate: 'Locate',
+    delete_ann: 'Delete',
+    save_anns: 'Save Annotations',
+    clear_anns: 'Clear Annotations',
     
     // Video Workspace
     propagation: 'Propagation',
     keyframes: 'Keyframes',
     frame_range: 'Range (Fwd/Bwd/Both)',
     imgsz: 'imgsz',
-    segment_size: 'segment_size',
+    segment_size: 'Segment Size',
     propagate: 'Propagate',
     propagate_desc: 'Annotated frames (keyframes) will appear here. Press "Propagate" to fill the gaps.',
     save_all: 'Save All',
     export_dataset: 'Export Dataset',
+    start_prop: 'Start Propagation',
+    prompt_mode: 'Prompt Mode',
+    start_frame: 'Start Frame',
+    end_frame: 'End Frame',
+    prompt_frame: 'Prompt Frame',
 
     // Toasts
     switch_lang: 'Switched to English',
