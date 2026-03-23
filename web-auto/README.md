@@ -1,6 +1,16 @@
 # web-auto
 
-`web-auto` 是面向 `sam3-api` 的 Web 标注工具，支持图片标注、批量文本推理、范例传播、导出和视频项目工作流。
+`web-auto` 现已调整为纯后端 API 服务，不再内置任何页面或静态前端资源。
+
+前端请单独实现，并通过 HTTP 调用本服务的 `/api/*` 接口。后端职责包括：
+
+- 项目管理
+- 图片与视频文件访问
+- 标注读写
+- 单图推理、批量推理、范例传播
+- 智能过滤
+- 导出
+- 视频传播任务
 
 ## 目录结构
 
@@ -12,21 +22,16 @@ web-auto/
     sam3_client.py
     exports.py
     utils.py
-  static/
-    projects.html
-    annotate.html
-    video_annotate.html
-    styles.css
-    app.js
-    video_app.js
   data/
   run.py
   requirements.txt
   README.md
+  DEVELOPER_API_GUIDE.md
+  FRONTEND_REQUIREMENTS.md
   REQUIREMENTS_AND_CLARIFICATIONS.md
 ```
 
-## 依赖安装
+## 安装
 
 ```bash
 pip install -r requirements.txt
@@ -34,30 +39,19 @@ pip install -r requirements.txt
 
 ## SQLite 说明
 
-从当前版本开始，`web-auto` 使用 SQLite 维护项目图片索引和状态统计，目的是避免大数据集场景下反复重写超大的 `projects.json`。
+`web-auto` 使用 Python 自带的 `sqlite3` 模块维护项目图片索引和状态统计，不需要额外 `pip install sqlite3`。
 
-重点说明：
-
-- `web-auto` 使用的是 Python 自带的 `sqlite3` 模块，不需要额外 `pip install sqlite3`
-- 但你的 Python / Conda 环境必须启用 `sqlite3`
-- 如果当前环境缺少 `sqlite3`，`web-auto` 启动时会直接报错并提示补齐环境
-
-建议先做一次环境检查：
+启动前建议先检查当前 Python 环境是否可用：
 
 ```bash
 python -c "import sqlite3; print(sqlite3.sqlite_version)"
 ```
 
-如果这条命令报错，说明当前环境没有可用的 SQLite 支持。常见处理方式：
-
-1. 使用标准 CPython 或 Anaconda/Miniconda 自带的 Python 环境
-2. 在 Conda 环境中补齐 SQLite：
+如果报错，说明当前环境缺少 SQLite 支持。常见处理方式：
 
 ```bash
 conda install sqlite
 ```
-
-如果你使用的是自编译 Python，请确认构建时启用了 `sqlite3`
 
 ## 启动
 
@@ -65,42 +59,56 @@ conda install sqlite
 python run.py
 ```
 
-默认访问地址：
+默认地址：
 
 ```text
 http://127.0.0.1:8000
 ```
 
-## 使用流程
+OpenAPI 文档：
 
-1. 创建图片项目或视频项目
-2. 配置 `sam3-api` 地址、阈值、批大小
-3. 在项目中添加类别
-4. 进行单图推理、全图文本批推、范例分割或范例传播
-5. 保存标注并按需导出
+```text
+http://127.0.0.1:8000/docs
+```
 
-## 大规模数据集说明
+## 跨域配置
 
-针对图片数量超过 1 万张的项目，当前版本已经做了两项关键优化：
+后端已启用 CORS，默认允许所有来源：
 
-- 图片清单与状态索引改为 SQLite 存储
-- 单张图片标注保存改为增量更新计数，不再每次全量重算项目统计
+```text
+WEB_AUTO_ALLOW_ORIGINS=*
+```
 
-这能显著降低以下操作的开销：
+如果你只想允许固定前端来源，可在启动前设置逗号分隔列表：
 
-- 单图保存标注
-- 批量推理逐图写回
-- 项目统计刷新
-- 图片分页读取
+```bash
+set WEB_AUTO_ALLOW_ORIGINS=http://127.0.0.1:5173,http://localhost:3000
+python run.py
+```
 
 ## sam3-api 要求
 
 至少需要可用的 `sam3-api` 服务，并支持当前 `web-auto` 使用到的接口：
 
+- `GET /health`
 - `POST /v1/infer`
 - `POST /v1/infer_batch`
 - `POST /v1/semantic/infer`
 - `POST /v1/semantic/infer_batch`
-- `GET /health`
+- 视频语义会话相关接口
 
-推荐先确认 `sam3-api` 可用，再打开 `web-auto`
+## 文档
+
+- 后端接口文档：`DEVELOPER_API_GUIDE.md`
+- 前端需求文档：`FRONTEND_REQUIREMENTS.md`
+- `REQUIREMENTS_AND_CLARIFICATIONS.md` 为历史说明，新的独立前端请以前两份文档为准
+
+## 当前方案实现难度
+
+把 `web-auto` 改成纯后端 API 的难度不大，属于中低风险改造：
+
+- 后端原本就已经以 `/api/*` 为主
+- 现有图片、视频、任务、导出逻辑都能保留
+- 主要工作是移除静态前端、补跨域、明确接口文档
+
+真正的工作量会转移到你新的前端实现上，而不是后端。

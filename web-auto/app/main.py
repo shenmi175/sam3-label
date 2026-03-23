@@ -15,8 +15,8 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.exports import export_coco, export_video_json, export_yolo
@@ -27,7 +27,6 @@ from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ensure_dir(BASE_DIR / 'data')
-STATIC_DIR = ensure_dir(BASE_DIR / 'static')
 DEFAULT_API_BASE_URL = 'http://172.16.1.65:8001'
 
 
@@ -49,9 +48,34 @@ INFER_JOB_LOCK = threading.Lock()
 INFER_JOB_THREADS: dict[str, dict[str, Any]] = {}
 INFER_JOB_STATES: dict[str, dict[str, Any]] = {}
 INFER_PROJECT_ACTIVE: dict[str, str] = {}
+SMART_FILTER_JOB_LOCK = threading.Lock()
+SMART_FILTER_JOB_THREADS: dict[str, dict[str, Any]] = {}
+SMART_FILTER_JOB_STATES: dict[str, dict[str, Any]] = {}
+SMART_FILTER_PROJECT_ACTIVE: dict[str, str] = {}
+SMART_FILTER_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 
-app = FastAPI(title='web-auto', version='0.9')
-app.mount('/static', StaticFiles(directory=str(STATIC_DIR)), name='static')
+def _parse_allowed_origins(raw: str) -> list[str]:
+    text = str(raw or '').strip()
+    if not text:
+        return ['*']
+    origins = [item.strip() for item in text.split(',') if item.strip()]
+    return origins or ['*']
+
+
+ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv('WEB_AUTO_ALLOW_ORIGINS', '*'))
+
+app = FastAPI(
+    title='web-auto API',
+    version='1.0',
+    description='API-only backend for image/video annotation workflows built on sam3-api.',
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 
 class OpenProjectIn(BaseModel):
@@ -142,6 +166,7 @@ class SmartFilterIn(BaseModel):
     canonical_class: str = ''
     source_classes: list[str] = Field(default_factory=list)
     area_mode: str = Field(default='instance', pattern='^(instance|bbox)$')
+    preview_token: str = ''
 
 
 class HealthApiIn(BaseModel):
@@ -536,6 +561,439 @@ def _pause_infer_job(project_id: str) -> bool:
             return False
         ev.set()
         return True
+
+
+def _smart_filter_job_state_default(*, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
+    return {
+        'job_id': job_id,
+        'project_id': project_id,
+        'job_type': job_type,
+        'status': 'queued',
+        'running': False,
+        'message': 'waiting',
+        'progress_done': 0,
+        'progress_total': 0,
+        'progress_pct': 0.0,
+        'current_image_id': '',
+        'current_image_rel_path': '',
+        'started_at': '',
+        'updated_at': now_ts(),
+        'finished_at': '',
+        'error': '',
+        'params': {},
+        'payload_dict': {},
+        'result': {},
+    }
+
+
+def _cleanup_smart_filter_project_slot(project_id: str) -> None:
+    active_job_id = str(SMART_FILTER_PROJECT_ACTIVE.get(project_id) or '').strip()
+    if not active_job_id:
+        return
+    holder = SMART_FILTER_JOB_THREADS.get(active_job_id) or {}
+    thread = holder.get('thread')
+    if thread and thread.is_alive():
+        return
+    SMART_FILTER_JOB_THREADS.pop(active_job_id, None)
+    if SMART_FILTER_PROJECT_ACTIVE.get(project_id) == active_job_id:
+        SMART_FILTER_PROJECT_ACTIVE.pop(project_id, None)
+    state = SMART_FILTER_JOB_STATES.get(active_job_id)
+    if isinstance(state, dict):
+        state['running'] = False
+        state['updated_at'] = now_ts()
+
+
+def _update_smart_filter_job_state(job_id: str, **updates: Any) -> None:
+    with SMART_FILTER_JOB_LOCK:
+        state = SMART_FILTER_JOB_STATES.get(job_id)
+        if not isinstance(state, dict):
+            return
+        state.update(updates)
+        progress_total = int(state.get('progress_total') or 0)
+        progress_done = int(state.get('progress_done') or 0)
+        if progress_total > 0 and 'progress_pct' not in updates:
+            state['progress_pct'] = float(max(0, min(progress_done, progress_total)) * 100.0 / max(progress_total, 1))
+        state['updated_at'] = now_ts()
+
+
+def _get_smart_filter_job_state_or_404(job_id: str) -> dict[str, Any]:
+    with SMART_FILTER_JOB_LOCK:
+        state = SMART_FILTER_JOB_STATES.get(job_id)
+        if not isinstance(state, dict):
+            raise HTTPException(status_code=404, detail='smart filter job not found')
+        holder = SMART_FILTER_JOB_THREADS.get(job_id) or {}
+        thread = holder.get('thread')
+        running = bool(thread and thread.is_alive())
+        out = dict(state)
+        out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
+        return out
+
+
+def _get_active_smart_filter_job_for_project(project_id: str) -> dict[str, Any] | None:
+    with SMART_FILTER_JOB_LOCK:
+        _cleanup_smart_filter_project_slot(project_id)
+        job_id = str(SMART_FILTER_PROJECT_ACTIVE.get(project_id) or '').strip()
+        if not job_id:
+            return None
+        state = SMART_FILTER_JOB_STATES.get(job_id)
+        if not isinstance(state, dict):
+            SMART_FILTER_PROJECT_ACTIVE.pop(project_id, None)
+            return None
+        holder = SMART_FILTER_JOB_THREADS.get(job_id) or {}
+        thread = holder.get('thread')
+        running = bool(thread and thread.is_alive())
+        out = dict(state)
+        out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
+        return out
+
+
+def _smart_filter_signature(
+    *,
+    merge_mode: str,
+    coverage_threshold: float,
+    canonical_class: str,
+    source_classes: list[str],
+    area_mode: str,
+) -> str:
+    source = sorted(str(x).strip() for x in source_classes if str(x).strip())
+    return '|'.join(
+        [
+            str(merge_mode or 'same_class').strip().lower(),
+            f'{float(coverage_threshold):.6f}',
+            str(canonical_class or '').strip(),
+            ','.join(source),
+            str(area_mode or 'instance').strip().lower(),
+        ]
+    )
+
+
+def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
+    merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
+    coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
+    canonical_class = str(payload.canonical_class or '').strip()
+    source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
+    area_mode = str(payload.area_mode or 'instance').strip().lower()
+    if merge_mode == 'canonical_class' and not canonical_class:
+        raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
+    if merge_mode == 'canonical_class' and not source_classes:
+        raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
+    return {
+        'project_id': str(payload.project_id or '').strip(),
+        'merge_mode': merge_mode,
+        'coverage_threshold': coverage_threshold,
+        'canonical_class': canonical_class,
+        'source_classes': source_classes,
+        'area_mode': area_mode,
+        'preview_token': str(payload.preview_token or '').strip(),
+        'signature': _smart_filter_signature(
+            merge_mode=merge_mode,
+            coverage_threshold=coverage_threshold,
+            canonical_class=canonical_class,
+            source_classes=source_classes,
+            area_mode=area_mode,
+        ),
+    }
+
+
+def _analyze_smart_filter_project(
+    *,
+    project: dict[str, Any],
+    config: dict[str, Any],
+    progress_cb: Optional[Callable[..., None]] = None,
+) -> dict[str, Any]:
+    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
+    total = len(images)
+    items: list[dict[str, Any]] = []
+    apply_items: list[dict[str, Any]] = []
+    total_candidates = 0
+    total_images = 0
+    total_relabels = 0
+
+    if progress_cb:
+        progress_cb(
+            message=f'准备智能过滤分析，待扫描 {total} 张',
+            progress_done=0,
+            progress_total=total,
+        )
+
+    for idx, image in enumerate(images, start=1):
+        image_id = str(image.get('id') or '')
+        if not image_id:
+            continue
+        rel_path = str(image.get('rel_path') or image_id)
+        annotations = storage.load_annotations(str(project.get('id') or ''), image_id)
+        analysis = _analyze_smart_merge_annotations(
+            annotations,
+            merge_mode=str(config.get('merge_mode') or 'same_class'),
+            coverage_threshold=float(config.get('coverage_threshold') or 0.98),
+            canonical_class=str(config.get('canonical_class') or ''),
+            source_classes=list(config.get('source_classes') or []),
+            area_mode=str(config.get('area_mode') or 'instance'),
+        )
+        removed = analysis.get('removed_annotations', [])
+        pairs = analysis.get('pairs', [])
+        relabeled = analysis.get('relabeled_annotations', [])
+        kept_annotations = analysis.get('kept_annotations', annotations)
+        remove_count = len(removed) if isinstance(removed, list) else 0
+        relabel_count = len(relabeled) if isinstance(relabeled, list) else 0
+        if remove_count > 0 or relabel_count > 0:
+            total_candidates += remove_count
+            total_relabels += relabel_count
+            total_images += 1
+            items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'candidate_count': remove_count,
+                    'relabel_count': relabel_count,
+                    'pair_count': len(pairs) if isinstance(pairs, list) else 0,
+                }
+            )
+            apply_items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'removed_count': remove_count,
+                    'relabel_count': relabel_count,
+                    'kept_annotations': kept_annotations if isinstance(kept_annotations, list) else annotations,
+                }
+            )
+        if progress_cb:
+            progress_cb(
+                message=f'分析 {idx}/{total}: {rel_path}',
+                progress_done=idx,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
+
+    items.sort(key=lambda x: (int(x.get('candidate_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
+    apply_items.sort(key=lambda x: (int(x.get('removed_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
+    return {
+        'image_count': total_images,
+        'candidate_count': total_candidates,
+        'relabel_count': total_relabels,
+        'items': items,
+        'apply_items': apply_items,
+    }
+
+
+def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
+    payload = SmartFilterIn(**payload_dict)
+    config = _normalize_smart_filter_payload(payload)
+    project = storage.get_project(config['project_id'], enrich=False, include_images=True)
+    if not project:
+        raise RuntimeError('project not found')
+    if project.get('project_type') != 'image':
+        raise RuntimeError('only image project is supported')
+
+    analysis = _analyze_smart_filter_project(project=project, config=config, progress_cb=progress_cb)
+    preview_token = new_id('sfp_')
+    project_rev = int(project.get('content_rev', 1) or 1)
+    preview_entry = {
+        'preview_token': preview_token,
+        'project_id': config['project_id'],
+        'project_content_rev': project_rev,
+        'signature': str(config['signature']),
+        'config': {
+            'merge_mode': config['merge_mode'],
+            'coverage_threshold': float(config['coverage_threshold']),
+            'canonical_class': config['canonical_class'],
+            'source_classes': list(config['source_classes']),
+            'area_mode': config['area_mode'],
+        },
+        'result': analysis,
+    }
+    with SMART_FILTER_JOB_LOCK:
+        SMART_FILTER_PREVIEW_CACHE[config['project_id']] = preview_entry
+
+    candidate_count = int(analysis.get('candidate_count') or 0)
+    relabel_count = int(analysis.get('relabel_count') or 0)
+    return {
+        'project_id': config['project_id'],
+        'preview_token': preview_token,
+        'project_content_rev': project_rev,
+        'image_count': int(analysis.get('image_count') or 0),
+        'candidate_count': candidate_count,
+        'relabel_count': relabel_count,
+        'items': analysis.get('items', []),
+        'rule': {
+            'merge_mode': config['merge_mode'],
+            'same_class': config['merge_mode'] == 'same_class',
+            'canonical_class': config['canonical_class'],
+            'source_classes': list(config['source_classes']),
+            'area_mode': config['area_mode'],
+            'small_box_covered_by_large_gte': float(config['coverage_threshold']),
+            'keep': 'larger_area',
+        },
+        'message': (
+            f'智能过滤分析完成: 可移除 {candidate_count} 个目标'
+            + (f'，改类 {relabel_count} 个目标' if relabel_count > 0 else '')
+            if (candidate_count > 0 or relabel_count > 0)
+            else '智能过滤分析完成: 无可合并目标'
+        ),
+    }
+
+
+def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
+    payload = SmartFilterIn(**payload_dict)
+    config = _normalize_smart_filter_payload(payload)
+    preview_token = str(config.get('preview_token') or '').strip()
+    if not preview_token:
+        raise RuntimeError('preview_token is required; please run preview first')
+
+    project = storage.get_project(config['project_id'], enrich=False, include_images=False)
+    if not project:
+        raise RuntimeError('project not found')
+    if project.get('project_type') != 'image':
+        raise RuntimeError('only image project is supported')
+    current_rev = int(project.get('content_rev', 1) or 1)
+
+    with SMART_FILTER_JOB_LOCK:
+        preview_entry = dict(SMART_FILTER_PREVIEW_CACHE.get(config['project_id']) or {})
+    if not preview_entry:
+        raise RuntimeError('preview cache is missing; please rerun preview')
+    if str(preview_entry.get('preview_token') or '') != preview_token:
+        raise RuntimeError('preview token is stale; please rerun preview')
+    if int(preview_entry.get('project_content_rev') or 0) != current_rev:
+        raise RuntimeError('project annotations changed after preview; please rerun preview')
+    if str(preview_entry.get('signature') or '') != str(config.get('signature') or ''):
+        raise RuntimeError('filter config changed after preview; please rerun preview')
+
+    cached_result = preview_entry.get('result', {}) if isinstance(preview_entry.get('result', {}), dict) else {}
+    apply_items = list(cached_result.get('apply_items', [])) if isinstance(cached_result.get('apply_items', []), list) else []
+    total = len(apply_items)
+    changed_images = 0
+    removed_annotations = 0
+    relabeled_annotations = 0
+    items: list[dict[str, Any]] = []
+
+    if progress_cb:
+        progress_cb(
+            message=f'准备执行智能过滤，待写回 {total} 张',
+            progress_done=0,
+            progress_total=total,
+        )
+
+    for idx, item in enumerate(apply_items, start=1):
+        image_id = str(item.get('image_id') or '')
+        rel_path = str(item.get('rel_path') or image_id)
+        kept_annotations = item.get('kept_annotations', [])
+        storage.save_annotations(config['project_id'], image_id, kept_annotations if isinstance(kept_annotations, list) else [])
+        remove_count = int(item.get('removed_count') or 0)
+        relabel_count = int(item.get('relabel_count') or 0)
+        changed_images += 1
+        removed_annotations += remove_count
+        relabeled_annotations += relabel_count
+        items.append(
+            {
+                'image_id': image_id,
+                'rel_path': rel_path,
+                'removed_count': remove_count,
+                'relabel_count': relabel_count,
+            }
+        )
+        if progress_cb:
+            progress_cb(
+                message=f'写回 {idx}/{total}: {rel_path}',
+                progress_done=idx,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
+
+    with SMART_FILTER_JOB_LOCK:
+        current_entry = SMART_FILTER_PREVIEW_CACHE.get(config['project_id'])
+        if isinstance(current_entry, dict) and str(current_entry.get('preview_token') or '') == preview_token:
+            SMART_FILTER_PREVIEW_CACHE.pop(config['project_id'], None)
+
+    items.sort(key=lambda x: (int(x.get('removed_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
+    return {
+        'project_id': config['project_id'],
+        'changed_images': changed_images,
+        'removed_annotations': removed_annotations,
+        'relabeled_annotations': relabeled_annotations,
+        'rule': {
+            'merge_mode': config['merge_mode'],
+            'canonical_class': config['canonical_class'],
+            'source_classes': list(config['source_classes']),
+            'area_mode': config['area_mode'],
+            'small_box_covered_by_large_gte': float(config['coverage_threshold']),
+        },
+        'items': items,
+        'message': (
+            f'智能过滤完成: 处理 {changed_images} 张图片, 移除 {removed_annotations} 个目标'
+            + (f', 改类 {relabeled_annotations} 个目标' if relabeled_annotations > 0 else '')
+        ),
+    }
+
+
+def _spawn_smart_filter_job(
+    *,
+    project_id: str,
+    job_type: str,
+    payload_dict: dict[str, Any],
+    worker: Callable[[dict[str, Any], Callable[..., None]], dict[str, Any]],
+) -> dict[str, Any]:
+    with SMART_FILTER_JOB_LOCK:
+        _cleanup_smart_filter_project_slot(project_id)
+        active_job_id = str(SMART_FILTER_PROJECT_ACTIVE.get(project_id) or '').strip()
+        if active_job_id:
+            raise HTTPException(status_code=409, detail='another smart filter job is already running for this project')
+
+        job_id = new_id('sfjob_')
+        state = _smart_filter_job_state_default(job_id=job_id, project_id=project_id, job_type=job_type)
+        state['payload_dict'] = dict(payload_dict)
+        state['params'] = {
+            'mode_label': '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并',
+            'scope_label': '全部图片',
+        }
+        SMART_FILTER_JOB_STATES[job_id] = state
+        SMART_FILTER_PROJECT_ACTIVE[project_id] = job_id
+
+        def _worker_entry() -> None:
+            _update_smart_filter_job_state(
+                job_id,
+                status='running',
+                running=True,
+                started_at=now_ts(),
+                message='job started',
+            )
+            try:
+                result = worker(payload_dict, lambda **kw: _update_smart_filter_job_state(job_id, **kw))
+                total = int(state.get('progress_total') or result.get('image_count') or result.get('changed_images') or 0)
+                done = int(state.get('progress_done') or total)
+                _update_smart_filter_job_state(
+                    job_id,
+                    status='done',
+                    running=False,
+                    finished_at=now_ts(),
+                    message=str(result.get('message') or 'done'),
+                    result=result,
+                    progress_done=done,
+                    progress_total=total,
+                    progress_pct=100.0 if total > 0 else 0.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception('smart filter job failed project=%s type=%s', project_id, job_type)
+                _update_smart_filter_job_state(
+                    job_id,
+                    status='error',
+                    running=False,
+                    finished_at=now_ts(),
+                    message=str(exc),
+                    error=str(exc),
+                )
+            finally:
+                with SMART_FILTER_JOB_LOCK:
+                    SMART_FILTER_JOB_THREADS.pop(job_id, None)
+                    if SMART_FILTER_PROJECT_ACTIVE.get(project_id) == job_id:
+                        SMART_FILTER_PROJECT_ACTIVE.pop(project_id, None)
+
+        thread = threading.Thread(target=_worker_entry, daemon=True)
+        SMART_FILTER_JOB_THREADS[job_id] = {'thread': thread, 'project_id': project_id}
+        thread.start()
+        return dict(state)
 
 
 def _count_prompt_labels(items: Any, label_index: int) -> tuple[int, int]:
@@ -3100,28 +3558,27 @@ def on_startup() -> None:
 
 
 @app.get('/')
-def root_page() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / 'projects.html'))
-
-
-@app.get('/favicon.ico')
-def favicon() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / 'favicon.svg'), media_type='image/svg+xml')
-
-
-@app.get('/annotate')
-def annotate_page() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / 'annotate.html'))
-
-
-@app.get('/video-annotate')
-def video_annotate_page() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / 'video_annotate.html'))
+def root_info() -> dict[str, Any]:
+    return {
+        'service': 'web-auto-api',
+        'mode': 'api_only',
+        'docs_url': '/docs',
+        'openapi_url': '/openapi.json',
+        'health_url': '/api/health',
+        'allowed_origins': ALLOWED_ORIGINS,
+        'frontend_bundled': False,
+    }
 
 
 @app.get('/api/health')
 def health() -> dict[str, Any]:
-    return {'status': 'ok', 'projects': len(storage.list_projects())}
+    return {
+        'status': 'ok',
+        'service': 'web-auto-api',
+        'mode': 'api_only',
+        'projects': len(storage.list_projects()),
+        'allowed_origins': ALLOWED_ORIGINS,
+    }
 
 
 @app.get('/api/projects')
@@ -3706,6 +4163,47 @@ def apply_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         },
         'items': items,
     }
+
+
+@app.post('/api/filter/intelligent/jobs/start_preview')
+def start_smart_filter_preview_job(payload: SmartFilterIn) -> dict[str, Any]:
+    project = _get_project_or_404(payload.project_id, include_images=False)
+    if project.get('project_type') != 'image':
+        raise HTTPException(status_code=400, detail='only image project is supported')
+    _normalize_smart_filter_payload(payload)
+    job = _spawn_smart_filter_job(
+        project_id=payload.project_id,
+        job_type='preview',
+        payload_dict=payload.model_dump(),
+        worker=_run_smart_filter_preview_job,
+    )
+    return {'job': job}
+
+
+@app.post('/api/filter/intelligent/jobs/start_apply')
+def start_smart_filter_apply_job(payload: SmartFilterIn) -> dict[str, Any]:
+    project = _get_project_or_404(payload.project_id, include_images=False)
+    if project.get('project_type') != 'image':
+        raise HTTPException(status_code=400, detail='only image project is supported')
+    _normalize_smart_filter_payload(payload)
+    job = _spawn_smart_filter_job(
+        project_id=payload.project_id,
+        job_type='apply',
+        payload_dict=payload.model_dump(),
+        worker=_run_smart_filter_apply_job,
+    )
+    return {'job': job}
+
+
+@app.get('/api/filter/intelligent/jobs/active')
+def get_active_smart_filter_job(project_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _get_project_or_404(project_id, enrich=False, include_images=False)
+    return {'job': _get_active_smart_filter_job_for_project(project_id)}
+
+
+@app.get('/api/filter/intelligent/jobs/{job_id}')
+def get_smart_filter_job(job_id: str) -> dict[str, Any]:
+    return {'job': _get_smart_filter_job_state_or_404(job_id)}
 
 
 @app.get('/api/ui_state')

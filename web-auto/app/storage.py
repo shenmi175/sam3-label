@@ -380,6 +380,18 @@ class Storage:
         return q
 
     @staticmethod
+    def _content_rev(project: dict[str, Any]) -> int:
+        try:
+            return max(1, int(project.get('content_rev', 1) or 1))
+        except Exception:
+            return 1
+
+    def _bump_content_rev(self, project: dict[str, Any]) -> int:
+        next_rev = self._content_rev(project) + 1
+        project['content_rev'] = next_rev
+        return next_rev
+
+    @staticmethod
     def _safe_resolve(raw: str) -> str:
         if not raw:
             return ''
@@ -454,6 +466,7 @@ class Storage:
         q['classes'] = q.get('classes', []) if isinstance(q.get('classes', []), list) else []
         q = self._ensure_project_images_sqlite(q, normalized_images)
         q['num_frames'] = int(q.get('num_images', 0) or 0) if project_type == 'video' else 0
+        q['content_rev'] = self._content_rev(q)
         q['created_at'] = str(q.get('created_at') or now_ts())
         q['updated_at'] = str(q.get('updated_at') or now_ts())
         q['locked'] = True
@@ -788,6 +801,7 @@ class Storage:
                     seen.add(key)
                     merged.append(c)
                 p['classes'] = merged
+                self._bump_content_rev(p)
                 p['updated_at'] = now_ts()
                 updated = p
             out.append(p)
@@ -845,6 +859,7 @@ class Storage:
                     self._insert_project_images_db(project_id, 'image', pending_insert, start_index=len(existing))
                     p['num_images'] = max(0, int(p.get('num_images', 0) or 0) + int(added))
                     p['unlabeled_images'] = max(0, int(p.get('unlabeled_images', 0) or 0) + int(added))
+                    self._bump_content_rev(p)
                     p['updated_at'] = now_ts()
                 updated = p
             out.append(p)
@@ -876,6 +891,7 @@ class Storage:
                 else:
                     p['unlabeled_images'] = max(0, int(p.get('unlabeled_images', 0) or 0) - 1)
                 p['unlabeled_images'] = max(0, int(p.get('num_images', 0) or 0) - int(p.get('labeled_images', 0) or 0))
+                self._bump_content_rev(p)
                 p['updated_at'] = now_ts()
                 updated = p
             out.append(p)
@@ -978,6 +994,7 @@ class Storage:
                         continue
                     kept.append(c)
                 p['classes'] = kept
+                self._bump_content_rev(p)
                 p['updated_at'] = now_ts()
                 updated = p
             out.append(p)
@@ -1084,6 +1101,7 @@ class Storage:
                         p['labeled_images'] = max(0, int(p.get('labeled_images', 0) or 0) - 1)
                     total = max(0, int(p.get('num_images', 0) or 0))
                     p['unlabeled_images'] = max(0, total - int(p.get('labeled_images', 0) or 0))
+                self._bump_content_rev(p)
                 project = p
             out.append(p)
         if not project:
