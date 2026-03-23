@@ -2,7 +2,8 @@ export const store = {
   state: {
     config: {
       sam3ApiUrl: localStorage.getItem('sam3ApiUrl') || 'http://127.0.0.1:8001',
-      theme: localStorage.getItem('theme') || 'light'
+      theme: localStorage.getItem('theme') || 'light',
+      language: localStorage.getItem('language') || 'zh'
     }
   },
   listeners: [],
@@ -21,6 +22,8 @@ export const store = {
     } else if (key === 'theme') {
       localStorage.setItem('theme', value);
       this.applyTheme(value);
+    } else if (key === 'language') {
+      localStorage.setItem('language', value);
     }
     this.notify();
   },

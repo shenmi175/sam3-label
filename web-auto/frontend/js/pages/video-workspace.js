@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { CanvasViewer } from '../components/canvas-viewer.js';
 import { store } from '../store.js';
+import { i18n } from '../i18n.js';
 
 export const VideoWorkspace = {
   container: null,
@@ -24,7 +25,7 @@ export const VideoWorkspace = {
     this.abortController = new AbortController();
 
     try {
-      const data = await api.request(`/api/projects/${this.projectId}`);
+      const data = await api.getProject(this.projectId, false);
       if (this.isUnmounted) return;
       this.project = data.project;
       this.classes = this.project.classes || [];
@@ -60,18 +61,18 @@ export const VideoWorkspace = {
                 <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden;">
                    <div id="v-progress-bar" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.3s ease;"></div>
                 </div>
-                <span id="v-progress-text" style="font-size: 12px; font-weight: 600; min-width: 80px; text-align: right; color: var(--neu-text-light);">0 / 0 Frames</span>
+                <span id="v-progress-text" style="font-size: 12px; font-weight: 600; min-width: 80px; text-align: right; color: var(--neu-text-light);">0 / 0</span>
              </div>
           </div>
 
           <div style="display: flex; gap: 12px; align-items: center;">
              <div id="backend-health" class="health-indicator" style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--neu-text-light);">
-                <span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span> Checking...
+                <span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span> ${i18n.t('backend_checking')}
              </div>
-             <button id="btn-toggle-theme" class="neu-button" title="Toggle Mode" style="padding: 8px 12px;">
+             <button id="btn-toggle-theme" class="neu-button" title="${i18n.t('toggle_theme')}" style="padding: 8px 12px;">
                 <span id="theme-icon">🌓</span>
              </button>
-             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 8px 16px;">Dashboard</button>
+             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 8px 16px;">${i18n.t('dashboard')}</button>
           </div>
         </div>
         
@@ -81,22 +82,22 @@ export const VideoWorkspace = {
           <!-- Left Column: Classes & Propagation -->
           <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg);">
-               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Classes</h3>
+               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
                <div id="video-classes-list" style="display: flex; flex-direction: column; gap: 10px;">
                   <!-- Class items -->
                </div>
-               <button class="neu-button" id="btn-add-class-video" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">+ New Class</button>
+               <button class="neu-button" id="btn-add-class-video" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">${i18n.t('create_class')}</button>
             </div>
             
             <div style="flex: 1; overflow-y: auto; padding: 20px;">
-               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Propagation</h3>
+               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('propagation')}</h3>
                <div class="neu-box" style="padding: 15px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--neu-outset-sm);">
                   <div>
-                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">RANGE (FRAMES)</label>
+                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">${i18n.t('frame_range')}</label>
                     <input type="text" class="neu-input" id="propagate-range" value="0-100" />
                   </div>
                   <div>
-                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">IMG SIZE / SEGMENT</label>
+                    <label style="display: block; font-size: 11px; margin-bottom: 6px; font-weight: 700;">${i18n.t('imgsz')} / ${i18n.t('segment_size')}</label>
                     <div style="display: flex; gap: 6px;">
                        <select id="v-imgsz" class="neu-input" style="padding: 8px; font-size:12px;">
                           <option value="640">640</option>
@@ -105,13 +106,14 @@ export const VideoWorkspace = {
                        <input type="number" id="v-segment" class="neu-input" value="16" style="padding: 8px; font-size:12px; width: 60px;" />
                     </div>
                   </div>
-                  <button class="neu-button" id="btn-propagate" style="width: 100%; margin-top: 5px; color: var(--neu-text-active); font-weight: 700;">🚀 START PROPAGATION</button>
+                  <button class="neu-button" id="btn-propagate" style="width: 100%; height: 46px; font-weight: bold; color: var(--neu-text-active);">${i18n.t('propagate')}</button>
+                  <p style="font-size: 11px; margin: 0; color: var(--neu-text-light); text-align: center;">${i18n.t('propagate_desc')}</p>
                </div>
-
-               <div style="margin-top: 30px;">
-                  <button class="neu-button" id="btn-save-video" style="width: 100%; margin-bottom: 12px;">SAVE ALL CHANGES</button>
-                  <button class="neu-button" id="btn-export-video" style="width: 100%;">EXPORT DATASET</button>
-               </div>
+            </div>
+            
+            <div style="padding: 20px; border-top: 1px solid rgba(0,0,0,0.05);">
+               <button class="neu-button" id="btn-save-video" style="width: 100%; height: 46px; font-weight: bold; color: var(--neu-text-active);">${i18n.t('save_all')}</button>
+               <button class="neu-button" id="btn-export-video" style="width: 100%; margin-top: 12px;">${i18n.t('export_dataset')}</button>
             </div>
           </div>
           
@@ -160,13 +162,13 @@ export const VideoWorkspace = {
           </div>
           
           <!-- Right Column: Previews & Keyframes -->
-          <div class="neu-box" id="right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
-             <div style="padding: 20px; border-bottom: 3px solid var(--neu-bg); box-shadow: var(--neu-inset);">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Keyframes</h3>
-                   <span id="v-keyframe-count" style="font-size: 12px; font-weight: 700;">0</span>
-                </div>
-             </div>
+          <div class="neu-box" id="v-right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
+            <div style="padding: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center;">
+               <div style="display: flex; flex-direction: column;">
+                  <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('keyframes')}</h3>
+                  <p style="font-size: 11px; margin: 2px 0 0 0; color: var(--neu-text-light);">${i18n.t('preview_results')}</p>
+               </div>
+            </div>
              
              <div id="v-preview-list" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px;">
                 <!-- Frame Previews -->

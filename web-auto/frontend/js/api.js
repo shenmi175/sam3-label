@@ -27,6 +27,7 @@ export const api = {
 
   getProjects() { return this.request('GET', '/projects'); },
   getProject(id, includeImages=false) { return this.request('GET', `/projects/${id}?include_images=${includeImages}`); },
+  getHealth() { return this.request('GET', '/health'); },
   createProject(data) { return this.request('POST', '/projects/open', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   

@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import { CanvasViewer } from '../components/canvas-viewer.js';
 import { FilterUI } from '../components/filter.js';
+import { i18n } from '../i18n.js';
+import { store } from '../store.js';
 
 export const ImageWorkspace = {
   container: null,
@@ -32,7 +34,7 @@ export const ImageWorkspace = {
           <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
             <span style="font-size: 20px;">🖼️</span>
             <div style="display: flex; flex-direction: column;">
-              <span id="ws-pj-name" style="font-weight: 700; font-size: 15px; color: var(--neu-text);">Loading...</span>
+              <span id="ws-pj-name" style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${i18n.t('backend_checking')}</span>
               <span id="ws-pj-id" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;"></span>
             </div>
           </div>
@@ -49,12 +51,12 @@ export const ImageWorkspace = {
 
           <div style="display: flex; gap: 12px; align-items: center;">
              <div id="backend-health" class="health-indicator" style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--neu-text-light);">
-                <span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span> Checking...
+                <span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24;"></span> ${i18n.t('backend_checking')}
              </div>
-             <button id="btn-toggle-theme" class="neu-button" title="Toggle Mode" style="padding: 8px 12px;">
+             <button id="btn-toggle-theme" class="neu-button" title="${i18n.t('toggle_theme')}" style="padding: 8px 12px;">
                 <span id="theme-icon">🌓</span>
              </button>
-             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 8px 16px;">Dashboard</button>
+             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 8px 16px;">${i18n.t('dashboard')}</button>
           </div>
         </div>
         
@@ -64,21 +66,21 @@ export const ImageWorkspace = {
           <!-- Left Column: Metadata & Classes -->
           <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
-               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Annotations Summary</h3>
+               <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
                <div id="classes-list" style="display: flex; flex-direction: column; gap: 10px;">
                   <!-- Class items with counts -->
-                  <div style="text-align: center; padding: 20px; color: var(--neu-text-light); font-size: 13px;">No classes defined</div>
+                  <div style="text-align: center; padding: 20px; color: var(--neu-text-light); font-size: 13px;">${i18n.t('no_classes')}</div>
                </div>
-               <button class="neu-button" id="btn-add-class-ws" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">+ Create New Class</button>
+               <button class="neu-button" id="btn-add-class-ws" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">${i18n.t('create_class')}</button>
             </div>
             
             <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                <div style="padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
-                  <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Image List</h3>
+                  <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('image_list')}</h3>
                   <span id="ws-img-count-badge" class="neu-box" style="padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; box-shadow: var(--neu-inset);">0</span>
                </div>
                <div id="image-list-container" style="flex: 1; overflow-y: auto; padding: 10px 15px;">
-                  <div style="text-align:center; padding: 40px; color: var(--neu-text-light);">Loading images...</div>
+                  <div style="text-align:center; padding: 40px; color: var(--neu-text-light);">${i18n.t('loading_images')}</div>
                </div>
                <div style="padding: 15px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(0,0,0,0.05);">
                   <button class="neu-button" style="width: 40px; height: 40px; border-radius: 50%; display: flex; items-center; justify-content: center;" id="btn-img-prev">‹</button>
@@ -99,26 +101,26 @@ export const ImageWorkspace = {
 
                 <!-- Hovering Toolbar -->
                 <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-                   <button class="neu-button active" id="btn-tool-point" title="Point Prompt (Add + / Remove -)" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
+                   <button class="neu-button active" id="btn-tool-point" title="Point Prompt" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
                    <button class="neu-button" id="btn-tool-box" title="Box Prompt" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                    <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                   <button class="neu-button" id="btn-vtool-clear" title="Clear Prompts" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
+                   <button class="neu-button" id="btn-vtool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
                    <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1); margin: 0 5px;"></div>
-                   <button class="neu-button" id="btn-vtool-filter" title="Filter Settings" style="width: 40px; height: 40px; border-radius: 50%;">🔍</button>
+                   <button class="neu-button" id="btn-vtool-filter" title="${i18n.t('filter_settings')}" style="width: 40px; height: 40px; border-radius: 50%;">🔍</button>
                 </div>
              </div>
 
              <!-- Filter Modal (Overlay) -->
              <div id="modal-filter" class="modal-overlay" style="display: none;">
                 <div class="neu-card" style="width: 320px; padding: 25px;">
-                   <h3 style="margin-top: 0; font-size: 16px;">Smart Filter</h3>
+                   <h3 style="margin-top: 0; font-size: 16px;">${i18n.t('smart_filter')}</h3>
                    <div style="margin-bottom: 20px;">
-                      <label style="display: block; font-size: 11px; margin-bottom: 8px; font-weight: 700;">CONFIDENCE THRESHOLD</label>
+                      <label style="display: block; font-size: 11px; margin-bottom: 8px; font-weight: 700;">${i18n.t('confidence_threshold')}</label>
                       <input type="range" id="filter-threshold" min="0" max="1" step="0.05" value="0.5" style="width: 100%;" />
                       <div style="text-align: right; font-size: 11px; font-family: monospace;" id="val-threshold">0.50</div>
                    </div>
                    <div style="display: flex; justify-content: flex-end; gap: 10px;">
-                      <button class="neu-button" id="btn-close-filter">Close</button>
+                      <button class="neu-button" id="btn-close-filter">${i18n.t('close')}</button>
                    </div>
                 </div>
              </div>
@@ -135,22 +137,22 @@ export const ImageWorkspace = {
           <div class="neu-box" id="right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
              <div style="padding: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; flex-direction: column;">
-                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">Pure Vision</h3>
-                   <p style="font-size: 11px; margin: 2px 0 0 0; color: var(--neu-text-light);">SAM Preview Results</p>
+                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('pure_vision')}</h3>
+                   <p style="font-size: 11px; margin: 2px 0 0 0; color: var(--neu-text-light);">${i18n.t('preview_results')}</p>
                 </div>
-                <button class="neu-button" id="btn-select-all-previews" style="padding: 6px 10px; font-size: 11px; font-weight: 700; display: none;">All</button>
+                <button class="neu-button" id="btn-select-all-previews" style="padding: 6px 10px; font-size: 11px; font-weight: 700; display: none;">${i18n.t('select_all')}</button>
              </div>
              
              <div id="preview-list" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px;">
                 <!-- Previews will appear here -->
                 <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
                    <div style="font-size: 32px; margin-bottom: 15px; opacity: 0.3;">✨</div>
-                   <div style="font-size: 13px;">Use tools to draw prompts on the image. Result will appear here as a preview.</div>
+                   <div style="font-size: 13px;">${i18n.t('preview_results_desc')}</div>
                 </div>
              </div>
 
              <div style="padding: 20px; border-top: 1px solid rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 10px;">
-                <button class="neu-button" id="btn-infer" style="width: 100%; height: 50px; font-weight: 700; color: var(--neu-text-active);">RUN INFERENCE</button>
+                <button class="neu-button" id="btn-infer" style="width: 100%; height: 50px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('run_inference')}</button>
              </div>
           </div>
         </div>
@@ -189,13 +191,13 @@ export const ImageWorkspace = {
         const dot = el.querySelector('.dot');
         if (res.status === 'ok') {
           dot.style.background = '#10b981';
-          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> Backend Online';
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${i18n.t('backend_online')}`;
         } else {
           dot.style.background = '#ef4444';
-          el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Error';
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_error')}`;
         }
       } catch (e) {
-        el.innerHTML = '<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> Backend Offline';
+        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_offline')}`;
       }
     };
     check();
@@ -244,7 +246,7 @@ export const ImageWorkspace = {
 
       const btn = document.getElementById('btn-infer');
       try {
-        btn.textContent = 'INFERRING...';
+        btn.textContent = i18n.t('inferring');
         btn.disabled = true;
         
         const payload = {
@@ -275,7 +277,7 @@ export const ImageWorkspace = {
       } catch(err) {
         alert("Inference failed: " + err.message);
       } finally {
-        btn.textContent = 'RUN INFERENCE';
+        btn.textContent = i18n.t('run_inference');
         btn.disabled = false;
       }
     };
@@ -311,7 +313,7 @@ export const ImageWorkspace = {
       this.viewer.setPreviews([]);
       this.renderPreviews();
       this.updateActionBar();
-      showToast("Prompts cleared");
+      showToast(i18n.t('prompts_cleared'));
     };
 
     const btnTheme = document.getElementById('btn-toggle-theme');
@@ -387,7 +389,7 @@ export const ImageWorkspace = {
     const classes = this.projectMeta?.classes || [];
     
     if (classes.length === 0) {
-      list.innerHTML = '<div style="color:var(--neu-text-light); font-size:12px; text-align:center;">No classes defined</div>';
+      list.innerHTML = `<div style="color:var(--neu-text-light); font-size:12px; text-align:center;">${i18n.t('no_classes')}</div>`;
       return;
     }
     
@@ -451,7 +453,7 @@ export const ImageWorkspace = {
       list.innerHTML = `
         <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
            <div style="font-size: 32px; margin-bottom: 15px; opacity: 0.3;">✨</div>
-           <div style="font-size: 13px;">Use tools to draw prompts on the image. Result will appear here as a preview.</div>
+           <div style="font-size: 13px;">${i18n.t('preview_results_desc')}</div>
         </div>
       `;
       return;
@@ -502,7 +504,8 @@ export const ImageWorkspace = {
 
   async loadProjectInfo() {
     try {
-      this.projectMeta = await api.getProject(this.projectId, false);
+      const res = await api.getProject(this.projectId, false);
+      this.projectMeta = res.project;
       if (this.isUnmounted) return;
       
       document.getElementById('ws-pj-name').innerText = this.projectMeta.name;
@@ -535,7 +538,7 @@ export const ImageWorkspace = {
       document.getElementById('ws-page-info').innerText = `${currPage} / ${totalPages}`;
       
       if (this.images.length === 0) {
-         listCont.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--neu-text-light);">No images found</div>';
+         listCont.innerHTML = `<div style="text-align:center; padding: 20px; color: var(--neu-text-light);">${i18n.t('no_images')}</div>`;
          return;
       }
       

@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { router } from '../router.js';
 import { store } from '../store.js';
+import { i18n } from '../i18n.js';
 
 export const ProjectsPage = {
   container: null,
@@ -13,19 +14,19 @@ export const ProjectsPage = {
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; border-bottom: 1px solid rgba(0,0,0,0.05);">
            <div>
              <h1 style="margin:0; font-size: 28px; font-weight: 800; letter-spacing: -1.5px; display: inline-block;">web-auto</h1>
-             <span style="margin-left: 12px; color: var(--neu-text-light); font-size: 14px; font-weight: 500;">SAM3 标注工作台</span>
+             <span style="margin-left: 12px; color: var(--neu-text-light); font-size: 14px; font-weight: 500;">${i18n.t('backend_checking')}</span>
            </div>
            <div style="display: flex; gap: 16px; align-items: center;">
               <div id="health-indicator" title="Backend Health">
                 <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--neu-text-light);">
                   <span id="health-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ccc;"></span>
-                  Backend: <span id="health-text">Checking...</span>
+                  ${i18n.t('dashboard')}: <span id="health-text">${i18n.t('backend_checking')}</span>
                 </div>
               </div>
-              <button id="btn-toggle-theme" class="neu-button" title="Toggle Mode" style="padding: 8px 12px;">
+              <button id="btn-toggle-theme" class="neu-button" title="${i18n.t('toggle_theme')}" style="padding: 8px 12px;">
                  <span id="theme-icon">🌓</span>
               </button>
-              <button id="btn-settings" class="neu-button" style="padding: 8px 16px;">Settings</button>
+              <button id="btn-settings" class="neu-button" style="padding: 8px 16px;">${i18n.t('global_settings')}</button>
            </div>
         </div>
 
@@ -33,35 +34,35 @@ export const ProjectsPage = {
           <!-- Left Panel: Create Project (35%) -->
           <div style="width: 35%; padding: 30px; border-right: 1px solid rgba(0,0,0,0.05); overflow-y: auto;">
             <div class="neu-card" style="padding: 24px;">
-              <h2 style="margin-top:0; margin-bottom: 24px; font-size: 20px;">创建新项目</h2>
+              <h2 style="margin-top:0; margin-bottom: 24px; font-size: 20px;">${i18n.t('new_project')}</h2>
               <div style="margin-bottom: 16px;">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">项目名称</label>
-                <input type="text" id="inp-pj-name" class="neu-input" placeholder="项目名称" />
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_name')}</label>
+                <input type="text" id="inp-pj-name" class="neu-input" placeholder="${i18n.t('project_name')}" />
               </div>
               <div style="margin-bottom: 16px;">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">项目类型</label>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_type')}</label>
                 <select id="inp-pj-type" class="neu-input">
-                  <option value="image">图片项目 (Images)</option>
-                  <option value="video">视频项目 (Video)</option>
+                  <option value="image">${i18n.t('image_project')}</option>
+                  <option value="video">${i18n.t('video_project')}</option>
                 </select>
               </div>
               <div style="margin-bottom: 16px;" id="dir-image-wrapper">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">图片目录</label>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('image_dir')}</label>
                 <input type="text" id="inp-pj-imgdir" class="neu-input" placeholder="/absolute/path/to/images" />
               </div>
               <div style="margin-bottom: 16px; display: none;" id="dir-video-wrapper">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">视频文件路径</label>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('video_path')}</label>
                 <input type="text" id="inp-pj-vidpath" class="neu-input" placeholder="/absolute/path/to/video.mp4" />
               </div>
               <div style="margin-bottom: 16px;">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">初始类别 (支持逗号/换行)</label>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('initial_classes')}</label>
                 <textarea id="inp-pj-classes" class="neu-input" style="height: 80px; resize: none;" placeholder="cat, dog, person"></textarea>
               </div>
               <div style="margin-bottom: 24px;">
-                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">输出目录 (选填)</label>
-                <input type="text" id="inp-pj-savedir" class="neu-input" placeholder="留空则使用默认路径" />
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('save_dir')}</label>
+                <input type="text" id="inp-pj-savedir" class="neu-input" placeholder="..." />
               </div>
-              <button id="btn-submit-new" class="neu-button" style="width: 100%; color: var(--neu-text-active); font-weight: bold; padding: 14px;">创建项目</button>
+              <button id="btn-submit-new" class="neu-button" style="width: 100%; color: var(--neu-text-active); font-weight: bold; padding: 14px;">${i18n.t('create_btn')}</button>
             </div>
           </div>
 
@@ -78,38 +79,44 @@ export const ProjectsPage = {
         </div>
       </div>
       
-      <!-- Modal for Upload/Add Data -->
       <div id="modal-upload" class="modal-overlay" style="display: none;">
         <div class="neu-card modal-content" style="width: 450px; padding: 30px;">
-          <h2 style="margin-top:0;">新增数据</h2>
-          <p style="font-size:13px; color:var(--neu-text-light); margin-bottom: 20px;">上传图片到项目目录。同名文件将自动重命名。</p>
+          <h2 style="margin-top:0;">${i18n.t('add_data_title')}</h2>
+          <p style="font-size:13px; color:var(--neu-text-light); margin-bottom: 20px;">${i18n.t('add_data_desc')}</p>
           <div id="drop-zone" class="neu-box" style="height: 180px; border: 2px dashed rgba(0,0,0,0.1); display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s;">
             <span style="font-size: 40px; margin-bottom: 10px;">⁺</span>
-            <span style="font-size: 14px; font-weight: 500;">拖拽图片到此处 或 点击选择</span>
+            <span style="font-size: 14px; font-weight: 500;">${i18n.t('drop_zone')}</span>
             <input type="file" id="inp-upload-files" multiple accept="image/*" style="display:none;" />
           </div>
           <div id="upload-status" style="margin-top: 16px; font-size: 12px; height: 20px; color: var(--neu-text-active);"></div>
           <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 30px;">
-            <button id="btn-close-upload" class="neu-button">取消</button>
+            <button id="btn-close-upload" class="neu-button">${i18n.t('cancel')}</button>
           </div>
         </div>
       </div>
 
-      <!-- Modal for Settings (Kept from before) -->
+      <!-- Modal for Settings -->
       <div id="modal-settings" class="modal-overlay" style="display: none;">
-        <div class="neu-card modal-content" style="width: 400px;">
-          <h2 style="margin-top:0;">Global Settings</h2>
+        <div class="neu-card modal-content" style="width: 400px; padding: 30px;">
+          <h2 style="margin-top:0;">${i18n.t('global_settings')}</h2>
           <div style="margin-bottom: 16px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 500;">sam3-api URL (Local)</label>
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('sam_api_url')}</label>
             <input type="text" id="inp-set-samurl" class="neu-input" />
           </div>
-          <div style="margin-bottom: 24px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 500;">Global Cache Directory (Server)</label>
+          <div style="margin-bottom: 16px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('cache_dir')}</label>
             <input type="text" id="inp-set-cachedir" class="neu-input" placeholder="/absolute/path/to/data" />
           </div>
+          <div style="margin-bottom: 24px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('language')}</label>
+            <select id="inp-set-lang" class="neu-input">
+               <option value="zh">简体中文</option>
+               <option value="en">English</option>
+            </select>
+          </div>
           <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button id="btn-save-settings" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">Save</button>
-            <button id="btn-close-settings" class="neu-button">Close</button>
+            <button id="btn-save-settings" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('save')}</button>
+            <button id="btn-close-settings" class="neu-button">${i18n.t('close')}</button>
           </div>
         </div>
       </div>
@@ -194,23 +201,25 @@ export const ProjectsPage = {
           payload.video_path = document.getElementById('inp-pj-vidpath').value;
         }
         
-        btnSubmitNew.textContent = 'Creating...';
+        btnSubmitNew.textContent = i18n.t('creating');
         btnSubmitNew.disabled = true;
         await api.createProject(payload);
         this.loadProjects(); 
         // Clear form
         document.getElementById('inp-pj-name').value = '';
         document.getElementById('inp-pj-classes').value = '';
+        showToast(i18n.t('save_success'));
       } catch (err) {
-        alert(err.message);
+        showToast(err.message, 'error');
       } finally {
-        btnSubmitNew.textContent = '创建项目';
+        btnSubmitNew.textContent = i18n.t('create_btn');
         btnSubmitNew.disabled = false;
       }
     };
 
     btnSet.onclick = async () => {
       inpSamUrl.value = store.state.config.sam3ApiUrl;
+      document.getElementById('inp-set-lang').value = store.state.config.language;
       modalSet.style.display = 'flex';
       try {
         const res = await api.getCacheDir();
@@ -219,12 +228,22 @@ export const ProjectsPage = {
     };
     
     document.getElementById('btn-save-settings').onclick = async () => {
+      const newLang = document.getElementById('inp-set-lang').value;
+      const langChanged = newLang !== store.state.config.language;
+      
       store.setConfig('sam3ApiUrl', inpSamUrl.value);
+      store.setConfig('language', newLang);
+      
       const newCacheDir = document.getElementById('inp-set-cachedir').value;
       if (newCacheDir) {
-        try { await api.setCacheDir(newCacheDir); } catch(e) { alert(e.message); }
+        try { await api.setCacheDir(newCacheDir); } catch(e) { showToast(e.message, 'error'); }
       }
       modalSet.style.display = 'none';
+      
+      if (langChanged) {
+        showToast(i18n.t('switch_lang'));
+        this.render(this.container); // Hard refresh UI
+      }
     };
 
     btnCloseSet.onclick = () => modalSet.style.display = 'none';
@@ -285,7 +304,7 @@ export const ProjectsPage = {
       
       listCont.innerHTML = projects.map(p => {
         const isVideo = p.project_type === 'video';
-        const typeLabel = isVideo ? 'Video' : 'Image';
+        const typeLabel = isVideo ? i18n.t('video_project') : i18n.t('image_project');
         const total = isVideo ? p.num_frames : p.num_images;
         const labeled = p.labeled_images || 0;
         const progress = total > 0 ? Math.round((labeled / total) * 100) : 0;
@@ -303,34 +322,34 @@ export const ProjectsPage = {
                 </div>
               </div>
               <div style="display: flex; gap: 10px;">
-                <button class="neu-button" onclick="window.projectsPage.openProject('${p.id}', '${p.project_type}')" style="color: var(--neu-text-active); font-weight:600;">Open</button>
-                ${!isVideo ? `<button class="neu-button" onclick="window.projectsPage.showUpload('${p.id}')">新增数据</button>` : ''}
-                <button class="neu-button" onclick="window.projectsPage.deleteProject('${p.id}')" style="color: #e53e3e;">Delete</button>
+                <button class="neu-button" onclick="window.projectsPage.openProject('${p.id}', '${p.project_type}')" style="color: var(--neu-text-active); font-weight:600;">${i18n.t('open_btn')}</button>
+                ${!isVideo ? `<button class="neu-button" onclick="window.projectsPage.showUpload('${p.id}')">${i18n.t('add_data_btn')}</button>` : ''}
+                <button class="neu-button" onclick="window.projectsPage.deleteProject('${p.id}')" style="color: #e53e3e;">${i18n.t('delete_btn')}</button>
               </div>
             </div>
             
             <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; padding: 16px; background: rgba(0,0,0,0.02); border-radius: 8px; font-size: 13px;">
               <div>
-                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">TYPE</div>
+                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">${i18n.t('type')}</div>
                 <div style="font-weight: 700;">${typeLabel.toUpperCase()}</div>
               </div>
               <div>
-                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">TOTAL</div>
+                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">${i18n.t('total')}</div>
                 <div style="font-weight: 700;">${total}</div>
               </div>
               <div>
-                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">LABELED</div>
+                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">${i18n.t('labeled')}</div>
                 <div style="font-weight: 700; color: #48bb78;">${labeled}</div>
               </div>
               <div>
-                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">UNLABELED</div>
+                <div style="color: var(--neu-text-light); font-size: 11px; margin-bottom: 2px;">${i18n.t('unlabeled')}</div>
                 <div style="font-weight: 700; color: var(--neu-text-active);">${total - labeled}</div>
               </div>
             </div>
 
             <div style="font-size: 12px; color: var(--neu-text-light); display: flex; gap: 20px;">
-               <span><strong style="color:var(--neu-text);">Path:</strong> ${p.image_dir || p.video_path}</span>
-               <span style="margin-left:auto;">Created: ${new Date(p.created_at * 1000).toLocaleDateString()}</span>
+               <span><strong style="color:var(--neu-text);">${i18n.t('path')}:</strong> ${p.image_dir || p.video_path}</span>
+               <span style="margin-left:auto;">${i18n.t('created')}: ${new Date(p.created_at * 1000).toLocaleDateString()}</span>
             </div>
 
             <div style="width: 100%; height: 6px; background: var(--neu-inset); border-radius: 3px; overflow: hidden; margin-top: 4px;">
