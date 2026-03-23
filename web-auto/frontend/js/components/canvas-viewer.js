@@ -21,6 +21,13 @@ export class CanvasViewer {
     this.lastX = 0;
     this.lastY = 0;
     
+    // Prompting state
+    this.promptMode = 'point'; // 'point', 'box', 'text'
+    this.prompts = [];
+    this.isDrawingBox = false;
+    this.boxStart = null;
+    this.onPromptAdded = null;
+    
     // Bind methods
     this.onResize = this.onResize.bind(this);
     this.onWheel = this.onWheel.bind(this);
@@ -72,6 +79,16 @@ export class CanvasViewer {
     this.draw();
   }
   
+  setPromptMode(mode) {
+    this.promptMode = mode;
+    this.container.style.cursor = mode === 'text' ? 'grab' : 'crosshair';
+  }
+  
+  setPrompts(prompts) {
+    this.prompts = prompts || [];
+    this.draw();
+  }
+  
   fitToScreen() {
     if(!this.image) return;
     const padding = 40;
@@ -107,7 +124,28 @@ export class CanvasViewer {
   }
   
   onMouseDown(e) {
-    if(e.button === 1 || e.button === 0) { // Middle or left click pan for now
+    const rect = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    
+    // Map to image coordinates
+    const imgX = (mx - this.transform.x) / this.transform.scale;
+    const imgY = (my - this.transform.y) / this.transform.scale;
+
+    if (e.button === 0) { // Left click
+      if (this.promptMode === 'point') {
+        if (this.onPromptAdded) this.onPromptAdded('point', [imgX, imgY]);
+      } else if (this.promptMode === 'box') {
+        this.isDrawingBox = true;
+        this.boxStart = [imgX, imgY];
+      } else {
+        // Text mode or others, just pan
+        this.isDragging = true;
+        this.lastX = e.clientX;
+        this.lastY = e.clientY;
+        this.container.style.cursor = 'grabbing';
+      }
+    } else if (e.button === 1 || e.button === 2) { // Middle or Right click pan
        this.isDragging = true;
        this.lastX = e.clientX;
        this.lastY = e.clientY;
@@ -116,19 +154,39 @@ export class CanvasViewer {
   }
   
   onMouseMove(e) {
-    if(!this.isDragging) return;
-    const dx = e.clientX - this.lastX;
-    const dy = e.clientY - this.lastY;
-    this.transform.x += dx;
-    this.transform.y += dy;
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
-    this.draw();
+    if (this.isDragging) {
+      const dx = e.clientX - this.lastX;
+      const dy = e.clientY - this.lastY;
+      this.transform.x += dx;
+      this.transform.y += dy;
+      this.lastX = e.clientX;
+      this.lastY = e.clientY;
+      this.draw();
+    } else if (this.isDrawingBox) {
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      this.boxEnd = [(mx - this.transform.x) / this.transform.scale, (my - this.transform.y) / this.transform.scale];
+      this.draw();
+    }
   }
   
   onMouseUp(e) {
+    if (this.isDrawingBox && this.boxStart && this.boxEnd) {
+      // Finish box
+      const x1 = Math.min(this.boxStart[0], this.boxEnd[0]);
+      const y1 = Math.min(this.boxStart[1], this.boxEnd[1]);
+      const x2 = Math.max(this.boxStart[0], this.boxEnd[0]);
+      const y2 = Math.max(this.boxStart[1], this.boxEnd[1]);
+      if (Math.abs(x2 - x1) > 2 && Math.abs(y2 - y1) > 2) {
+        if (this.onPromptAdded) this.onPromptAdded('box', [x1, y1, x2, y2]);
+      }
+    }
     this.isDragging = false;
-    this.container.style.cursor = 'grab';
+    this.isDrawingBox = false;
+    this.boxStart = null;
+    this.boxEnd = null;
+    this.container.style.cursor = this.promptMode === 'text' ? 'grab' : 'crosshair';
   }
   
   draw() {
@@ -147,7 +205,39 @@ export class CanvasViewer {
       this.drawAnnotation(ann);
     }
     
+    // Draw current prompts
+    for(const p of this.prompts) {
+      this.drawPrompt(p);
+    }
+    
+    // Draw currently drag-drawing box
+    if (this.isDrawingBox && this.boxStart && this.boxEnd) {
+      this.ctx.strokeStyle = '#3182ce';
+      this.ctx.lineWidth = 2 / this.transform.scale;
+      this.ctx.strokeRect(this.boxStart[0], this.boxStart[1], this.boxEnd[0] - this.boxStart[0], this.boxEnd[1] - this.boxStart[1]);
+    }
+    
     this.ctx.restore();
+  }
+  
+  drawPrompt(p) {
+    this.ctx.fillStyle = '#3182ce';
+    this.ctx.strokeStyle = '#fff';
+    this.ctx.lineWidth = 1 / this.transform.scale;
+    
+    if (p.type === 'point') {
+       const [x, y] = p.data;
+       const radius = 5 / this.transform.scale;
+       this.ctx.beginPath();
+       this.ctx.arc(x, y, radius, 0, Math.PI * 2);
+       this.ctx.fill();
+       this.ctx.stroke();
+    } else if (p.type === 'box') {
+       const [x1, y1, x2, y2] = p.data;
+       this.ctx.strokeStyle = '#3182ce';
+       this.ctx.lineWidth = 2 / this.transform.scale;
+       this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
   }
   
   drawAnnotation(ann) {
@@ -161,7 +251,7 @@ export class CanvasViewer {
       }
       this.ctx.closePath();
       
-      this.ctx.fillStyle = `${color}33`; // 20% opacity
+      this.ctx.fillStyle = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
       this.ctx.fill();
       this.ctx.strokeStyle = color;
       this.ctx.lineWidth = 2 / this.transform.scale;

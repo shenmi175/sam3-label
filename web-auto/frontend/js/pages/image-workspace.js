@@ -11,19 +11,30 @@ export const ImageWorkspace = {
   limit: 50,
   totalImages: 0,
   selectedImageId: null,
+  selectedImagePath: null,
   viewer: null,
+  isUnmounted: false,
+  promptMode: 'point',
+  currentPrompts: [],
   
   async render(container, params) {
     this.container = container;
     this.projectId = params.id;
+    this.isUnmounted = false;
+    this.currentPrompts = [];
+    this.promptMode = 'point';
     
     container.innerHTML = `
       <div style="display: flex; height: 100vh; flex-direction: column;">
         <!-- Toolbar -->
         <div class="neu-box" style="height: 60px; display: flex; align-items: center; padding: 0 20px; z-index: 10; border-radius: 0;">
-          <h2 style="margin:0; font-size: 18px; margin-right: 20px;">Image Workspace <span id="ws-pj-name" style="font-weight: normal; font-size: 14px; color: var(--neu-text-light);">Loading...</span></h2>
+          <h2 style="margin:0; font-size: 18px; margin-right: 20px; display: flex; align-items: center; gap: 10px;">
+            <span id="ws-pj-icon">🖼️</span> 
+            <span id="ws-pj-name">Loading...</span>
+          </h2>
+          <div id="ws-pj-meta" style="font-size: 13px; color: var(--neu-text-light); display: flex; gap: 15px; align-items: center;"></div>
           <div style="flex: 1;"></div>
-          <button class="neu-button" onclick="window.location.hash='/'">← Back to List</button>
+          <button class="neu-button" onclick="window.location.hash='/'">← Dashboard</button>
         </div>
         
         <!-- Main Area -->
@@ -33,7 +44,7 @@ export const ImageWorkspace = {
             <div style="padding: 16px; border-bottom: 2px solid var(--neu-bg); box-shadow: var(--neu-inset);">
               <h3 style="margin: 0 0 10px 0; font-size: 16px;">Images (<span id="ws-img-count">0</span>)</h3>
               <div style="display: flex; gap: 8px;">
-                 <button class="neu-button" style="padding: 6px 12px; flex: 1;" id="btn-img-refresh">Refresh</button>
+                 <button class="neu-button" style="padding: 6px 12px; flex: 1;" id="btn-img-refresh">Refresh List</button>
               </div>
             </div>
             <div id="image-list-container" style="flex: 1; overflow-y: auto; padding: 8px;">
@@ -68,9 +79,23 @@ export const ImageWorkspace = {
 
                 <!-- Tools Section -->
                 <div style="padding: 16px;">
-                  <h3 style="margin-top:0; font-size: 16px;">Tools</h3>
-                  <button class="neu-button" id="btn-infer" style="width: 100%; margin-bottom: 12px; color: var(--neu-text-active);">Auto Infer (Text)</button>
-                  <button class="neu-button" id="btn-batch" style="width: 100%;">Batch Infer Dataset</button>
+                  <h3 style="margin-top:0; font-size: 16px;">Prompting Tools</h3>
+                  <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                    <button class="neu-button active" id="btn-pm-point" style="flex:1; font-size: 12px;">Point</button>
+                    <button class="neu-button" id="btn-pm-box" style="flex:1; font-size: 12px;">Box</button>
+                    <button class="neu-button" id="btn-pm-text" style="flex:1; font-size: 12px;">Text</button>
+                  </div>
+                  
+                  <div id="text-prompt-wrapper" style="display: none; margin-bottom: 12px;">
+                    <input type="text" id="inp-text-prompt" class="neu-input" placeholder="e.g. 'a red car'" />
+                  </div>
+                  
+                  <div id="prompts-list" style="margin-bottom: 12px; max-height: 120px; overflow-y: auto; font-size: 12px;">
+                    <div style="text-align:center; padding: 5px; color: var(--neu-text-light);">No active prompts</div>
+                  </div>
+
+                  <button class="neu-button" id="btn-infer" style="width: 100%; margin-bottom: 12px; color: var(--neu-text-active); font-weight: bold;">Run SAM Inference</button>
+                  <button class="neu-button" id="btn-batch" style="width: 100%; font-size: 12px;">Batch Infer Project</button>
                 </div>
                 
                 <!-- Filter Section -->
@@ -95,19 +120,27 @@ export const ImageWorkspace = {
     `;
     
     this.viewer = new CanvasViewer('canvas-container');
+    // Hook up canvas clicks for prompting
+    this.viewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
+    
     FilterUI.render('filter-container', this.projectId);
     this.bindEvents();
+    
+    // Set global instance for event handlers
+    window.currentWorkspace = this;
     
     await this.loadProjectInfo();
     await this.loadImages();
   },
 
   unmount() {
+    this.isUnmounted = true;
     if (this.viewer) {
       this.viewer.destroy();
       this.viewer = null;
     }
     this.container = null;
+    window.currentWorkspace = null;
   },
 
   bindEvents() {
@@ -117,9 +150,7 @@ export const ImageWorkspace = {
         this.offset = 0;
         await this.loadProjectInfo();
         await this.loadImages();
-      } catch(e) {
-        alert(e.message);
-      }
+      } catch(e) { alert(e.message); }
     };
     
     document.getElementById('btn-img-prev').onclick = () => {
@@ -136,9 +167,13 @@ export const ImageWorkspace = {
       }
     };
     
+    document.getElementById('btn-pm-point').onclick = () => this.setPromptMode('point');
+    document.getElementById('btn-pm-box').onclick = () => this.setPromptMode('box');
+    document.getElementById('btn-pm-text').onclick = () => this.setPromptMode('text');
+
     document.getElementById('btn-clear-anns').onclick = async () => {
       if (!this.selectedImageId) return;
-      if (!confirm("Clear all annotations?")) return;
+      if (!confirm("Clear all annotations for this image?")) return;
       try {
         await api.saveAnnotations(this.projectId, this.selectedImageId, []);
         await this.selectImage(this.selectedImageId, this.selectedImagePath);
@@ -146,24 +181,44 @@ export const ImageWorkspace = {
     };
     
     document.getElementById('btn-infer').onclick = async () => {
-      if (!this.selectedImageId) return;
+      if (!this.selectedImageId) return alert("Select an image first");
+      
       const btn = document.getElementById('btn-infer');
-      btn.textContent = 'Inferring...';
-      btn.disabled = true;
+      const textPrompt = document.getElementById('inp-text-prompt').value.trim();
+      
+      const prompts = [...this.currentPrompts];
+      if (this.promptMode === 'text' && textPrompt) {
+        prompts.push({type: 'text', data: textPrompt});
+      }
+      
+      if (prompts.length === 0) return alert("Add at least one prompt (click on image or enter text)");
+
       try {
-        await api.inferSingle({
+        btn.textContent = 'Inferring...';
+        btn.disabled = true;
+        
+        const payload = {
            project_id: this.projectId,
            image_id: this.selectedImageId,
-           mode: 'text',
-           classes: this.projectMeta.classes || [],
-           threshold: 0.5
-        });
-        await this.selectImage(this.selectedImageId, this.selectedImagePath);
-      } catch(e) {
-        alert(e.message);
+           prompts: prompts.map(p => ({
+              type: p.type,
+              data: p.data
+           }))
+        };
+        
+        const res = await api.infer(payload);
+        if (res.job_id) {
+           alert("Inference started (Job: " + res.job_id + "). Check status in Task Manager.");
+        } else {
+           // If direct result
+           await this.selectImage(this.selectedImageId, this.selectedImagePath);
+        }
+        
+      } catch(err) {
+        alert(err.message);
       } finally {
-         btn.textContent = 'Auto Infer (Text)';
-         btn.disabled = false;
+        btn.textContent = 'Run SAM Inference';
+        btn.disabled = false;
       }
     };
     
@@ -204,22 +259,85 @@ export const ImageWorkspace = {
     };
   },
 
+  setPromptMode(mode) {
+    this.promptMode = mode;
+    document.querySelectorAll('[id^="btn-pm-"]').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(`btn-pm-${mode}`).classList.add('active');
+    
+    const txtWrap = document.getElementById('text-prompt-wrapper');
+    txtWrap.style.display = mode === 'text' ? 'block' : 'none';
+    
+    if (this.viewer) {
+      this.viewer.setPromptMode(mode);
+    }
+  },
+
+  addPrompt(type, data) {
+    if (type === 'text') {
+      this.currentPrompts = [{type, data}];
+    } else {
+      this.currentPrompts.push({type, data});
+    }
+    this.renderPromptsList();
+    if (this.viewer) this.viewer.setPrompts(this.currentPrompts);
+  },
+
+  renderPromptsList() {
+    const list = document.getElementById('prompts-list');
+    if (this.currentPrompts.length === 0) {
+      list.innerHTML = '<div style="text-align:center; padding: 5px; color: var(--neu-text-light);">No active prompts</div>';
+      return;
+    }
+    let html = '<div style="display:flex; flex-direction:column; gap:4px;">';
+    this.currentPrompts.forEach((p, idx) => {
+      const dataLabel = p.type === 'text' ? p.data : (p.type === 'point' ? `${Math.round(p.data[0])},${Math.round(p.data[1])}` : 'BOX');
+      html += `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--neu-bg); padding:4px 8px; border-radius:4px; box-shadow:var(--neu-inset);">
+          <span style="font-weight:600;">${p.type.toUpperCase()}</span>
+          <span style="flex:1; margin: 0 8px; overflow:hidden; text-overflow:ellipsis;">${dataLabel}</span>
+          <button class="neu-button" style="padding: 2px 5px; font-size:10px; color:#e53e3e;" onclick="window.currentWorkspace.removePrompt(${idx})">×</button>
+        </div>
+      `;
+    });
+    html += '</div>';
+    list.innerHTML = html;
+  },
+
+  removePrompt(idx) {
+    this.currentPrompts.splice(idx, 1);
+    this.renderPromptsList();
+    if (this.viewer) this.viewer.setPrompts(this.currentPrompts);
+  },
+
   async loadProjectInfo() {
     try {
       this.projectMeta = await api.getProject(this.projectId, false);
-      document.getElementById('ws-pj-name').innerText = `- ${this.projectMeta.name}`;
+      if (this.isUnmounted) return;
+      
+      const isVideo = this.projectMeta.project_type === 'video';
+      document.getElementById('ws-pj-icon').innerText = isVideo ? '🎬' : '🖼️';
+      document.getElementById('ws-pj-name').innerText = this.projectMeta.name;
+      
+      const metaCont = document.getElementById('ws-pj-meta');
+      const progress = this.projectMeta.num_images > 0 ? Math.round(((this.projectMeta.labeled_images || 0) / this.projectMeta.num_images) * 100) : 0;
+      
+      metaCont.innerHTML = `
+        <span><b>${this.projectMeta.num_images}</b> items</span>
+        <span><b>${this.projectMeta.labeled_images || 0}</b> labeled (${progress}%)</span>
+        <span style="display:inline-block; padding: 2px 6px; background: rgba(0,0,0,0.05); border-radius:4px; font-weight:bold;">${this.projectMeta.project_type.toUpperCase()}</span>
+      `;
+      
       document.getElementById('ws-img-count').innerText = this.projectMeta.num_images;
       this.totalImages = this.projectMeta.num_images || 0;
-    } catch(err) {
-      console.error(err);
-    }
+    } catch(err) { console.error(err); }
   },
   
   async loadImages() {
     const listCont = document.getElementById('image-list-container');
-    listCont.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--neu-text-light);">Loading...</div>';
     try {
       const data = await api.getImages(this.projectId, this.offset, this.limit);
+      if (this.isUnmounted) return;
+      
       this.images = data.items || [];
       this.totalImages = data.total || 0;
       
@@ -239,9 +357,8 @@ export const ImageWorkspace = {
         const colorState = isSel ? 'var(--neu-text-active)' : 'var(--neu-text)';
         const shadowState = isSel ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
         
-        let statusDot = img.status === 'labeled' ? '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#48bb78; margin-right:6px;"></span>' : '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#e2e8f0; margin-right:6px;"></span>';
+        let statusDot = (img.status === 'labeled' || img.labeled) ? '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#48bb78; margin-right:6px;"></span>' : '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#e2e8f0; margin-right:6px;"></span>';
         
-        // Use inline onclick accessing a global instance variable
         html += `
           <div class="neu-button" style="justify-content: flex-start; text-align: left; padding: 10px; background: ${bgState}; box-shadow: ${shadowState}; color: ${colorState}; font-weight: ${isSel ? 'bold' : 'normal'}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" onclick="window.currentWorkspace.selectImage('${img.id}', '${img.rel_path}')">
              ${statusDot} ${img.rel_path}
@@ -259,26 +376,27 @@ export const ImageWorkspace = {
   async selectImage(id, relPath) {
     this.selectedImageId = id;
     this.selectedImagePath = relPath;
+    this.currentPrompts = [];
+    this.renderPromptsList();
+
+    if (this.viewer) {
+      this.viewer.setPrompts([]);
+    }
     
-    // Refresh list to show active state
     await this.loadImages();
     
     document.getElementById('canvas-placeholder').style.display = 'none';
     const annsList = document.getElementById('anns-list');
-    annsList.innerHTML = '<div style="text-align:center; padding: 10px; color: var(--neu-text-light);">Loading annotations...</div>';
+    annsList.innerHTML = '<div style="text-align:center; padding: 10px; color: var(--neu-text-light);">Loading...</div>';
     
     try {
-      // Load Image
-      // Ensure we hit the right API endpoint
       const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
       await this.viewer.loadImage(imgUrl);
       
-      // Load Annotations
       const annsRes = await api.getAnnotations(this.projectId, id);
       const anns = annsRes.annotations || [];
       this.viewer.setAnnotations(anns);
       
-      // Render Annotations sidebar
       if (!anns || anns.length === 0) {
          annsList.innerHTML = '<div style="color: var(--neu-text-light); font-size: 13px; text-align: center; padding: 10px;">No annotations</div>';
       } else {
@@ -299,23 +417,18 @@ export const ImageWorkspace = {
       }
       
     } catch(e) {
-      console.error(e);
-      annsList.innerHTML = '<div style="color: #e53e3e; font-size: 13px; text-align: center; padding: 10px;">Error loading annotations</div>';
+      annsList.innerHTML = '<div style="color: #e53e3e; font-size: 13px; text-align: center; padding: 10px;">Error loading data</div>';
     }
   },
   
   async deleteAnnotation(annId) {
     if (!this.selectedImageId) return;
     try {
-      // Since API only has saveAnnotations (overwrite), we fetch current, remove, and save over.
-      const anns = await api.getAnnotations(this.projectId, this.selectedImageId);
-      const newAnns = anns.filter(a => a.id !== annId);
+      const annsRes = await api.getAnnotations(this.projectId, this.selectedImageId);
+      const currentAnns = annsRes.annotations || [];
+      const newAnns = currentAnns.filter(a => a.id !== annId);
       await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
       await this.selectImage(this.selectedImageId, this.selectedImagePath);
-    } catch(e) {
-      alert("Failed to delete annotation: " + e.message);
-    }
+    } catch(e) { alert("Failed to delete: " + e.message); }
   }
 };
-
-window.currentWorkspace = ImageWorkspace;

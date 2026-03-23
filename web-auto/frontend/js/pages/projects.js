@@ -8,17 +8,20 @@ export const ProjectsPage = {
   async render(container) {
     this.container = container;
     container.innerHTML = `
-      <div class="page-layout" style="padding: 40px; max-width: 1200px; margin: 0 auto;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
-          <h1 style="margin:0; font-size: 28px;">web-auto Dashboard</h1>
-          <div>
-            <button id="btn-settings" class="neu-button" style="margin-right: 12px;">Settings</button>
-            <button id="btn-new-project" class="neu-button">New Project</button>
+      <div class="app-container" style="padding: 40px; align-items: center; overflow-y: auto;">
+        <div style="width: 100%; max-width: 1000px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px;">
+             <h1 style="margin:0; font-size: 32px; font-weight: 800; letter-spacing: -1px;">web-auto Dashboard</h1>
+             <div style="display: flex; gap: 12px;">
+                <button id="btn-toggle-theme" class="neu-button" title="Toggle Dark/Light Mode">
+                   <span id="theme-icon">🌓</span>
+                </button>
+                <button id="btn-settings" class="neu-button">Settings</button>
+                <button id="btn-new-project" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">+ New Project</button>
+             </div>
           </div>
-        </div>
-        
-        <div class="neu-card">
-          <div id="projects-list-container">
+          
+          <div id="projects-list-container" style="display: flex; flex-direction: column; gap: 24px;">
              <div style="padding: 40px; text-align: center; color: var(--neu-text-light);">Loading projects...</div>
           </div>
         </div>
@@ -94,12 +97,22 @@ export const ProjectsPage = {
   bindEvents() {
     // New Project Modal
     const btnNew = document.getElementById('btn-new-project');
+    const btnSet = document.getElementById('btn-settings');
+    const btnTheme = document.getElementById('btn-toggle-theme');
     const modalNew = document.getElementById('modal-new-project');
+    const modalSet = document.getElementById('modal-settings');
     const btnCancelNew = document.getElementById('btn-cancel-new');
     const btnSubmitNew = document.getElementById('btn-submit-new');
+    const btnCloseSet = document.getElementById('btn-close-settings');
+    const inpSamUrl = document.getElementById('inp-set-samurl');
     const typeSelect = document.getElementById('inp-pj-type');
     const imgWrapper = document.getElementById('dir-image-wrapper');
     const vidWrapper = document.getElementById('dir-video-wrapper');
+
+    btnTheme.onclick = () => {
+      const current = store.state.config.theme;
+      store.setConfig('theme', current === 'dark' ? 'light' : 'dark');
+    };
 
     btnNew.onclick = () => { modalNew.style.display = 'flex'; };
     btnCancelNew.onclick = () => { modalNew.style.display = 'none'; };
@@ -144,11 +157,6 @@ export const ProjectsPage = {
     };
 
     // Settings Modal
-    const btnSet = document.getElementById('btn-settings');
-    const modalSet = document.getElementById('modal-settings');
-    const btnCloseSet = document.getElementById('btn-close-settings');
-    const inpSamUrl = document.getElementById('inp-set-samurl');
-
     btnSet.onclick = async () => {
       inpSamUrl.value = store.state.config.sam3ApiUrl;
       modalSet.style.display = 'flex';
@@ -199,34 +207,39 @@ export const ProjectsPage = {
         return;
       }
       
-      let html = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 24px;">';
-      projects.forEach(p => {
-        const prog = p.num_images ? ((p.labeled_images || 0) / p.num_images * 100).toFixed(1) : 0;
+      let html = '';
+      for (const p of projects) {
+        const isVideo = p.project_type === 'video';
+        const typeLabel = isVideo ? 'Video' : 'Image';
+        const stats = isVideo ? `${p.num_frames} frames` : `${p.num_images} images`;
+        const progress = p.num_images > 0 ? Math.round(((p.labeled_images || 0) / p.num_images) * 100) : 0;
+        
         html += `
-          <div class="neu-box" style="padding: 20px; display: flex; flex-direction: column;">
-            <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">${p.name}</div>
-            <div style="font-size: 13px; color: var(--neu-text-light); margin-bottom: 16px;">
-              <span style="display:inline-block; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,0.05); margin-right: 8px;">${p.project_type.toUpperCase()}</span>
-              ID: ${p.id.substring(0,8)}...
+          <div class="neu-card" style="display: flex; align-items: center; padding: 20px; gap: 24px; transition: transform 0.2s;">
+            <div class="neu-box" style="width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0; box-shadow: var(--neu-inset);">
+              ${isVideo ? '🎬' : '🖼️'}
             </div>
-            
-            <div style="margin-bottom: 8px; font-size: 13px;">
-              <div>Total: <b>${p.num_images || 0}</b></div>
-              <div>Labeled: <b style="color: var(--neu-text-active);">${p.labeled_images || 0}</b></div>
+            <div style="flex: 1; min-width: 0;">
+              <h3 style="margin: 0 0 4px 0; font-size: 18px;">${p.name}</h3>
+              <div style="display: flex; gap: 16px; font-size: 13px; color: var(--neu-text-light);">
+                <span style="display:inline-block; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,0.05); font-weight: bold; color: var(--neu-text-active);">${typeLabel.toUpperCase()}</span>
+                <span>${stats}</span>
+                <span>Created: ${new Date(p.created_at * 1000).toLocaleDateString()}</span>
+              </div>
             </div>
-            
-            <div style="width: 100%; height: 6px; background: var(--neu-inset); border-radius: 3px; overflow: hidden; margin-bottom: 20px;">
-              <div style="height: 100%; width: ${prog}%; background: var(--neu-text-active); transition: width 0.3s;"></div>
+            <div style="width: 150px; text-align: right; flex-shrink: 0;">
+               <div style="font-size: 12px; margin-bottom: 4px; color: var(--neu-text-light);">Labeled: ${p.labeled_images || 0} / ${p.num_images} (${progress}%)</div>
+               <div style="width: 100%; height: 6px; background: var(--neu-inset); border-radius: 3px; overflow: hidden;">
+                  <div style="width: ${progress}%; height: 100%; background: var(--neu-text-active);"></div>
+               </div>
             </div>
-            
-            <div style="margin-top: auto; display: flex; gap: 8px;">
-               <button class="neu-button" style="flex: 1; color: var(--neu-text-active);" onclick="window.projectsPage.openProject('${p.id}', '${p.project_type}')">Open</button>
-               <button class="neu-button" style="color: #e53e3e;" onclick="window.projectsPage.deleteProject('${p.id}')">Delete</button>
+            <div style="display: flex; gap: 12px; flex-shrink: 0;">
+              <button class="neu-button" onclick="window.projectsPage.openProject('${p.id}', '${p.project_type}')" style="color: var(--neu-text-active);">Open</button>
+              <button class="neu-button" onclick="window.projectsPage.deleteProject('${p.id}')" style="color: #e53e3e; padding: 10px;">🗑️</button>
             </div>
           </div>
         `;
-      });
-      html += '</div>';
+      }
       listCont.innerHTML = html;
       
     } catch (err) {

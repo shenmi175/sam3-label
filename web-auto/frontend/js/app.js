@@ -3,9 +3,11 @@ import { ImageWorkspace } from './pages/image-workspace.js';
 import { VideoWorkspace } from './pages/video-workspace.js';
 import { router } from './router.js';
 import { TaskManager } from './components/tasks.js';
+import { store } from './store.js';
 
 export function bootstrap() {
   console.log('web-auto App initialized');
+  store.init();
   router.addRoute('/', ProjectsPage);
   router.addRoute('/project/image/:id', ImageWorkspace);
   router.addRoute('/project/video/:id', VideoWorkspace);

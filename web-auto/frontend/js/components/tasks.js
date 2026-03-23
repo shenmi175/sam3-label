@@ -42,15 +42,19 @@ export const TaskManager = {
     if (!projectId) return;
 
     try {
+      const isVideo = window.currentWorkspace && window.currentWorkspace.projectMeta && window.currentWorkspace.projectMeta.project_type === 'video';
+      
       // Parallel poll
-      const [inferRes, filterRes, videoRes] = await Promise.allSettled([
+      const promises = [
         api.getInferActiveJob(projectId),
-        api.getFilterActiveJob(projectId),
-        api.getVideoJob(projectId)
-      ]);
+        api.getFilterActiveJob(projectId)
+      ];
+      if (isVideo) promises.push(api.getVideoJob(projectId));
+      
+      const results = await Promise.allSettled(promises);
       
       const newActive = new Map();
-      [inferRes, filterRes, videoRes].forEach(res => {
+      results.forEach(res => {
          if (res.status === 'fulfilled' && res.value && res.value.job && res.value.job.status && res.value.job.status !== 'finished' && res.value.job.status !== 'failed') {
             newActive.set(res.value.job.job_id || 'video', res.value.job);
          }

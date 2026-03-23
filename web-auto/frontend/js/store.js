@@ -1,7 +1,8 @@
 export const store = {
   state: {
     config: {
-      sam3ApiUrl: localStorage.getItem('sam3ApiUrl') || 'http://127.0.0.1:8001'
+      sam3ApiUrl: localStorage.getItem('sam3ApiUrl') || 'http://127.0.0.1:8001',
+      theme: localStorage.getItem('theme') || 'light'
     }
   },
   listeners: [],
@@ -17,8 +18,23 @@ export const store = {
     this.state.config[key] = value;
     if (key === 'sam3ApiUrl') {
       localStorage.setItem('sam3ApiUrl', value);
+    } else if (key === 'theme') {
+      localStorage.setItem('theme', value);
+      this.applyTheme(value);
     }
     this.notify();
+  },
+  
+  applyTheme(theme) {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark-mode');
+    } else {
+      document.documentElement.classList.remove('dark-mode');
+    }
+  },
+  
+  init() {
+    this.applyTheme(this.state.config.theme);
   },
   
   notify() {
