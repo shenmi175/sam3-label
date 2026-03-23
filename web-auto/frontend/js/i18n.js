@@ -55,7 +55,8 @@ export const i18n = {
     image_list: '图片列表',
     loading_images: '加载图片中...',
     no_images: '未找到图片',
-    pure_vision: 'Pure Vision',
+    select_image_prompt: '请从左侧选择一张图片开始标注',
+    pure_vision: '纯分量预览',
     preview_results: 'SAM 预测预览',
     select_all: '全选',
     run_inference: '运行预测',
@@ -71,8 +72,8 @@ export const i18n = {
     preview_results_desc: '使用工具在图像上绘制提示点或框，结果将在此处显示为预览。',
     
     // Video Workspace
-    propagation: '传播设置',
-    keyframes: '关键帧',
+    propagation: '标注传播',
+    keyframes: '关键帧列表',
     frame_range: '传播范围 (前/后/双向)',
     imgsz: '工作比例 (Resize)',
     segment_size: '缓存分段大小',
@@ -145,6 +146,7 @@ export const i18n = {
     image_list: 'Image List',
     loading_images: 'Loading images...',
     no_images: 'No images found',
+    select_image_prompt: 'Select an image from the left to start',
     pure_vision: 'Pure Vision',
     preview_results: 'SAM Preview Results',
     select_all: 'All',

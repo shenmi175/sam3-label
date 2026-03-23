@@ -35,7 +35,7 @@ export const ImageWorkspace = {
             <span style="font-size: 20px;">🖼️</span>
             <div style="display: flex; flex-direction: column;">
               <span id="ws-pj-name" style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${i18n.t('backend_checking')}</span>
-              <span id="ws-pj-id" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;"></span>
+              <span id="health-status-header-ws" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">${i18n.t('backend_checking')}</span>
             </div>
           </div>
           
@@ -96,7 +96,7 @@ export const ImageWorkspace = {
              <div id="canvas-container" style="flex: 1; position: relative;">
                 <div id="canvas-placeholder" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
                    <div style="font-size: 64px; opacity: 0.1; margin-bottom: 20px;">🖼️</div>
-                   <div style="font-size: 18px; font-weight: 600; color: var(--neu-text-light);">Select an image from the left to start</div>
+                   <div style="font-size: 18px; font-weight: 600; color: var(--neu-text-light);">${i18n.t('select_image_prompt')}</div>
                 </div>
 
                 <!-- Hovering Toolbar -->
@@ -128,7 +128,7 @@ export const ImageWorkspace = {
              <!-- Bottom Action Bar (Context Sensitive) -->
              <div id="ws-action-bar" style="position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 100; display: none;">
                 <button class="neu-button" id="btn-submit-preview" style="padding: 12px 32px; border-radius: 30px; font-weight: 800; font-size: 16px; color: var(--neu-text-active); background: var(--neu-bg); box-shadow: var(--neu-outset);">
-                   Submit to [Class Name]
+                   ${i18n.t('submit_all')}
                 </button>
              </div>
           </div>
@@ -163,12 +163,11 @@ export const ImageWorkspace = {
     this.viewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
     
     this.bindEvents();
-    this.startHealthCheck();
-    
     window.currentWorkspace = this;
     
     await this.loadProjectInfo();
     await this.loadImages();
+    this.startHealthCheck();
   },
 
   unmount() {
@@ -185,19 +184,26 @@ export const ImageWorkspace = {
   startHealthCheck() {
     const check = async () => {
       const el = document.getElementById('backend-health');
+      const headerStatus = document.getElementById('health-status-header-ws');
       if (!el) return;
       try {
         const res = await api.getHealth();
         const dot = el.querySelector('.dot');
         if (res.status === 'ok') {
           dot.style.background = '#10b981';
-          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${i18n.t('backend_online')}`;
+          const txt = i18n.t('backend_online');
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${txt}`;
+          if (headerStatus) headerStatus.innerText = txt;
         } else {
           dot.style.background = '#ef4444';
-          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_error')}`;
+          const txt = i18n.t('backend_error');
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${txt}`;
+          if (headerStatus) headerStatus.innerText = txt;
         }
       } catch (e) {
-        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_offline')}`;
+        const txt = i18n.t('backend_offline');
+        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${txt}`;
+        if (headerStatus) headerStatus.innerText = txt;
       }
     };
     check();

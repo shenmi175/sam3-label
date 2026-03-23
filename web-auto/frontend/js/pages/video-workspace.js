@@ -47,13 +47,13 @@ export const VideoWorkspace = {
       <div class="workspace-layout v-workspace" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden;">
         <!-- Top Navigation / Task Progress -->
         <div class="neu-box" style="height: 64px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px;">
-          <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
-            <span style="font-size: 20px;">🎬</span>
-            <div style="display: flex; flex-direction: column;">
-              <span style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${this.project.name}</span>
-              <span style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">${this.projectId}</span>
+            <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
+              <span style="font-size: 20px;">🎬</span>
+              <div style="display: flex; flex-direction: column;">
+                <span id="ws-pj-name" style="font-weight: 700; font-size: 15px; color: var(--neu-text);">${this.project?.name || i18n.t('backend_checking')}</span>
+                <span id="health-status-header-ws" style="font-size: 10px; color: var(--neu-text-light); font-family: monospace;">${i18n.t('backend_checking')}</span>
+              </div>
             </div>
-          </div>
           
           <!-- Task Progress Area -->
           <div style="flex: 1; display: flex; justify-content: center;">
@@ -199,19 +199,26 @@ export const VideoWorkspace = {
   startHealthCheck() {
     const check = async () => {
       const el = document.getElementById('backend-health');
+      const headerStatus = document.getElementById('health-status-header-ws');
       if (!el) return;
       try {
         const res = await api.getHealth();
         const dot = el.querySelector('.dot');
         if (res.status === 'ok') {
           dot.style.background = '#10b981';
-          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${i18n.t('backend_online')}`;
+          const txt = i18n.t('backend_online');
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 6px;"></span> ${txt}`;
+          if (headerStatus) headerStatus.innerText = txt;
         } else {
           dot.style.background = '#ef4444';
-          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_error')}`;
+          const txt = i18n.t('backend_error');
+          el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${txt}`;
+          if (headerStatus) headerStatus.innerText = txt;
         }
       } catch (e) {
-        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${i18n.t('backend_offline')}`;
+        const txt = i18n.t('backend_offline');
+        el.innerHTML = `<span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px;"></span> ${txt}`;
+        if (headerStatus) headerStatus.innerText = txt;
       }
     };
     check();
