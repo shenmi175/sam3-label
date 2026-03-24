@@ -123,7 +123,7 @@ export const ImageWorkspace = {
             <!-- Project Meta Card -->
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
                <div class="neu-card" style="padding: 15px; margin-bottom: 10px;">
-                 <h3 id="ws-pj-card-name" style="margin: 0 0 5px 0; font-size: 15px;">--</h3>
+                 <h3 id="ws-pj-card-name" style="margin: 0 0 5px 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px;">--</h3>
                  <div style="font-size: 10px; color: var(--neu-text-light); word-break: break-all; font-family: monospace;" id="ws-pj-card-id">--</div>
                  <div style="margin-top: 10px; display: flex; justify-content: space-between; font-size: 11px;">
                    <span>${i18n.t('total')}: <b id="ws-meta-total">0</b></span>
@@ -574,6 +574,37 @@ export const ImageWorkspace = {
         const img = this.images[0];
         if (img) this.selectImage(img.id, img.rel_path);
       });
+    }
+  },
+
+  toggleSidePanel(side) {
+    const panelId = side === 'left' ? 'left-panel' : 'right-panel';
+    const btnId = side === 'left' ? 'btn-toggle-left-panel' : 'btn-toggle-right-panel';
+    const panel = document.getElementById(panelId);
+    const btn = document.getElementById(btnId);
+    if (!panel) return;
+    const hidden = panel.style.display === 'none';
+    panel.style.display = hidden ? 'flex' : 'none';
+    if (btn) btn.textContent = side === 'left'
+      ? (hidden ? '\u27E8' : '\u27E9')
+      : (hidden ? '\u27E9' : '\u27E8');
+  },
+
+  toggleSection(section) {
+    if (section === 'classes') {
+      const body = document.getElementById('classes-section-body');
+      const btn = document.getElementById('btn-toggle-classes-section');
+      if (!body) return;
+      this.classesSectionCollapsed = !this.classesSectionCollapsed;
+      body.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
+      if (btn) btn.textContent = this.classesSectionCollapsed ? '+' : '\u2212';
+    } else if (section === 'annotations') {
+      const wrapper = document.getElementById('annotation-list-wrapper');
+      const btn = document.getElementById('btn-collapse-anns') || document.getElementById('btn-toggle-annotations-section');
+      if (!wrapper) return;
+      this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
+      wrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
+      if (btn) btn.textContent = this.annotationsSectionCollapsed ? '+' : '\u2212';
     }
   },
 
