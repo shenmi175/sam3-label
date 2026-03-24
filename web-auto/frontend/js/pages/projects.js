@@ -80,7 +80,8 @@ export const ProjectsPage = {
       </div>
       
       <div id="modal-upload" class="modal-overlay" style="display: none;">
-        <div class="neu-card modal-content" style="width: 450px; padding: 30px;">
+        <div class="neu-card modal-content" style="width: 450px; padding: 30px; position: relative;">
+          <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-upload').style.display='none'">×</button>
           <h2 style="margin-top:0;">${i18n.t('add_data_title')}</h2>
           <p style="font-size:13px; color:var(--neu-text-light); margin-bottom: 20px;">${i18n.t('add_data_desc')}</p>
           <div id="drop-zone" class="neu-box" style="height: 180px; border: 2px dashed rgba(0,0,0,0.1); display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s;">
@@ -97,7 +98,8 @@ export const ProjectsPage = {
 
       <!-- Modal for Settings -->
       <div id="modal-settings" class="modal-overlay" style="display: none;">
-        <div class="neu-card modal-content" style="width: 400px; padding: 30px;">
+        <div class="neu-card modal-content" style="width: 400px; padding: 30px; position: relative;">
+          <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-settings').style.display='none'">×</button>
           <h2 style="margin-top:0;">${i18n.t('global_settings')}</h2>
           <div style="margin-bottom: 16px;">
             <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('sam_api_url')}</label>

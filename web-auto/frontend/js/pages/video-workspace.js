@@ -44,7 +44,7 @@ export const VideoWorkspace = {
 
   async renderLayout() {
     this.container.innerHTML = `
-      <div class="workspace-layout v-workspace" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden;">
+      <div class="workspace-layout v-workspace" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0;">
         <!-- Top Navigation / Task Progress -->
         <div class="neu-box" style="height: 64px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px;">
             <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
@@ -77,10 +77,10 @@ export const VideoWorkspace = {
         </div>
         
         <!-- Main Workspace Area -->
-        <div style="display: flex; flex: 1; overflow: hidden;">
+        <div style="display: flex; flex: 1; overflow: hidden; min-height: 0;">
           
           <!-- Left Column: Classes & Propagation -->
-          <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
+          <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0; min-height: 0;">
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg);">
                <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
                <div id="video-classes-list" style="display: flex; flex-direction: column; gap: 10px;">
@@ -118,7 +118,7 @@ export const VideoWorkspace = {
           </div>
           
           <!-- Middle Column: Canvas & Timeline -->
-          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #1a1c1e;">
+          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #1a1c1e; min-width: 0; min-height: 0;">
              <!-- Canvas Area -->
              <div id="video-canvas-container" style="flex: 1; position: relative;">
                 <!-- CanvasViewer will be here -->
@@ -162,7 +162,7 @@ export const VideoWorkspace = {
           </div>
           
           <!-- Right Column: Previews & Keyframes -->
-          <div class="neu-box" id="v-right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
+          <div class="neu-box" id="v-right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg); min-height: 0;">
             <div style="padding: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center;">
                <div style="display: flex; flex-direction: column;">
                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('keyframes')}</h3>

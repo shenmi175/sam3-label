@@ -34,7 +34,7 @@ export const ImageWorkspace = {
     window.currentWorkspace = this;
     
     container.innerHTML = `
-      <div class="workspace-layout" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden;">
+      <div class="workspace-layout" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0;">
         <!-- 1. Top Navigation Bar -->
         <div class="neu-box" style="height: 56px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05);">
           <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
@@ -116,10 +116,10 @@ export const ImageWorkspace = {
         </div>
         
         <!-- 4. Main Workspace Area -->
-        <div id="ws-main-row" style="display: flex; flex: 1; overflow: hidden;">
+        <div id="ws-main-row" style="display: flex; flex: 1; overflow: hidden; min-height: 0;">
           
           <!-- Left Column: Project Meta & Image List -->
-          <div class="neu-box" id="left-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
+          <div class="neu-box" id="left-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0; min-height: 0;">
             <!-- Project Meta Card -->
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
                <div class="neu-card" style="padding: 15px; margin-bottom: 10px;">
@@ -155,7 +155,7 @@ export const ImageWorkspace = {
           </div>
           
           <!-- Middle Column: Canvas & Hover Tools -->
-          <div id="center-panel" style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #eaeff2;">
+          <div id="center-panel" style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #eaeff2; min-width: 0; min-height: 0;">
              <!-- Canvas Area -->
              <div id="canvas-container" style="flex: 1; position: relative;">
                 <div id="canvas-placeholder" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
@@ -196,7 +196,7 @@ export const ImageWorkspace = {
           </div>
           
           <!-- Right Column: Classes & Annotations -->
-             <div class="neu-box" id="right-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
+             <div class="neu-box" id="right-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg); min-height: 0;">
              <!-- Classes Management -->
              <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
                 <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
@@ -290,12 +290,12 @@ export const ImageWorkspace = {
     ensureSideToggle(
       'btn-toggle-left-panel',
       '⟨',
-      'position: absolute; top: 50%; left: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 18px; font-size: 16px;'
+      'position: absolute; top: 50%; left: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 17px; font-size: 16px; border: 1px solid rgba(0,0,0,0.05);'
     );
     ensureSideToggle(
       'btn-toggle-right-panel',
       '⟩',
-      'position: absolute; top: 50%; right: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 18px; font-size: 16px;'
+      'position: absolute; top: 50%; right: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 17px; font-size: 16px; border: 1px solid rgba(0,0,0,0.05);'
     );
 
     if (leftPanel) {
@@ -741,7 +741,8 @@ export const ImageWorkspace = {
     modal.className = 'modal-overlay';
     modal.style.cssText = 'position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 9999; background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);';
     modal.innerHTML = `
-      <div class="neu-card" style="width: 380px; padding: 28px; border-radius: 20px;">
+      <div class="neu-card" style="width: 380px; padding: 28px; border-radius: 20px; position: relative;">
+        <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-add-class').remove()">×</button>
         <h3 style="margin: 0 0 20px 0; font-size: 16px;">➕ 新建类别</h3>
         <textarea id="inp-new-class-names" class="neu-input" rows="4" placeholder="每行一个类别，支持批量输入" style="width: 100%; resize: vertical; font-size: 13px; padding: 10px;"></textarea>
         <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
@@ -1304,6 +1305,7 @@ export const ImageWorkspace = {
     
     modal.innerHTML = `
       <div class="neu-card" style="width: 600px; padding: 30px; position: relative; max-height: 90vh; overflow-y: auto;">
+        <button class="neu-button" style="position: absolute; top: 20px; right: 20px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 20px; color: #ef4444;" onclick="document.getElementById('modal-filter-full').style.display='none'">×</button>
         <h2 style="margin-top: 0; display: flex; align-items: center; gap: 10px;">✨ ${i18n.t('smart_filter')}</h2>
         
         <div style="display: flex; flex-direction: column; gap: 24px;">
@@ -1568,7 +1570,8 @@ export const ImageWorkspace = {
   openExport() {
     const modal = document.getElementById('modal-export-full');
     modal.innerHTML = `
-      <div class="neu-card" style="width: 400px; padding: 300px; padding: 30px;">
+      <div class="neu-card" style="width: 400px; padding: 30px; position: relative;">
+        <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-export-full').style.display='none'">×</button>
         <h2 style="margin-top: 0;">${i18n.t('export')}</h2>
         <div style="display: flex; flex-direction: column; gap: 20px;">
           <div>

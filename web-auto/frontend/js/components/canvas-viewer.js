@@ -78,9 +78,30 @@ export class CanvasViewer {
   }
   
   onResize() {
+    const oldWidth = this.canvas.width;
+    const oldHeight = this.canvas.height;
+    
     const rect = this.container.getBoundingClientRect();
     this.canvas.width = rect.width;
     this.canvas.height = rect.height;
+    
+    if (this.image && oldWidth > 0 && oldHeight > 0) {
+      // If the image was centered, keep it centered in the new dimensions
+      // Otherwise maintain its relative position if possible
+      const centerX = (oldWidth - this.image.width * this.transform.scale) / 2;
+      const centerY = (oldHeight - this.image.height * this.transform.scale) / 2;
+      
+      const isWasCenteredX = Math.abs(this.transform.x - centerX) < 2;
+      const isWasCenteredY = Math.abs(this.transform.y - centerY) < 2;
+      
+      if (isWasCenteredX) {
+        this.transform.x = (this.canvas.width - this.image.width * this.transform.scale) / 2;
+      }
+      if (isWasCenteredY) {
+        this.transform.y = (this.canvas.height - this.image.height * this.transform.scale) / 2;
+      }
+    }
+    
     this.draw();
   }
   
