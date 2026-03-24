@@ -39,8 +39,8 @@ export const ImageWorkspace = {
         <div class="neu-box" style="height: 56px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05);">
           <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
             <span style="font-size: 18px;">⬅️</span>
-            <div style="display: flex; flex-direction: column;">
-              <span id="ws-pj-name" style="font-weight: 700; font-size: 14px; color: var(--neu-text);">${i18n.t('backend_checking')}</span>
+            <div style="display: flex; flex-direction: column; max-width: 280px;">
+              <span id="ws-pj-name" style="font-weight: 700; font-size: 14px; color: var(--neu-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;">${i18n.t('backend_checking')}</span>
               <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--neu-text-light);">
                 <span id="health-status-header-ws">${i18n.t('backend_checking')}</span>
                 <span>•</span>
@@ -72,12 +72,12 @@ export const ImageWorkspace = {
 
           <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
 
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light);">${i18n.t('threshold')}</label>
-            <input type="number" id="inp-threshold" class="neu-input" style="width: 60px; height: 32px; font-size: 11px;" step="0.05" min="0" max="1" value="${store.state.config.threshold}" />
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;">
+            <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); white-space: nowrap;">${i18n.t('threshold')}</label>
+            <input type="number" id="inp-threshold" class="neu-input" style="width: 64px; height: 32px; font-size: 11px;" step="0.05" min="0" max="1" value="${store.state.config.threshold}" />
             
-            <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-left: 5px;">${i18n.t('batch_size')}</label>
-            <input type="number" id="inp-batch-size" class="neu-input" style="width: 60px; height: 32px; font-size: 11px;" min="1" max="100" value="${store.state.config.batchSize}" />
+            <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-left: 5px; white-space: nowrap;">${i18n.t('batch_size')}</label>
+            <input type="number" id="inp-batch-size" class="neu-input" style="width: 64px; height: 32px; font-size: 11px;" min="1" max="200" value="${store.state.config.batchSize}" />
           </div>
 
           <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
@@ -164,14 +164,15 @@ export const ImageWorkspace = {
                 </div>
 
                 <!-- Hovering Toolbar -->
-                <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
-                   <button class="neu-button active" id="btn-tool-point" title="Point Prompt" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
-                   <button class="neu-button" id="btn-tool-box" title="Box Prompt" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
-                   <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                   <button class="neu-button" id="btn-vtool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
-                   <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                   <button class="neu-button" id="btn-vtool-filter" title="${i18n.t('filter_settings')}" style="width: 40px; height: 40px; border-radius: 50%;">🔍</button>
-                </div>
+                 <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+                    <button class="neu-button" id="btn-tool-pan" title="Pan / Drag Image" style="width: 40px; height: 40px; border-radius: 50%;">✋</button>
+                    <button class="neu-button" id="btn-tool-point" title="Point Prompt" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
+                    <button class="neu-button" id="btn-tool-box" title="Box Prompt" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                    <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
+                    <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
+                    <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
+                    <button class="neu-button" id="btn-vtool-filter" title="${i18n.t('filter_settings')}" style="width: 40px; height: 40px; border-radius: 50%;">🔍</button>
+                 </div>
              </div>
 
              <!-- Display Toggles & Information -->
@@ -207,12 +208,15 @@ export const ImageWorkspace = {
 
              <!-- Annotations List -->
              <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-                <div style="padding: 15px 20px; border-bottom: 1px solid rgba(0,0,0,0.03);">
-                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">标注列表</h3>
+                <div style="padding: 12px 20px; border-bottom: 1px solid rgba(0,0,0,0.03); display: flex; justify-content: space-between; align-items: center;">
+                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotation_list') || '标注列表'}</h3>
+                   <button id="btn-collapse-anns" class="neu-button" style="width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px;" title="折叠/展开">−</button>
                 </div>
-                <div id="annotation-list-container" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
-                   <!-- Annotation items -->
-                   <div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>
+                <div id="annotation-list-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                  <div id="annotation-list-container" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
+                     <!-- Annotation items -->
+                     <div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>
+                  </div>
                 </div>
                 <div style="padding: 20px; border-top: 1px solid rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 10px;">
                    <div class="neu-box" style="padding: 12px; border-radius: 12px; background: var(--neu-bg-light);">
@@ -366,6 +370,10 @@ export const ImageWorkspace = {
     }
     if (this.healthInterval) clearInterval(this.healthInterval);
     if (this.filterJobTimer) clearTimeout(this.filterJobTimer);
+    if (this._keyHandler) {
+      document.removeEventListener('keydown', this._keyHandler);
+      this._keyHandler = null;
+    }
     this.container = null;
     window.currentWorkspace = null;
   },
@@ -477,23 +485,17 @@ export const ImageWorkspace = {
     };
     
     const btnAddCls = document.getElementById('btn-add-class-ws');
-    if (btnAddCls) btnAddCls.onclick = async () => {
-      const name = prompt("New class name:");
-      if (name) {
-        try {
-          await api.addClass(this.projectId, name);
-          await this.loadProjectInfo();
-        } catch(e) { showToast(e.message, "error"); }
-      }
-    };
+    if (btnAddCls) btnAddCls.onclick = () => this.showAddClassModal();
 
-    // Canvas Tools
+    // Canvas Tools (Pan / Pointer / Point / Box / Clear / Fit)
+    const btnToolPan = document.getElementById('btn-tool-pan');
     const btnToolPointer = document.getElementById('btn-tool-pointer');
     const btnToolPoint = document.getElementById('btn-tool-point');
     const btnToolBox = document.getElementById('btn-tool-box');
     const btnToolClear = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
     const btnToolFit = document.getElementById('btn-vtool-filter');
 
+    if (btnToolPan) btnToolPan.onclick = () => this.setPromptMode('pan');
     if (btnToolPointer) btnToolPointer.onclick = () => this.setPromptMode('pointer');
     if (btnToolPoint) btnToolPoint.onclick = () => this.setPromptMode('point');
     if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
@@ -512,7 +514,20 @@ export const ImageWorkspace = {
       if (this.viewer) this.viewer.fitToScreen();
     };
 
-    document.getElementById('chk-show-masks').onchange = (e) => {
+    // Annotation section collapse toggle
+    const btnCollapseAnns = document.getElementById('btn-collapse-anns');
+    if (btnCollapseAnns) {
+      btnCollapseAnns.onclick = () => {
+        const wrapper = document.getElementById('annotation-list-wrapper');
+        if (!wrapper) return;
+        const collapsed = wrapper.style.display === 'none';
+        wrapper.style.display = collapsed ? 'flex' : 'none';
+        btnCollapseAnns.innerText = collapsed ? '\u2212' : '+';
+      };
+    }
+
+    const chkShowMasks = document.getElementById('chk-show-masks');
+    if (chkShowMasks) chkShowMasks.onchange = (e) => {
       if (this.viewer) this.viewer.setOptions({ showMasks: e.target.checked });
     };
 
@@ -526,70 +541,60 @@ export const ImageWorkspace = {
     if (btnToggleAnnotations) btnToggleAnnotations.onclick = () => this.toggleSection('annotations');
 
     // Right Column
-    document.getElementById('btn-save-anns').onclick = () => this.saveCurrentAnns();
-    document.getElementById('btn-clear-anns').onclick = () => this.clearCurrentAnns();
-    document.getElementById('btn-submit-preview').onclick = () => this.keepAllPreviews();
+    const btnSaveAnns = document.getElementById('btn-save-anns');
+    if (btnSaveAnns) btnSaveAnns.onclick = () => this.saveCurrentAnns();
+    const btnClearAnns = document.getElementById('btn-clear-anns');
+    if (btnClearAnns) btnClearAnns.onclick = () => this.clearCurrentAnns();
+    const btnSubmitPreview = document.getElementById('btn-submit-preview');
+    if (btnSubmitPreview) btnSubmitPreview.onclick = () => this.keepAllPreviews();
 
     // Theme Toggle
     const btnTheme = document.getElementById('btn-toggle-theme');
-    btnTheme.onclick = () => {
+    if (btnTheme) btnTheme.onclick = () => {
       const next = store.state.config.theme === 'dark' ? 'light' : 'dark';
       store.setConfig('theme', next);
-      document.getElementById('theme-icon').innerText = next === 'dark' ? '☀️' : '🌓';
+      const icon = document.getElementById('theme-icon');
+      if (icon) icon.innerText = next === 'dark' ? '☀️' : '🌓';
     };
-    this.updatePanelVisibility();
-    this.updateSectionVisibility();
+
+    // Keyboard navigation: ArrowUp/Left = prev image, ArrowDown/Right = next image
+    this._keyHandler = (e) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        this.navigateImage(-1);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        this.navigateImage(1);
+      }
+    };
+    document.addEventListener('keydown', this._keyHandler);
   },
 
-  toggleSidePanel(side) {
-    if (side === 'left') {
-      this.leftPanelHidden = !this.leftPanelHidden;
-    } else if (side === 'right') {
-      this.rightPanelHidden = !this.rightPanelHidden;
-    }
-    this.updatePanelVisibility();
-    if (this.viewer) this.viewer.onResize();
-  },
-
-  updatePanelVisibility() {
-    const leftPanel = document.getElementById('left-panel');
-    const rightPanel = document.getElementById('right-panel');
-    const leftBtn = document.getElementById('btn-toggle-left-panel');
-    const rightBtn = document.getElementById('btn-toggle-right-panel');
-
-    if (leftPanel) {
-      leftPanel.style.display = this.leftPanelHidden ? 'none' : 'flex';
-    }
-    if (rightPanel) {
-      rightPanel.style.display = this.rightPanelHidden ? 'none' : 'flex';
-    }
-    if (leftBtn) leftBtn.textContent = this.leftPanelHidden ? '>' : '<';
-    if (rightBtn) rightBtn.textContent = this.rightPanelHidden ? '<' : '>';
-  },
-
-  toggleSection(section) {
-    if (section === 'classes') {
-      this.classesSectionCollapsed = !this.classesSectionCollapsed;
-    } else if (section === 'annotations') {
-      this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
-    }
-    this.updateSectionVisibility();
-    if (this.viewer) this.viewer.onResize();
-  },
-
-  updateSectionVisibility() {
-    const classesBody = document.getElementById('classes-section-body');
-    const annotationsBody = document.getElementById('annotations-section-body');
-    const classesBtn = document.getElementById('btn-toggle-classes-section');
-    const annotationsBtn = document.getElementById('btn-toggle-annotations-section');
-    const annotationsSection = document.getElementById('annotations-section');
-
-    if (classesBody) classesBody.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
-    if (annotationsBody) annotationsBody.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
-    if (classesBtn) classesBtn.textContent = this.classesSectionCollapsed ? '+' : '-';
-    if (annotationsBtn) annotationsBtn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
-    if (annotationsSection) {
-      annotationsSection.style.flex = this.annotationsSectionCollapsed ? '0 0 auto' : '1';
+  navigateImage(delta) {
+    if (!this.images || this.images.length === 0) return;
+    const currentIndex = this.images.findIndex(img => img.id === this.selectedImageId);
+    const nextIndex = currentIndex + delta;
+    if (nextIndex >= 0 && nextIndex < this.images.length) {
+      const img = this.images[nextIndex];
+      this.selectImage(img.id, img.rel_path);
+      setTimeout(() => {
+        const el = document.querySelector(`.image-item[data-id="${img.id}"]`);
+        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }, 50);
+    } else if (nextIndex < 0 && this.offset >= this.limit) {
+      this.offset -= this.limit;
+      this.loadImages().then(() => {
+        const img = this.images[this.images.length - 1];
+        if (img) this.selectImage(img.id, img.rel_path);
+      });
+    } else if (nextIndex >= this.images.length && this.offset + this.limit < this.totalImages) {
+      this.offset += this.limit;
+      this.loadImages().then(() => {
+        const img = this.images[0];
+        if (img) this.selectImage(img.id, img.rel_path);
+      });
     }
   },
 
@@ -667,13 +672,14 @@ export const ImageWorkspace = {
     list.innerHTML = classes.map(cls => `
       <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
            style="justify-content: space-between; padding: 10px 15px; font-size: 13px; border-radius: 12px; ${this.selectedClass === cls ? 'box-shadow: var(--neu-inset);' : ''}">
-        <div style="display: flex; align-items: center; gap: 10px; flex: 1;" onclick="window.currentWorkspace.selectClass('${cls}')">
+        <div style="display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer;" onclick="window.currentWorkspace.selectClass('${cls}')">
            <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; box-shadow: 0 2px 5px rgba(0,0,0,0.1);"></span>
            <span style="font-weight: 600;">${cls}</span>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 6px;">
            <span style="font-size: 11px; opacity: 0.6; font-family: monospace;">(${annCounts[cls] || 0})</span>
            <input type="checkbox" class="cls-chk-infer" data-cls="${cls}" title="Include in text inference" checked style="width: 14px; height: 14px; cursor: pointer;" />
+           <button class="neu-button" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px; color: #ef4444; flex-shrink: 0;" title="删除类别" onclick="window.currentWorkspace.deleteClass('${cls}')">&#xd7;</button>
         </div>
       </div>
     `).join('');
@@ -684,6 +690,57 @@ export const ImageWorkspace = {
   selectClass(cls) {
     this.selectedClass = cls;
     this.renderClasses();
+  },
+
+  async deleteClass(className) {
+    if (!confirm(`确认删除类别 "${className}" ？`)) return;
+    try {
+      await api.deleteClass(this.projectId, className);
+      if (this.selectedClass === className) this.selectedClass = null;
+      await this.loadProjectInfo();
+      showToast(`类别 "${className}" 已删除`, 'success');
+    } catch(e) { showToast(e.message, 'error'); }
+  },
+
+  showAddClassModal() {
+    // Use a custom UI modal instead of browser prompt
+    const existing = document.getElementById('modal-add-class');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'modal-add-class';
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 9999; background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);';
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 380px; padding: 28px; border-radius: 20px;">
+        <h3 style="margin: 0 0 20px 0; font-size: 16px;">➕ 新建类别</h3>
+        <textarea id="inp-new-class-names" class="neu-input" rows="4" placeholder="每行一个类别，支持批量输入" style="width: 100%; resize: vertical; font-size: 13px; padding: 10px;"></textarea>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+          <button class="neu-button" style="padding: 10px 20px;" id="btn-cancel-add-class">取消</button>
+          <button class="neu-button" style="padding: 10px 20px; color: var(--neu-text-active); font-weight: 700;" id="btn-confirm-add-class">确认</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const inp = document.getElementById('inp-new-class-names');
+    inp.focus();
+
+    document.getElementById('btn-cancel-add-class').onclick = () => modal.remove();
+    document.getElementById('btn-confirm-add-class').onclick = async () => {
+      const names = inp.value.trim();
+      if (!names) return showToast('请输入类别名称', 'error');
+      try {
+        await api.addClass(this.projectId, names);
+        modal.remove();
+        await this.loadProjectInfo();
+        showToast('类别已添加', 'success');
+      } catch(e) { showToast(e.message, 'error'); }
+    };
+    // Enter submits, Escape cancels
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') modal.remove();
+    });
   },
 
   getClassColor(className) {
@@ -701,6 +758,11 @@ export const ImageWorkspace = {
     document.querySelectorAll('[id^="btn-tool-"]').forEach(btn => btn.classList.remove('active'));
     const btn = document.getElementById(`btn-tool-${mode}`);
     if (btn) btn.classList.add('active');
+    
+    const canvasEl = document.getElementById('canvas-container');
+    if (canvasEl) {
+      canvasEl.style.cursor = mode === 'pan' ? 'grab' : (mode === 'box' ? 'crosshair' : 'crosshair');
+    }
     
     if (this.viewer) {
       this.viewer.setPromptMode(mode);
