@@ -81,9 +81,13 @@ export class CanvasViewer {
     const oldWidth = this.canvas.width;
     const oldHeight = this.canvas.height;
     
-    const rect = this.container.getBoundingClientRect();
-    this.canvas.width = rect.width;
-    this.canvas.height = rect.height;
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    
+    if (this.canvas.width === width && this.canvas.height === height) return;
+    
+    this.canvas.width = width;
+    this.canvas.height = height;
     
     if (this.image && oldWidth > 0 && oldHeight > 0) {
       // If the image was centered, keep it centered in the new dimensions

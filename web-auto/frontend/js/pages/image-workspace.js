@@ -34,9 +34,9 @@ export const ImageWorkspace = {
     window.currentWorkspace = this;
     
     container.innerHTML = `
-      <div class="workspace-layout" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0;">
+      <div class="workspace-layout" style="display: flex; height: 100%; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0; box-sizing: border-box;">
         <!-- 1. Top Navigation Bar -->
-        <div class="neu-box" style="height: 56px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05);">
+        <div class="neu-box" style="height: 56px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); box-sizing: border-box;">
           <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
             <span style="font-size: 18px;">⬅️</span>
             <div style="display: flex; flex-direction: column; max-width: 280px;">
@@ -63,7 +63,7 @@ export const ImageWorkspace = {
         </div>
 
         <!-- 2. Top Operation Bar -->
-        <div class="neu-box" style="height: 64px; display: flex; align-items: center; padding: 0 24px; z-index: 90; border-radius: 0; gap: 15px; background: var(--neu-bg); border-bottom: 1px solid rgba(0,0,0,0.03);">
+        <div class="neu-box" style="height: 64px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 90; border-radius: 0; gap: 15px; background: var(--neu-bg); border-bottom: 1px solid rgba(0,0,0,0.03); box-sizing: border-box;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light);">${i18n.t('sam3_api')}</label>
             <input type="text" id="inp-sam3-url" class="neu-input" style="width: 180px; height: 32px; font-size: 11px;" value="${store.state.config.sam3ApiUrl}" />

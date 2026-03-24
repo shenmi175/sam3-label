@@ -44,9 +44,9 @@ export const VideoWorkspace = {
 
   async renderLayout() {
     this.container.innerHTML = `
-      <div class="workspace-layout v-workspace" style="display: flex; height: 100vh; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0;">
+      <div class="workspace-layout v-workspace" style="display: flex; height: 100%; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0; box-sizing: border-box;">
         <!-- Top Navigation / Task Progress -->
-        <div class="neu-box" style="height: 64px; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px;">
+        <div class="neu-box" style="height: 64px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; box-sizing: border-box;">
             <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
               <span style="font-size: 20px;">🎬</span>
               <div style="display: flex; flex-direction: column;">
