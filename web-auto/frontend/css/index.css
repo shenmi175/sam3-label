@@ -31,6 +31,10 @@
   --neu-shadow-dark: #121416;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -38,6 +42,7 @@ body {
   color: var(--neu-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   height: 100vh;
+  width: 100vw;
   overflow: hidden;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
@@ -200,8 +205,8 @@ body {
 }
 
 /* Transitions */
-* {
-  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+.neu-box, .neu-button, .neu-card, .neu-input, .health-indicator {
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, color 0.2s ease;
 }
 
 #canvas-container canvas {

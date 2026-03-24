@@ -81,12 +81,12 @@ export const VideoWorkspace = {
           
           <!-- Left Column: Classes & Propagation -->
           <div class="neu-box" style="width: 300px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0; min-height: 0;">
-            <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg);">
+            <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); display: flex; flex-direction: column; min-height: 0; max-height: 50%;">
                <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
-               <div id="video-classes-list" style="display: flex; flex-direction: column; gap: 10px;">
+               <div id="video-classes-list" style="display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; min-height: 0;">
                   <!-- Class items -->
                </div>
-               <button class="neu-button" id="btn-add-class-video" style="width: 100%; margin-top: 15px; font-size: 13px; font-weight: 600; color: var(--neu-text-active);">${i18n.t('create_class')}</button>
+               <button class="neu-button" id="btn-add-class-v" style="width: 100%; margin-top: 15px; font-size: 12px; font-weight: 600; color: var(--neu-text-active); padding: 10px; flex-shrink: 0;">${i18n.t('create_class')}</button>
             </div>
             
             <div style="flex: 1; overflow-y: auto; padding: 20px;">

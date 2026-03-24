@@ -198,13 +198,13 @@ export const ImageWorkspace = {
           <!-- Right Column: Classes & Annotations -->
              <div class="neu-box" id="right-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg); min-height: 0;">
              <!-- Classes Management -->
-             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
-                <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
-                <div id="classes-list" style="display: flex; flex-direction: column; gap: 8px;">
-                   <!-- Class items -->
-                </div>
-                <button class="neu-button" id="btn-add-class-ws" style="width: 100%; margin-top: 15px; font-size: 12px; font-weight: 600; color: var(--neu-text-active); padding: 10px;">${i18n.t('create_class')}</button>
-             </div>
+              <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg); display: flex; flex-direction: column; min-height: 0; max-height: 40%;">
+                 <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
+                 <div id="classes-list" style="display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 5px; flex: 1; min-height: 0;">
+                    <!-- Class items -->
+                 </div>
+                 <button class="neu-button" id="btn-add-class-ws" style="width: 100%; margin-top: 15px; font-size: 12px; font-weight: 600; color: var(--neu-text-active); padding: 10px; flex-shrink: 0;">${i18n.t('create_class')}</button>
+              </div>
 
              <!-- Annotations List -->
              <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
