@@ -42,7 +42,9 @@ export const TaskManager = {
     if (!projectId) return;
 
     try {
-      const isVideo = window.currentWorkspace && window.currentWorkspace.projectMeta && window.currentWorkspace.projectMeta.project_type === 'video';
+      const workspace = window.currentWorkspace || {};
+      const projectType = workspace.projectMeta?.project_type || workspace.project?.project_type || '';
+      const isVideo = projectType === 'video';
       
       // Parallel poll
       const promises = [
@@ -55,8 +57,9 @@ export const TaskManager = {
       
       const newActive = new Map();
       results.forEach(res => {
-         if (res.status === 'fulfilled' && res.value && res.value.job && res.value.job.status && res.value.job.status !== 'finished' && res.value.job.status !== 'failed') {
-            newActive.set(res.value.job.job_id || 'video', res.value.job);
+         const job = res.status === 'fulfilled' ? res.value?.job : null;
+         if (job && job.status && job.status !== 'done' && job.status !== 'error') {
+            newActive.set(job.job_id || job.project_id || 'video', job);
          }
       });
       
@@ -77,8 +80,8 @@ export const TaskManager = {
     let html = '';
     this.activeJobs.forEach((job, jobId) => {
       const pct = job.progress_pct != null ? job.progress_pct : 0;
-      const running = job.status === 'running';
-      const failed = job.status === 'failed';
+      const running = ['queued', 'running', 'pausing'].includes(job.status);
+      const failed = job.status === 'error';
       // Make elements clickable inside the non-clickable container
       html += `
         <div class="neu-card" style="pointer-events: auto; padding: 16px; position: relative;">

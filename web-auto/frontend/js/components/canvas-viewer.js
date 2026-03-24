@@ -9,7 +9,7 @@ export class CanvasViewer {
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
     this.container.appendChild(this.canvas);
-    this.container.style.cursor = 'crosshair';
+    this.container.style.cursor = 'default';
     
     // State
     this.image = null;
@@ -23,11 +23,12 @@ export class CanvasViewer {
     this.lastY = 0;
     
     // Prompting state
-    this.promptMode = 'point'; // 'point', 'box', 'text'
+    this.promptMode = 'pointer'; // 'pointer', 'point', 'box'
     this.prompts = [];
     this.isDrawingBox = false;
     this.boxStart = null;
     this.onPromptAdded = null;
+    this.options = { showMasks: true };
     
     // Bind methods
     this.onResize = this.onResize.bind(this);
@@ -72,7 +73,7 @@ export class CanvasViewer {
       if (this.isPanning) {
         this.isPanning = false;
       }
-      this.container.style.cursor = 'crosshair';
+      this.updateCursor();
     }
   }
   
@@ -108,6 +109,12 @@ export class CanvasViewer {
   
   setPromptMode(mode) {
     this.promptMode = mode;
+    this.updateCursor();
+  }
+
+  setOptions(nextOptions = {}) {
+    this.options = { ...this.options, ...nextOptions };
+    this.draw();
   }
   
   setPrompts(prompts) {
@@ -125,6 +132,22 @@ export class CanvasViewer {
       type: p.type,
       data: p.data 
     }));
+  }
+
+  updateCursor() {
+    if (this.isPanning) {
+      this.container.style.cursor = 'grabbing';
+      return;
+    }
+    if (this.promptMode === 'box') {
+      this.container.style.cursor = 'crosshair';
+      return;
+    }
+    if (this.promptMode === 'point') {
+      this.container.style.cursor = 'copy';
+      return;
+    }
+    this.container.style.cursor = 'default';
   }
   
   fitToScreen() {
@@ -223,7 +246,8 @@ export class CanvasViewer {
     this.isDrawingBox = false;
     this.boxStart = null;
     this.boxEnd = null;
-    this.container.style.cursor = e.altKey ? 'grab' : 'crosshair';
+    this.container.style.cursor = e.altKey ? 'grab' : 'default';
+    this.updateCursor();
   }
   
   draw() {
@@ -290,7 +314,7 @@ export class CanvasViewer {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
     
     const points = ann.points || ann.polygon;
-    if (points && points.length > 2) {
+    if (this.options.showMasks && points && points.length > 2) {
       this.ctx.beginPath();
       if (typeof points[0] === 'number') {
         this.ctx.moveTo(points[0], points[1]);
@@ -350,5 +374,15 @@ export class CanvasViewer {
      }
      const hue = Math.abs(hash) % 360;
      return `hsl(${hue}, 75%, 50%)`;
+  }
+
+  centerOn(bbox) {
+    if (!this.image || !Array.isArray(bbox) || bbox.length !== 4) return;
+    const [x1, y1, x2, y2] = bbox.map(v => Number(v || 0));
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    this.transform.x = (this.canvas.width / 2) - (cx * this.transform.scale);
+    this.transform.y = (this.canvas.height / 2) - (cy * this.transform.scale);
+    this.draw();
   }
 }

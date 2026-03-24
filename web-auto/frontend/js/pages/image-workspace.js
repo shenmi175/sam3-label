@@ -16,7 +16,7 @@ export const ImageWorkspace = {
   selectedImagePath: null,
   viewer: null,
   isUnmounted: false,
-  promptMode: 'point',
+  promptMode: 'pointer',
   currentPrompts: [],
   
   async render(container, params) {
@@ -25,7 +25,12 @@ export const ImageWorkspace = {
     this.isUnmounted = false;
     this.currentPrompts = [];
     this.previews = []; // Storage for Pure Vision results
-    this.promptMode = 'point';
+    this.promptMode = 'pointer';
+    this.filterJobTimer = null;
+    this.leftPanelHidden = false;
+    this.rightPanelHidden = false;
+    this.classesSectionCollapsed = false;
+    this.annotationsSectionCollapsed = false;
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -111,10 +116,10 @@ export const ImageWorkspace = {
         </div>
         
         <!-- 4. Main Workspace Area -->
-        <div style="display: flex; flex: 1; overflow: hidden;">
+        <div id="ws-main-row" style="display: flex; flex: 1; overflow: hidden;">
           
           <!-- Left Column: Project Meta & Image List -->
-          <div class="neu-box" style="width: 320px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
+          <div class="neu-box" id="left-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: 4px 0 12px var(--neu-shadow-dark); display: flex; flex-direction: column; z-index: 50; padding: 0;">
             <!-- Project Meta Card -->
             <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
                <div class="neu-card" style="padding: 15px; margin-bottom: 10px;">
@@ -123,6 +128,12 @@ export const ImageWorkspace = {
                  <div style="margin-top: 10px; display: flex; justify-content: space-between; font-size: 11px;">
                    <span>${i18n.t('total')}: <b id="ws-meta-total">0</b></span>
                    <span>${i18n.t('labeled')}: <b id="ws-meta-labeled" style="color: #10b981;">0</b></span>
+                 </div>
+                 <div style="margin-top: 12px; display: flex; align-items: center; gap: 10px;">
+                   <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.05); border-radius: 999px; overflow: hidden;">
+                     <div id="ws-progress-bar" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.3s ease;"></div>
+                   </div>
+                   <span id="ws-progress-text" style="font-size: 11px; font-weight: 700; color: var(--neu-text-light);">0 / 0</span>
                  </div>
                </div>
             </div>
@@ -144,7 +155,7 @@ export const ImageWorkspace = {
           </div>
           
           <!-- Middle Column: Canvas & Hover Tools -->
-          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #eaeff2;">
+          <div id="center-panel" style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #eaeff2;">
              <!-- Canvas Area -->
              <div id="canvas-container" style="flex: 1; position: relative;">
                 <div id="canvas-placeholder" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
@@ -184,7 +195,7 @@ export const ImageWorkspace = {
           </div>
           
           <!-- Right Column: Classes & Annotations -->
-          <div class="neu-box" id="right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
+             <div class="neu-box" id="right-panel" style="width: 320px; min-width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg);">
              <!-- Classes Management -->
              <div style="padding: 20px; border-bottom: 2px solid var(--neu-bg); background: var(--neu-bg);">
                 <h3 style="margin: 0 0 15px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotations_summary')}</h3>
@@ -204,6 +215,13 @@ export const ImageWorkspace = {
                    <div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>
                 </div>
                 <div style="padding: 20px; border-top: 1px solid rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 10px;">
+                   <div class="neu-box" style="padding: 12px; border-radius: 12px; background: var(--neu-bg-light);">
+                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 12px;">
+                       <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">${i18n.t('preview_results')}</span>
+                       <span style="font-size: 10px; color: var(--neu-text-light); text-align: right;">${i18n.t('preview_results_desc')}</span>
+                     </div>
+                     <div id="preview-list" style="display: flex; flex-direction: column; gap: 10px; max-height: 220px; overflow-y: auto;"></div>
+                   </div>
                    <button id="btn-save-anns" class="neu-button" style="width: 100%; height: 44px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('save_anns')}</button>
                    <button id="btn-clear-anns" class="neu-button" style="width: 100%; height: 44px; font-weight: 600; color: #ef4444;">${i18n.t('clear_anns')}</button>
                 </div>
@@ -219,9 +237,12 @@ export const ImageWorkspace = {
       <div id="modal-filter-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-export-full" class="modal-overlay" style="display: none;"></div>
     `;
+
+    this.initializeLayoutControls();
     
     this.viewer = new CanvasViewer('canvas-container');
     this.viewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
+    this.setPromptMode('pointer');
     
     this.bindEvents();
     window.currentWorkspace = this;
@@ -231,6 +252,112 @@ export const ImageWorkspace = {
     this.startHealthCheck();
   },
 
+  initializeLayoutControls() {
+    const canvasContainer = document.getElementById('canvas-container');
+    const pointBtn = document.getElementById('btn-tool-point');
+    const fitBtn = document.getElementById('btn-vtool-filter');
+    const leftPanel = document.getElementById('left-panel');
+    const rightPanel = document.getElementById('right-panel');
+
+    if (canvasContainer && pointBtn && !document.getElementById('btn-tool-pointer')) {
+      const pointerBtn = document.createElement('button');
+      pointerBtn.className = 'neu-button active';
+      pointerBtn.id = 'btn-tool-pointer';
+      pointerBtn.title = 'Pointer / Pan';
+      pointerBtn.style.cssText = 'width: 40px; height: 40px; border-radius: 50%;';
+      pointerBtn.textContent = '↖';
+      pointBtn.parentNode.insertBefore(pointerBtn, pointBtn);
+    }
+
+    if (fitBtn) {
+      fitBtn.title = 'Fit to Screen';
+      fitBtn.textContent = '⤢';
+    }
+
+    const ensureSideToggle = (id, text, styleText) => {
+      if (!canvasContainer || document.getElementById(id)) return;
+      const btn = document.createElement('button');
+      btn.id = id;
+      btn.className = 'neu-button';
+      btn.style.cssText = styleText;
+      btn.textContent = text;
+      canvasContainer.appendChild(btn);
+    };
+    ensureSideToggle(
+      'btn-toggle-left-panel',
+      '⟨',
+      'position: absolute; top: 50%; left: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 18px; font-size: 16px;'
+    );
+    ensureSideToggle(
+      'btn-toggle-right-panel',
+      '⟩',
+      'position: absolute; top: 50%; right: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 18px; font-size: 16px;'
+    );
+
+    if (leftPanel) {
+      leftPanel.style.minWidth = '320px';
+    }
+    if (rightPanel) {
+      rightPanel.style.minWidth = '320px';
+    }
+
+    const classesSection = rightPanel?.children?.[0] || null;
+    if (classesSection && !document.getElementById('classes-section-body')) {
+      classesSection.id = 'classes-section';
+      const title = classesSection.querySelector('h3');
+      const classesList = document.getElementById('classes-list');
+      const addClassBtn = document.getElementById('btn-add-class-ws');
+      if (title && classesList && addClassBtn) {
+        const header = document.createElement('div');
+        header.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px;';
+        title.parentNode.insertBefore(header, title);
+        header.appendChild(title);
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'btn-toggle-classes-section';
+        toggleBtn.className = 'neu-button';
+        toggleBtn.style.cssText = 'width: 30px; height: 30px; padding: 0; font-size: 14px;';
+        toggleBtn.textContent = '−';
+        header.appendChild(toggleBtn);
+
+        const body = document.createElement('div');
+        body.id = 'classes-section-body';
+        body.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+        classesSection.appendChild(body);
+        body.appendChild(classesList);
+        body.appendChild(addClassBtn);
+      }
+    }
+
+    const annotationsSection = rightPanel?.children?.[1] || null;
+    if (annotationsSection && !document.getElementById('annotations-section-body')) {
+      annotationsSection.id = 'annotations-section';
+      const header = annotationsSection.children?.[0] || null;
+      if (header) {
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.alignItems = 'center';
+        header.style.gap = '12px';
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'btn-toggle-annotations-section';
+        toggleBtn.className = 'neu-button';
+        toggleBtn.style.cssText = 'width: 30px; height: 30px; padding: 0; font-size: 14px;';
+        toggleBtn.textContent = '−';
+        header.appendChild(toggleBtn);
+      }
+
+      const body = document.createElement('div');
+      body.id = 'annotations-section-body';
+      body.style.cssText = 'flex: 1; display: flex; flex-direction: column; overflow: hidden;';
+      const moveNodes = [];
+      for (let i = 1; i < annotationsSection.children.length; i += 1) {
+        moveNodes.push(annotationsSection.children[i]);
+      }
+      moveNodes.forEach((node) => body.appendChild(node));
+      annotationsSection.appendChild(body);
+    }
+  },
+
   unmount() {
     this.isUnmounted = true;
     if (this.viewer) {
@@ -238,6 +365,7 @@ export const ImageWorkspace = {
       this.viewer = null;
     }
     if (this.healthInterval) clearInterval(this.healthInterval);
+    if (this.filterJobTimer) clearTimeout(this.filterJobTimer);
     this.container = null;
     window.currentWorkspace = null;
   },
@@ -360,10 +488,13 @@ export const ImageWorkspace = {
     };
 
     // Canvas Tools
+    const btnToolPointer = document.getElementById('btn-tool-pointer');
     const btnToolPoint = document.getElementById('btn-tool-point');
     const btnToolBox = document.getElementById('btn-tool-box');
-    const btnToolClear = document.getElementById('btn-tool-clear');
+    const btnToolClear = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
+    const btnToolFit = document.getElementById('btn-vtool-filter');
 
+    if (btnToolPointer) btnToolPointer.onclick = () => this.setPromptMode('pointer');
     if (btnToolPoint) btnToolPoint.onclick = () => this.setPromptMode('point');
     if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
     if (btnToolClear) btnToolClear.onclick = () => {
@@ -377,10 +508,22 @@ export const ImageWorkspace = {
       this.updateActionBar();
       showToast(i18n.t('prompts_cleared'));
     };
+    if (btnToolFit) btnToolFit.onclick = () => {
+      if (this.viewer) this.viewer.fitToScreen();
+    };
 
     document.getElementById('chk-show-masks').onchange = (e) => {
       if (this.viewer) this.viewer.setOptions({ showMasks: e.target.checked });
     };
+
+    const btnToggleLeftPanel = document.getElementById('btn-toggle-left-panel');
+    if (btnToggleLeftPanel) btnToggleLeftPanel.onclick = () => this.toggleSidePanel('left');
+    const btnToggleRightPanel = document.getElementById('btn-toggle-right-panel');
+    if (btnToggleRightPanel) btnToggleRightPanel.onclick = () => this.toggleSidePanel('right');
+    const btnToggleClasses = document.getElementById('btn-toggle-classes-section');
+    if (btnToggleClasses) btnToggleClasses.onclick = () => this.toggleSection('classes');
+    const btnToggleAnnotations = document.getElementById('btn-toggle-annotations-section');
+    if (btnToggleAnnotations) btnToggleAnnotations.onclick = () => this.toggleSection('annotations');
 
     // Right Column
     document.getElementById('btn-save-anns').onclick = () => this.saveCurrentAnns();
@@ -394,6 +537,60 @@ export const ImageWorkspace = {
       store.setConfig('theme', next);
       document.getElementById('theme-icon').innerText = next === 'dark' ? '☀️' : '🌓';
     };
+    this.updatePanelVisibility();
+    this.updateSectionVisibility();
+  },
+
+  toggleSidePanel(side) {
+    if (side === 'left') {
+      this.leftPanelHidden = !this.leftPanelHidden;
+    } else if (side === 'right') {
+      this.rightPanelHidden = !this.rightPanelHidden;
+    }
+    this.updatePanelVisibility();
+    if (this.viewer) this.viewer.onResize();
+  },
+
+  updatePanelVisibility() {
+    const leftPanel = document.getElementById('left-panel');
+    const rightPanel = document.getElementById('right-panel');
+    const leftBtn = document.getElementById('btn-toggle-left-panel');
+    const rightBtn = document.getElementById('btn-toggle-right-panel');
+
+    if (leftPanel) {
+      leftPanel.style.display = this.leftPanelHidden ? 'none' : 'flex';
+    }
+    if (rightPanel) {
+      rightPanel.style.display = this.rightPanelHidden ? 'none' : 'flex';
+    }
+    if (leftBtn) leftBtn.textContent = this.leftPanelHidden ? '>' : '<';
+    if (rightBtn) rightBtn.textContent = this.rightPanelHidden ? '<' : '>';
+  },
+
+  toggleSection(section) {
+    if (section === 'classes') {
+      this.classesSectionCollapsed = !this.classesSectionCollapsed;
+    } else if (section === 'annotations') {
+      this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
+    }
+    this.updateSectionVisibility();
+    if (this.viewer) this.viewer.onResize();
+  },
+
+  updateSectionVisibility() {
+    const classesBody = document.getElementById('classes-section-body');
+    const annotationsBody = document.getElementById('annotations-section-body');
+    const classesBtn = document.getElementById('btn-toggle-classes-section');
+    const annotationsBtn = document.getElementById('btn-toggle-annotations-section');
+    const annotationsSection = document.getElementById('annotations-section');
+
+    if (classesBody) classesBody.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
+    if (annotationsBody) annotationsBody.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
+    if (classesBtn) classesBtn.textContent = this.classesSectionCollapsed ? '+' : '-';
+    if (annotationsBtn) annotationsBtn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
+    if (annotationsSection) {
+      annotationsSection.style.flex = this.annotationsSectionCollapsed ? '0 0 auto' : '1';
+    }
   },
 
   selectAllPreviews() {
@@ -407,15 +604,16 @@ export const ImageWorkspace = {
     const bar = document.getElementById('ws-action-bar');
     const btn = document.getElementById('btn-submit-preview');
     const btnAll = document.getElementById('btn-select-all-previews');
+    if (!bar || !btn) return;
     
     if (this.previews.length > 0) {
       bar.style.display = 'block';
-      btnAll.style.display = 'block';
+      if (btnAll) btnAll.style.display = 'block';
       const className = this.selectedClass || (this.projectMeta.classes?.[0] || 'Object');
       btn.textContent = `Submit ${this.previews.length} Previews to [${className}]`;
     } else {
       bar.style.display = 'none';
-      btnAll.style.display = 'none';
+      if (btnAll) btnAll.style.display = 'none';
     }
   },
 
@@ -507,15 +705,62 @@ export const ImageWorkspace = {
     if (this.viewer) {
       this.viewer.setPromptMode(mode);
     }
+    const imageStatus = document.getElementById('ws-image-status');
+    if (imageStatus) {
+      const modeText = mode === 'pointer' ? 'Pointer' : mode === 'point' ? 'Point Prompt' : 'Box Prompt';
+      imageStatus.innerText = this.selectedImagePath ? `${this.selectedImagePath} | ${modeText}` : modeText;
+    }
   },
 
   addPrompt(type, data) {
     this.currentPrompts.push({type, data, timestamp: new Date().getTime()});
     if (this.viewer) this.viewer.setPrompts(this.currentPrompts);
+    const autoInfer = document.getElementById('chk-auto-infer');
+    if (autoInfer?.checked) {
+      this.runPromptPreview();
+    }
+  },
+
+  async runPromptPreview() {
+    if (!this.selectedImageId) return;
+    const points = this.currentPrompts.filter((p) => p.type === 'point').map((p) => p.data);
+    const boxes = this.currentPrompts.filter((p) => p.type === 'box').map((p) => p.data);
+    let mode = '';
+    if (boxes.length > 0) {
+      mode = 'boxes';
+    } else if (points.length > 0) {
+      mode = 'points';
+    }
+    if (!mode) return;
+
+    try {
+      const res = await api.inferPreview({
+        project_id: this.projectId,
+        image_id: this.selectedImageId,
+        mode,
+        active_class: this.selectedClass || '',
+        points,
+        boxes,
+        threshold: store.state.config.threshold,
+        api_base_url: store.state.config.sam3ApiUrl,
+      });
+      const detections = Array.isArray(res?.detections) ? res.detections : [];
+      this.previews = detections.map((d) => ({
+        ...d,
+        id: d.id || `preview_${Math.random().toString(36).slice(2, 10)}`,
+        class_name: d.class_name || this.selectedClass || 'unknown',
+      }));
+      if (this.viewer) this.viewer.setPreviews(this.previews);
+      this.renderPreviews();
+      this.updateActionBar();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
   },
 
   renderPreviews() {
     const list = document.getElementById('preview-list');
+    if (!list) return;
     if (this.previews.length === 0) {
       list.innerHTML = `
         <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
@@ -590,18 +835,24 @@ export const ImageWorkspace = {
       const labeled = this.projectMeta.labeled_images || 0;
       const progress = total > 0 ? (labeled / total) * 100 : 0;
       
-      document.getElementById('ws-progress-bar').style.width = `${progress}%`;
-      document.getElementById('ws-progress-text').innerText = `${labeled} / ${total}`;
-      document.getElementById('ws-img-count-badge').innerText = total;
+      const progressBar = document.getElementById('ws-progress-bar');
+      const progressText = document.getElementById('ws-progress-text');
+      const imageCountBadge = document.getElementById('ws-img-count-badge');
+      if (progressBar) progressBar.style.width = `${progress}%`;
+      if (progressText) progressText.innerText = `${labeled} / ${total}`;
+      if (imageCountBadge) imageCountBadge.innerText = total;
       
-      document.getElementById('ws-meta-total').innerText = total;
-      document.getElementById('ws-meta-labeled').innerText = labeled;
+      const metaTotal = document.getElementById('ws-meta-total');
+      const metaLabeled = document.getElementById('ws-meta-labeled');
+      if (metaTotal) metaTotal.innerText = total;
+      if (metaLabeled) metaLabeled.innerText = labeled;
       
       this.totalImages = total;
       this.renderClasses();
       
       // Check for active job
-      const activeJob = await api.getInferActiveJob(this.projectId);
+      const activeJobRes = await api.getInferActiveJob(this.projectId);
+      const activeJob = activeJobRes?.job || null;
       if (activeJob && activeJob.job_id) {
         this.activeJobId = activeJob.job_id;
         this.pollTaskStatus();
@@ -671,6 +922,11 @@ export const ImageWorkspace = {
     
     const placeholder = document.getElementById('canvas-placeholder');
     if (placeholder) placeholder.style.display = 'none';
+    const imageStatus = document.getElementById('ws-image-status');
+    if (imageStatus) {
+      const modeText = this.promptMode === 'pointer' ? 'Pointer' : this.promptMode === 'point' ? 'Point Prompt' : 'Box Prompt';
+      imageStatus.innerText = `${relPath || id} | ${modeText}`;
+    }
     
     try {
       const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
@@ -774,10 +1030,13 @@ export const ImageWorkspace = {
 
     if (type === 'text') {
       payload.classes = classes;
+      payload.all_images = true;
     } else {
+      if (!this.selectedImageId) return showToast("Select a source image first", "error");
       const boxes = this.currentPrompts.filter(p => p.type === 'box').map(p => p.data);
       if (boxes.length === 0) return showToast("Draw an example box first", "error");
       if (!this.selectedClass) return showToast("Select a target class", "error");
+      payload.source_image_id = this.selectedImageId;
       payload.active_class = this.selectedClass;
       payload.boxes = boxes;
       payload.pure_visual = false;
@@ -788,7 +1047,8 @@ export const ImageWorkspace = {
         ? await api.startBatchInfer(payload)
         : await api.startBatchExample(payload);
         
-      this.activeJobId = res.job_id;
+      this.activeJobId = res?.job?.job_id || '';
+      if (!this.activeJobId) throw new Error('batch task did not return job_id');
       this.pollTaskStatus();
       showToast("Batch task started", "success");
     } catch(e) {
@@ -814,16 +1074,27 @@ export const ImageWorkspace = {
       }
       
       try {
-        const job = await api.getInferJob(this.activeJobId);
+        const res = await api.getInferJob(this.activeJobId);
+        const job = res?.job || null;
+        if (!job) {
+          this.activeJobId = null;
+          this.isPolling = false;
+          bar.style.display = 'none';
+          return;
+        }
+        const pct = Number(job.progress_pct || 0);
         nameEl.innerText = i18n.t(job.job_type === 'example_batch' ? 'example_propagate' : 'batch_infer');
-        fillEl.style.width = `${job.progress_pct * 100}%`;
-        statusEl.innerText = `${job.message}`;
+        fillEl.style.width = `${pct}%`;
+        statusEl.innerText = `${job.message || `${Math.round(pct)}%`}`;
         
-        if (job.status === 'completed' || job.status === 'failed') {
+        if (job.status === 'done' || job.status === 'error') {
           setTimeout(() => bar.style.display = 'none', 3000);
           this.activeJobId = null;
           this.isPolling = false;
-          this.loadProjectInfo();
+          await this.loadProjectInfo();
+          if (this.selectedImageId && this.selectedImagePath) {
+            await this.selectImage(this.selectedImageId, this.selectedImagePath);
+          }
           return;
         } else if (job.status === 'paused') {
           document.getElementById('btn-task-resume').style.display = 'block';
@@ -951,7 +1222,7 @@ export const ImageWorkspace = {
               <label class="neu-label">${i18n.t('filter_mode')}</label>
               <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
                 <option value="same_class">${i18n.t('filter_mode_iou')}</option>
-                <option value="master_slave">${i18n.t('filter_mode_master_slave')}</option>
+                <option value="canonical_class">${i18n.t('filter_mode_master_slave')}</option>
               </select>
             </div>
             <div>
@@ -998,6 +1269,18 @@ export const ImageWorkspace = {
             <div id="filter-rule-text" style="font-size: 12px; line-height: 1.6; color: var(--neu-text);">--</div>
           </div>
 
+          <div class="neu-box" style="padding: 16px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">任务进度</span>
+              <span id="filter-job-progress-text" style="font-size: 11px; color: var(--neu-text-light);">未开始</span>
+            </div>
+            <div style="height: 8px; background: rgba(0,0,0,0.05); border-radius: 999px; overflow: hidden;">
+              <div id="filter-job-progress-fill" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.25s ease;"></div>
+            </div>
+            <div id="filter-job-status" style="font-size: 12px; color: var(--neu-text); min-height: 18px;">点击“开始分析预览”后会在这里显示进度和结果。</div>
+            <div id="filter-preview-summary" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;"></div>
+          </div>
+
           <div style="display: flex; justify-content: flex-end; gap: 12px;">
             <button class="neu-button" style="padding: 10px 24px;" onclick="document.getElementById('modal-filter-full').style.display='none'">${i18n.t('cancel')}</button>
             <button id="btn-start-filter-preview" class="neu-button" style="padding: 10px 24px; color: var(--neu-text-active); font-weight: 700;">${i18n.t('start_preview')}</button>
@@ -1010,8 +1293,14 @@ export const ImageWorkspace = {
     
     const modeSel = document.getElementById('filter-mode-sel');
     const msPanel = document.getElementById('filter-ms-panel');
+    const statusEl = document.getElementById('filter-job-status');
+    const progressFillEl = document.getElementById('filter-job-progress-fill');
+    const progressTextEl = document.getElementById('filter-job-progress-text');
+    const summaryEl = document.getElementById('filter-preview-summary');
+    const previewBtn = document.getElementById('btn-start-filter-preview');
+    const applyBtn = document.getElementById('btn-apply-filter');
     const updateUI = () => {
-      msPanel.style.display = modeSel.value === 'master_slave' ? 'flex' : 'none';
+      msPanel.style.display = modeSel.value === 'canonical_class' ? 'flex' : 'none';
       this.updateFilterRuleText();
     };
     modeSel.onchange = updateUI;
@@ -1024,49 +1313,138 @@ export const ImageWorkspace = {
 
     updateUI();
 
-    document.getElementById('btn-start-filter-preview').onclick = async () => {
-       const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
-       const target = document.getElementById('filter-target-cls').value;
-       const mode = modeSel.value;
-       
-       if (mode === 'master_slave' && sources.length === 0) {
-         return showToast("Please select at least one source class", "error");
-       }
-
-       try {
-         const res = await api.smartFilterPreview({
-           project_id: this.projectId,
-           merge_mode: mode,
-           coverage_threshold: parseFloat(cov.value),
-           canonical_class: mode === 'master_slave' ? target : '',
-           source_classes: mode === 'master_slave' ? sources : [],
-           area_mode: document.getElementById('filter-area-sel').value
-         });
-         
-         this.currentFilterToken = res.preview_token;
-         showToast("Smart filter analysis started", "success");
-         modal.style.display = 'none';
-         this.pollFilterStatus();
-
-         // After preview starts/ends, we should technically wait for it to finish 
-         // but for UI, we show the Apply button if we have a token.
-         // Actually, let's make the Apply button appear in the modal once preview is ready.
-         // For now, I'll just ensure the Apply button is wired up.
-       } catch(e) { showToast(e.message, "error"); }
+    const collectPayload = () => {
+      const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
+      const target = document.getElementById('filter-target-cls').value;
+      const mode = modeSel.value;
+      if (mode === 'canonical_class' && sources.length === 0) {
+        throw new Error('Please select at least one source class');
+      }
+      return {
+        project_id: this.projectId,
+        merge_mode: mode,
+        coverage_threshold: parseFloat(cov.value),
+        canonical_class: mode === 'canonical_class' ? target : '',
+        source_classes: mode === 'canonical_class' ? sources : [],
+        area_mode: document.getElementById('filter-area-sel').value
+      };
     };
 
-    document.getElementById('btn-apply-filter').onclick = async () => {
-       if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), "error");
-       if (!confirm(i18n.t('confirm_apply_filter'))) return;
-       try {
-         await api.smartFilterApply({
-           project_id: this.projectId,
-           preview_token: this.currentFilterToken
-         });
-         showToast("Filter applied successfully", "success");
-         modal.style.display = 'none';
-         await this.loadProjectInfo();
-       } catch(e) { showToast(e.message, "error"); }
+    const renderFilterSummary = (result, kind) => {
+      const items = Array.isArray(result?.items) ? result.items : [];
+      if (items.length === 0) {
+        summaryEl.innerHTML = `<div style="font-size: 12px; color: var(--neu-text-light);">没有需要处理的目标。</div>`;
+        return;
+      }
+      summaryEl.innerHTML = items.slice(0, 20).map((item) => {
+        const primaryCount = kind === 'preview'
+          ? `候选删除 ${item.candidate_count || 0}`
+          : `已删除 ${item.removed_count || 0}`;
+        return `
+          <div class="neu-box" style="padding: 10px 12px; border-radius: 10px; background: var(--neu-bg-light);">
+            <div style="font-size: 12px; font-weight: 700; color: var(--neu-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.rel_path || item.image_id || '--'}</div>
+            <div style="margin-top: 6px; display: flex; gap: 12px; font-size: 11px; color: var(--neu-text-light);">
+              <span>${primaryCount}</span>
+              <span>改类 ${item.relabel_count || 0}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    };
+
+    const pollFilterJob = async (jobId, kind) => {
+      if (!jobId) return;
+      if (this.filterJobTimer) clearTimeout(this.filterJobTimer);
+      try {
+        const res = await api.getFilterJob(jobId);
+        const job = res?.job || null;
+        if (!job) {
+          statusEl.innerText = '未找到智能过滤任务状态';
+          return;
+        }
+        const pct = Number(job.progress_pct || 0);
+        progressFillEl.style.width = `${pct}%`;
+        progressTextEl.innerText = `${Math.round(pct)}%`;
+        statusEl.innerText = job.message || '处理中...';
+
+        if (job.status === 'done') {
+          const result = job.result || {};
+          if (kind === 'preview') {
+            this.currentFilterToken = result.preview_token || '';
+            renderFilterSummary(result, 'preview');
+            applyBtn.style.display = this.currentFilterToken ? 'inline-flex' : 'none';
+          } else {
+            renderFilterSummary(result, 'apply');
+            applyBtn.style.display = 'none';
+            await this.loadProjectInfo();
+            if (this.selectedImageId && this.selectedImagePath) {
+              await this.selectImage(this.selectedImageId, this.selectedImagePath);
+            }
+          }
+          return;
+        }
+
+        if (job.status === 'error') {
+          progressFillEl.style.background = '#ef4444';
+          statusEl.innerText = job.error || job.message || '智能过滤任务失败';
+          return;
+        }
+
+        progressFillEl.style.background = 'var(--neu-text-active)';
+        this.filterJobTimer = setTimeout(() => pollFilterJob(jobId, kind), 1200);
+      } catch(e) {
+        statusEl.innerText = `轮询失败: ${e.message}`;
+      }
+    };
+
+    previewBtn.onclick = async () => {
+      try {
+        const payload = collectPayload();
+        previewBtn.disabled = true;
+        applyBtn.style.display = 'none';
+        this.currentFilterToken = '';
+        summaryEl.innerHTML = '';
+        progressFillEl.style.width = '0%';
+        progressFillEl.style.background = 'var(--neu-text-active)';
+        progressTextEl.innerText = '0%';
+        statusEl.innerText = '正在提交智能过滤预览任务...';
+        const res = await api.smartFilterPreview(payload);
+        const job = res?.job || null;
+        if (!job?.job_id) throw new Error('preview task did not return job_id');
+        statusEl.innerText = '预览分析已开始，正在处理...';
+        await pollFilterJob(job.job_id, 'preview');
+      } catch(e) {
+        statusEl.innerText = e.message;
+        showToast(e.message, "error");
+      } finally {
+        previewBtn.disabled = false;
+      }
+    };
+
+    applyBtn.onclick = async () => {
+      if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), "error");
+      if (!confirm(i18n.t('confirm_apply_filter'))) return;
+      try {
+        applyBtn.disabled = true;
+        summaryEl.innerHTML = '';
+        progressFillEl.style.width = '0%';
+        progressFillEl.style.background = 'var(--neu-text-active)';
+        progressTextEl.innerText = '0%';
+        statusEl.innerText = '正在提交智能过滤确认合并任务...';
+        const res = await api.smartFilterApply({
+          ...collectPayload(),
+          preview_token: this.currentFilterToken
+        });
+        const job = res?.job || null;
+        if (!job?.job_id) throw new Error('apply task did not return job_id');
+        statusEl.innerText = '确认合并已开始，正在写回标注...';
+        await pollFilterJob(job.job_id, 'apply');
+        showToast("Filter applied successfully", "success");
+      } catch(e) {
+        showToast(e.message, "error");
+      } finally {
+        applyBtn.disabled = false;
+      }
     };
   },
 
@@ -1088,7 +1466,8 @@ export const ImageWorkspace = {
   },
 
   async pollFilterStatus() {
-     const active = await api.getFilterActiveJob(this.projectId);
+     const activeRes = await api.getFilterActiveJob(this.projectId);
+     const active = activeRes?.job || null;
      if (active && active.job_id) {
         this.activeJobId = active.job_id;
         this.pollTaskStatus(); 
@@ -1118,7 +1497,11 @@ export const ImageWorkspace = {
           </div>
           <div>
             <label style="display: block; font-size: 11px; font-weight: 700; margin-bottom: 8px;">导出目录</label>
-            <input type="text" id="exp-dir" class="neu-input" style="width: 100%;" placeholder="e.g. D:/export" />
+            <input type="text" id="exp-dir" class="neu-input" style="width: 100%;" placeholder="留空则导出到项目默认目录" />
+            <div style="margin-top: 6px; font-size: 11px; color: var(--neu-text-light);">YOLO 只能导出框或掩码其中一种；JSON/COCO 可以同时导出。</div>
+          </div>
+          <div class="neu-box" style="padding: 12px; border-radius: 12px; background: var(--neu-bg-light);">
+            <div id="export-status" style="font-size: 12px; color: var(--neu-text-light);">请先选择格式和内容，再点击确认导出。</div>
           </div>
           <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;">
             <button class="neu-button" onclick="document.getElementById('modal-export-full').style.display='none'">${i18n.t('cancel')}</button>
@@ -1129,20 +1512,45 @@ export const ImageWorkspace = {
     `;
     modal.style.display = 'flex';
     
-    document.getElementById('btn-do-export').onclick = async () => {
-       const dir = document.getElementById('exp-dir').value;
-       if (!dir) return showToast("Please specify export directory", "error");
-       try {
-         await api.exportProject({
-           project_id: this.projectId,
-           format: document.getElementById('exp-format').value,
-           include_bbox: document.getElementById('exp-bbox').checked,
-           include_mask: document.getElementById('exp-mask').checked,
-           output_dir: dir
-         });
-         showToast("Export successful", "success");
-         modal.style.display = 'none';
-       } catch(e) { showToast(e.message, "error"); }
+    const formatEl = document.getElementById('exp-format');
+    const bboxEl = document.getElementById('exp-bbox');
+    const maskEl = document.getElementById('exp-mask');
+    const statusEl = document.getElementById('export-status');
+    const exportBtn = document.getElementById('btn-do-export');
+    const updateExportOptions = () => {
+      if (formatEl.value === 'yolo' && bboxEl.checked && maskEl.checked) {
+        maskEl.checked = false;
+      }
+      statusEl.innerText = formatEl.value === 'yolo'
+        ? 'YOLO 仅支持框检测或掩码分割其中一种导出形式。'
+        : '将使用后端导出接口生成数据集文件。';
+    };
+    formatEl.onchange = updateExportOptions;
+    bboxEl.onchange = updateExportOptions;
+    maskEl.onchange = updateExportOptions;
+    updateExportOptions();
+
+    exportBtn.onclick = async () => {
+      const dir = document.getElementById('exp-dir').value.trim();
+      try {
+        exportBtn.disabled = true;
+        statusEl.innerText = '正在导出，请稍候...';
+        const res = await api.exportProject({
+          project_id: this.projectId,
+          format: formatEl.value,
+          include_bbox: bboxEl.checked,
+          include_mask: maskEl.checked,
+          output_dir: dir || null
+        });
+        const output = res?.output || '';
+        statusEl.innerText = output ? `导出完成: ${output}` : '导出完成';
+        showToast("Export successful", "success");
+      } catch(e) {
+        statusEl.innerText = e.message;
+        showToast(e.message, "error");
+      } finally {
+        exportBtn.disabled = false;
+      }
     };
   }
 };
