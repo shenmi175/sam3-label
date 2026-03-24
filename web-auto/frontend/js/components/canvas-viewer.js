@@ -139,6 +139,10 @@ export class CanvasViewer {
       this.container.style.cursor = 'grabbing';
       return;
     }
+    if (this.promptMode === 'pan' || this.promptMode === 'pointer') {
+      this.container.style.cursor = 'grab';
+      return;
+    }
     if (this.promptMode === 'box') {
       this.container.style.cursor = 'crosshair';
       return;
@@ -190,7 +194,7 @@ export class CanvasViewer {
     const imgX = (mx - this.transform.x) / this.transform.scale;
     const imgY = (my - this.transform.y) / this.transform.scale;
 
-    // Alt + Left Click to Pan
+    // Alt + Left Click to Pan (always available)
     if (e.button === 0 && e.altKey) {
       this.isPanning = true;
       this.lastX = e.clientX;
@@ -199,7 +203,16 @@ export class CanvasViewer {
       return;
     }
 
-    if (e.button === 0) { // Left click
+    // Pan mode: left click drags
+    if (e.button === 0 && (this.promptMode === 'pan' || this.promptMode === 'pointer')) {
+      this.isPanning = true;
+      this.lastX = e.clientX;
+      this.lastY = e.clientY;
+      this.container.style.cursor = 'grabbing';
+      return;
+    }
+
+    if (e.button === 0) { // Left click in annotation modes
       if (this.promptMode === 'point') {
         if (this.onPromptAdded) this.onPromptAdded('point', [imgX, imgY]);
       } else if (this.promptMode === 'box') {

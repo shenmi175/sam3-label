@@ -333,33 +333,8 @@ export const ImageWorkspace = {
       }
     }
 
-    const annotationsSection = rightPanel?.children?.[1] || null;
-    if (annotationsSection && !document.getElementById('annotations-section-body')) {
-      annotationsSection.id = 'annotations-section';
-      const header = annotationsSection.children?.[0] || null;
-      if (header) {
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.alignItems = 'center';
-        header.style.gap = '12px';
-        const toggleBtn = document.createElement('button');
-        toggleBtn.id = 'btn-toggle-annotations-section';
-        toggleBtn.className = 'neu-button';
-        toggleBtn.style.cssText = 'width: 30px; height: 30px; padding: 0; font-size: 14px;';
-        toggleBtn.textContent = '−';
-        header.appendChild(toggleBtn);
-      }
-
-      const body = document.createElement('div');
-      body.id = 'annotations-section-body';
-      body.style.cssText = 'flex: 1; display: flex; flex-direction: column; overflow: hidden;';
-      const moveNodes = [];
-      for (let i = 1; i < annotationsSection.children.length; i += 1) {
-        moveNodes.push(annotationsSection.children[i]);
-      }
-      moveNodes.forEach((node) => body.appendChild(node));
-      annotationsSection.appendChild(body);
-    }
+    // Note: annotations section collapse is handled by btn-collapse-anns already in the HTML template
+    // and bound in bindEvents(). No dynamic injection needed here.
   },
 
   unmount() {
@@ -558,15 +533,19 @@ export const ImageWorkspace = {
     };
 
     // Keyboard navigation: ArrowUp/Left = prev image, ArrowDown/Right = next image
+    // Debounce to avoid skipping images on fast key repeat
+    let navTimer = null;
     this._keyHandler = (e) => {
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
-        this.navigateImage(-1);
+        clearTimeout(navTimer);
+        navTimer = setTimeout(() => this.navigateImage(-1), 120);
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault();
-        this.navigateImage(1);
+        clearTimeout(navTimer);
+        navTimer = setTimeout(() => this.navigateImage(1), 120);
       }
     };
     document.addEventListener('keydown', this._keyHandler);
@@ -669,20 +648,39 @@ export const ImageWorkspace = {
       annCounts[ann.class_name] = (annCounts[ann.class_name] || 0) + 1;
     });
 
-    list.innerHTML = classes.map(cls => `
-      <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
-           style="justify-content: space-between; padding: 10px 15px; font-size: 13px; border-radius: 12px; ${this.selectedClass === cls ? 'box-shadow: var(--neu-inset);' : ''}">
-        <div style="display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer;" onclick="window.currentWorkspace.selectClass('${cls}')">
-           <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; box-shadow: 0 2px 5px rgba(0,0,0,0.1);"></span>
-           <span style="font-weight: 600;">${cls}</span>
+    list.innerHTML = classes.map(cls => {
+      const escapedCls = cls.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `
+        <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
+             data-cls="${escapedCls}"
+             style="justify-content: space-between; padding: 10px 15px; font-size: 13px; border-radius: 12px; ${this.selectedClass === cls ? 'box-shadow: var(--neu-inset);' : ''}">
+          <div class="cls-select" style="display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer; pointer-events: auto;">
+             <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; box-shadow: 0 2px 5px rgba(0,0,0,0.1); pointer-events: none;"></span>
+             <span style="font-weight: 600; pointer-events: none;">${escapedCls}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+             <span style="font-size: 11px; opacity: 0.6; font-family: monospace;">(${annCounts[cls] || 0})</span>
+             <input type="checkbox" class="cls-chk-infer" data-cls="${escapedCls}" title="Include in text inference" checked style="width: 14px; height: 14px; cursor: pointer;" />
+             <button class="cls-delete-btn neu-button" data-delete-cls="${escapedCls}" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px; color: #ef4444; flex-shrink: 0;" title="删除类别">×</button>
+          </div>
         </div>
-        <div style="display: flex; align-items: center; gap: 6px;">
-           <span style="font-size: 11px; opacity: 0.6; font-family: monospace;">(${annCounts[cls] || 0})</span>
-           <input type="checkbox" class="cls-chk-infer" data-cls="${cls}" title="Include in text inference" checked style="width: 14px; height: 14px; cursor: pointer;" />
-           <button class="neu-button" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px; color: #ef4444; flex-shrink: 0;" title="删除类别" onclick="window.currentWorkspace.deleteClass('${cls}')">&#xd7;</button>
-        </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
+
+    // Attach events via delegation on the list element
+    list.onclick = (e) => {
+      const deleteBtn = e.target.closest('.cls-delete-btn');
+      if (deleteBtn) {
+        e.stopPropagation();
+        this.deleteClass(deleteBtn.dataset.deleteCls);
+        return;
+      }
+      const selectArea = e.target.closest('.cls-select');
+      if (selectArea) {
+        const item = e.target.closest('.class-item');
+        if (item) this.selectClass(item.dataset.cls);
+      }
+    };
     
     this.updateActionBar();
   },
