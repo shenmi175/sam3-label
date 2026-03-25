@@ -167,6 +167,31 @@
 }
 ```
 
+### `GET /api/projects/{project_id}/images/unlabeled`
+
+用于快速定位下一张未标注图片，适合大数据集场景。
+
+参数：
+
+- `after_image_id`
+  可选。从当前图片之后开始查找；如果后续没有未标注图片，会回绕到第一张未标注图片。
+- `direction`
+  可选。`next` 或 `prev`，用于向后/向前查找未标注图片。
+
+响应：
+
+```json
+{
+  "image": {
+    "id": "img_123",
+    "rel_path": "000123.jpg",
+    "abs_path": "D:/dataset/images/000123.jpg",
+    "status": "unlabeled"
+  },
+  "image_index": 123
+}
+```
+
 ### `POST /api/projects/{project_id}/images/refresh`
 
 刷新图片目录。

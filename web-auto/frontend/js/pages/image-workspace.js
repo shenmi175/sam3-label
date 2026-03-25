@@ -18,6 +18,9 @@ export const ImageWorkspace = {
   isUnmounted: false,
   promptMode: 'pointer',
   currentPrompts: [],
+  previewSectionCollapsed: false,
+  focusedAnnotationId: null,
+  unlabeledNavigationEnabled: false,
   
   async render(container, params) {
     this.container = container;
@@ -31,6 +34,9 @@ export const ImageWorkspace = {
     this.rightPanelHidden = false;
     this.classesSectionCollapsed = false;
     this.annotationsSectionCollapsed = false;
+    this.previewSectionCollapsed = false;
+    this.focusedAnnotationId = null;
+    this.unlabeledNavigationEnabled = false;
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -139,9 +145,12 @@ export const ImageWorkspace = {
             </div>
             
             <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-               <div style="padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
+               <div style="padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px;">
                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('image_list')}</h3>
-                  <span id="ws-img-count-badge" class="neu-box" style="padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; box-shadow: var(--neu-inset);">0</span>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <button id="btn-find-unlabeled" class="neu-button" style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700;" title="开启后，方向键只切换未标注图片">未标注</button>
+                    <span id="ws-img-count-badge" class="neu-box" style="padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; box-shadow: var(--neu-inset);">0</span>
+                  </div>
                </div>
                <div id="image-list-container" style="flex: 1; overflow-y: auto; padding: 10px 15px;">
                   <div style="text-align:center; padding: 40px; color: var(--neu-text-light);">${i18n.t('loading_images')}</div>
@@ -249,6 +258,7 @@ export const ImageWorkspace = {
     this.setPromptMode('pointer');
     
     this.bindEvents();
+    this.refreshUnlabeledButton();
     window.currentWorkspace = this;
     
     await this.loadProjectInfo();
@@ -258,6 +268,7 @@ export const ImageWorkspace = {
 
   initializeLayoutControls() {
     const canvasContainer = document.getElementById('canvas-container');
+    const centerPanel = document.getElementById('center-panel');
     const pointBtn = document.getElementById('btn-tool-point');
     const fitBtn = document.getElementById('btn-vtool-filter');
     const leftPanel = document.getElementById('left-panel');
@@ -305,6 +316,17 @@ export const ImageWorkspace = {
       rightPanel.style.minWidth = '320px';
     }
 
+    const pointerBtn = document.getElementById('btn-tool-pointer');
+    if (pointerBtn) pointerBtn.textContent = 'P';
+    if (fitBtn) fitBtn.textContent = 'F';
+
+    const leftToggle = document.getElementById('btn-toggle-left-panel');
+    const rightToggle = document.getElementById('btn-toggle-right-panel');
+    if (centerPanel && leftToggle && leftToggle.parentElement !== centerPanel) centerPanel.appendChild(leftToggle);
+    if (centerPanel && rightToggle && rightToggle.parentElement !== centerPanel) centerPanel.appendChild(rightToggle);
+    if (leftToggle) leftToggle.textContent = '<';
+    if (rightToggle) rightToggle.textContent = '>';
+
     const classesSection = rightPanel?.children?.[0] || null;
     if (classesSection && !document.getElementById('classes-section-body')) {
       classesSection.id = 'classes-section';
@@ -326,11 +348,34 @@ export const ImageWorkspace = {
 
         const body = document.createElement('div');
         body.id = 'classes-section-body';
-        body.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+        body.style.cssText = 'display: flex; flex-direction: column; gap: 8px; min-height: 0;';
         classesSection.appendChild(body);
         body.appendChild(classesList);
         body.appendChild(addClassBtn);
       }
+    }
+
+    const classesToggleBtn = document.getElementById('btn-toggle-classes-section');
+    if (classesToggleBtn) classesToggleBtn.textContent = '-';
+
+    const previewList = document.getElementById('preview-list');
+    const previewCard = previewList?.closest('.neu-box') || null;
+    if (previewCard && !document.getElementById('btn-collapse-preview')) {
+      previewCard.style.flexShrink = '0';
+      const headerRow = previewCard.firstElementChild;
+      if (headerRow) {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'btn-collapse-preview';
+        toggleBtn.className = 'neu-button';
+        toggleBtn.style.cssText = 'width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px; flex-shrink: 0;';
+        toggleBtn.textContent = '-';
+        headerRow.appendChild(toggleBtn);
+      }
+      const previewBody = document.createElement('div');
+      previewBody.id = 'preview-section-body';
+      previewBody.style.cssText = 'display: flex; flex-direction: column; min-height: 0;';
+      previewCard.appendChild(previewBody);
+      previewBody.appendChild(previewList);
     }
 
     // Note: annotations section collapse is handled by btn-collapse-anns already in the HTML template
@@ -458,6 +503,9 @@ export const ImageWorkspace = {
         this.loadImages();
       }
     };
+
+    const btnFindUnlabeled = document.getElementById('btn-find-unlabeled');
+    if (btnFindUnlabeled) btnFindUnlabeled.onclick = () => this.toggleUnlabeledNavigation();
     
     const btnAddCls = document.getElementById('btn-add-class-ws');
     if (btnAddCls) btnAddCls.onclick = () => this.showAddClassModal();
@@ -512,8 +560,10 @@ export const ImageWorkspace = {
     if (btnToggleRightPanel) btnToggleRightPanel.onclick = () => this.toggleSidePanel('right');
     const btnToggleClasses = document.getElementById('btn-toggle-classes-section');
     if (btnToggleClasses) btnToggleClasses.onclick = () => this.toggleSection('classes');
-    const btnToggleAnnotations = document.getElementById('btn-toggle-annotations-section');
+    const btnToggleAnnotations = document.getElementById('btn-collapse-anns') || document.getElementById('btn-toggle-annotations-section');
     if (btnToggleAnnotations) btnToggleAnnotations.onclick = () => this.toggleSection('annotations');
+    const btnTogglePreview = document.getElementById('btn-collapse-preview');
+    if (btnTogglePreview) btnTogglePreview.onclick = () => this.toggleSection('preview');
 
     // Right Column
     const btnSaveAnns = document.getElementById('btn-save-anns');
@@ -552,6 +602,10 @@ export const ImageWorkspace = {
   },
 
   navigateImage(delta) {
+    if (this.unlabeledNavigationEnabled) {
+      this.navigateUnlabeledImage(delta);
+      return;
+    }
     if (!this.images || this.images.length === 0) return;
     const currentIndex = this.images.findIndex(img => img.id === this.selectedImageId);
     const nextIndex = currentIndex + delta;
@@ -577,6 +631,49 @@ export const ImageWorkspace = {
     }
   },
 
+  toggleUnlabeledNavigation() {
+    this.unlabeledNavigationEnabled = !this.unlabeledNavigationEnabled;
+    this.refreshUnlabeledButton();
+    showToast(
+      this.unlabeledNavigationEnabled
+        ? '未标注导航已开启，方向键将只切换未标注图片'
+        : '未标注导航已关闭，方向键恢复普通切图',
+      'info'
+    );
+  },
+
+  refreshUnlabeledButton() {
+    const btn = document.getElementById('btn-find-unlabeled');
+    if (!btn) return;
+    btn.style.boxShadow = this.unlabeledNavigationEnabled ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+    btn.style.color = this.unlabeledNavigationEnabled ? 'var(--neu-text-active)' : 'var(--neu-text)';
+    btn.textContent = this.unlabeledNavigationEnabled ? '未标注: 开' : '未标注';
+  },
+
+  async navigateUnlabeledImage(delta) {
+    try {
+      const direction = delta < 0 ? 'prev' : 'next';
+      const res = await api.getUnlabeledImage(this.projectId, this.selectedImageId || '', direction);
+      const image = res?.image || null;
+      const imageIndex = Number(res?.image_index ?? -1);
+      if (!image || !image.id) {
+        showToast('No unlabeled images found', 'info');
+        return;
+      }
+      if (imageIndex >= 0) {
+        this.offset = Math.floor(imageIndex / this.limit) * this.limit;
+      }
+      await this.loadImages();
+      await this.selectImage(image.id, image.rel_path);
+      setTimeout(() => {
+        const el = document.querySelector(`.image-item[data-id="${image.id}"]`);
+        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }, 50);
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  },
+
   toggleSidePanel(side) {
     const panelId = side === 'left' ? 'left-panel' : 'right-panel';
     const btnId = side === 'left' ? 'btn-toggle-left-panel' : 'btn-toggle-right-panel';
@@ -586,8 +683,11 @@ export const ImageWorkspace = {
     const hidden = panel.style.display === 'none';
     panel.style.display = hidden ? 'flex' : 'none';
     if (btn) btn.textContent = side === 'left'
-      ? (hidden ? '\u27E8' : '\u27E9')
-      : (hidden ? '\u27E9' : '\u27E8');
+      ? (hidden ? '<' : '>')
+      : (hidden ? '>' : '<');
+    requestAnimationFrame(() => {
+      if (this.viewer) this.viewer.onResize();
+    });
   },
 
   toggleSection(section) {
@@ -597,14 +697,23 @@ export const ImageWorkspace = {
       if (!body) return;
       this.classesSectionCollapsed = !this.classesSectionCollapsed;
       body.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
-      if (btn) btn.textContent = this.classesSectionCollapsed ? '+' : '\u2212';
+      const classesSection = document.getElementById('classes-section');
+      if (classesSection) classesSection.style.maxHeight = this.classesSectionCollapsed ? 'auto' : '40%';
+      if (btn) btn.textContent = this.classesSectionCollapsed ? '+' : '-';
     } else if (section === 'annotations') {
       const wrapper = document.getElementById('annotation-list-wrapper');
       const btn = document.getElementById('btn-collapse-anns') || document.getElementById('btn-toggle-annotations-section');
       if (!wrapper) return;
       this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
       wrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
-      if (btn) btn.textContent = this.annotationsSectionCollapsed ? '+' : '\u2212';
+      if (btn) btn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
+    } else if (section === 'preview') {
+      const wrapper = document.getElementById('preview-section-body');
+      const btn = document.getElementById('btn-collapse-preview');
+      if (!wrapper) return;
+      this.previewSectionCollapsed = !this.previewSectionCollapsed;
+      wrapper.style.display = this.previewSectionCollapsed ? 'none' : 'flex';
+      if (btn) btn.textContent = this.previewSectionCollapsed ? '+' : '-';
     }
   },
 
@@ -791,7 +900,9 @@ export const ImageWorkspace = {
     
     const canvasEl = document.getElementById('canvas-container');
     if (canvasEl) {
-      canvasEl.style.cursor = mode === 'pan' ? 'grab' : (mode === 'box' ? 'crosshair' : 'crosshair');
+      canvasEl.style.cursor = mode === 'pan'
+        ? 'grab'
+        : (mode === 'box' ? 'crosshair' : (mode === 'point' ? 'copy' : 'default'));
     }
     
     if (this.viewer) {
@@ -1001,10 +1112,12 @@ export const ImageWorkspace = {
     this.selectedImagePath = relPath;
     this.currentPrompts = [];
     this.previews = [];
+    this.focusedAnnotationId = null;
     
     if (this.viewer) {
       this.viewer.setPrompts([]);
       this.viewer.setPreviews([]);
+      this.viewer.setFocusedAnnotation(null);
     }
     
     this.renderPreviews();
@@ -1027,6 +1140,10 @@ export const ImageWorkspace = {
       const annsRes = await api.getAnnotations(this.projectId, id);
       this.annotations = annsRes.annotations || [];
       this.viewer.setAnnotations(this.annotations);
+      this.viewer.setFocusedAnnotation(null);
+      requestAnimationFrame(() => {
+        if (this.viewer) this.viewer.fitToScreen();
+      });
       this.renderClasses();
       this.renderAnnotations();
       
@@ -1156,6 +1273,8 @@ export const ImageWorkspace = {
     const nameEl = document.getElementById('task-name');
     const fillEl = document.getElementById('task-progress-fill');
     const statusEl = document.getElementById('task-status-text');
+    const stopBtn = document.getElementById('btn-task-stop');
+    const resumeBtn = document.getElementById('btn-task-resume');
     
     bar.style.display = 'flex';
     
@@ -1183,17 +1302,38 @@ export const ImageWorkspace = {
           setTimeout(() => bar.style.display = 'none', 3000);
           this.activeJobId = null;
           this.isPolling = false;
+          if (resumeBtn) resumeBtn.style.display = 'none';
+          if (stopBtn) {
+            stopBtn.style.display = 'block';
+            stopBtn.disabled = false;
+            stopBtn.innerText = 'Stop';
+          }
           await this.loadProjectInfo();
           if (this.selectedImageId && this.selectedImagePath) {
             await this.selectImage(this.selectedImageId, this.selectedImagePath);
           }
           return;
+        } else if (job.status === 'pausing') {
+          if (resumeBtn) resumeBtn.style.display = 'none';
+          if (stopBtn) {
+            stopBtn.style.display = 'block';
+            stopBtn.disabled = true;
+            stopBtn.innerText = 'Stopping...';
+          }
         } else if (job.status === 'paused') {
-          document.getElementById('btn-task-resume').style.display = 'block';
-          document.getElementById('btn-task-stop').style.display = 'none';
+          if (resumeBtn) resumeBtn.style.display = 'block';
+          if (stopBtn) {
+            stopBtn.style.display = 'none';
+            stopBtn.disabled = false;
+            stopBtn.innerText = 'Stop';
+          }
         } else {
-          document.getElementById('btn-task-resume').style.display = 'none';
-          document.getElementById('btn-task-stop').style.display = 'block';
+          if (resumeBtn) resumeBtn.style.display = 'none';
+          if (stopBtn) {
+            stopBtn.style.display = 'block';
+            stopBtn.disabled = false;
+            stopBtn.innerText = 'Stop';
+          }
         }
         
         setTimeout(poll, 1000);
@@ -1208,7 +1348,16 @@ export const ImageWorkspace = {
 
   async stopActiveTask() {
     try {
-      await api.stopInferJob(this.projectId);
+      const res = await api.stopInferJob(this.projectId);
+      const job = res?.job || null;
+      const stopBtn = document.getElementById('btn-task-stop');
+      const statusEl = document.getElementById('task-status-text');
+      if (job?.job_id) this.activeJobId = job.job_id;
+      if (stopBtn) {
+        stopBtn.disabled = true;
+        stopBtn.innerText = 'Stopping...';
+      }
+      if (statusEl) statusEl.innerText = 'Stopping task...';
       showToast("Stopping task...");
     } catch(e) { showToast(e.message, "error"); }
   },
@@ -1221,7 +1370,20 @@ export const ImageWorkspace = {
         batch_size: store.state.config.batchSize,
         api_base_url: store.state.config.sam3ApiUrl
       };
-      await api.resumeInferJob(payload);
+      const res = await api.resumeInferJob(payload);
+      const job = res?.job || null;
+      if (job?.job_id) this.activeJobId = job.job_id;
+      const stopBtn = document.getElementById('btn-task-stop');
+      const resumeBtn = document.getElementById('btn-task-resume');
+      const statusEl = document.getElementById('task-status-text');
+      if (resumeBtn) resumeBtn.style.display = 'none';
+      if (stopBtn) {
+        stopBtn.style.display = 'block';
+        stopBtn.disabled = false;
+        stopBtn.innerText = 'Stop';
+      }
+      if (statusEl) statusEl.innerText = 'Resuming task...';
+      if (!this.isPolling && this.activeJobId) this.pollTaskStatus();
       showToast("Resuming task...");
     } catch(e) { showToast(e.message, "error"); }
   },
@@ -1229,14 +1391,20 @@ export const ImageWorkspace = {
   renderAnnotations() {
     const list = document.getElementById('annotation-list-container');
     const anns = this.annotations || [];
-    
     if (anns.length === 0) {
       list.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>`;
       return;
     }
 
-    list.innerHTML = anns.map(ann => `
-      <div class="neu-box" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--neu-bg); box-shadow: var(--neu-inset-sm);">
+    const focusBanner = ''; /*
+      <div class="neu-box" style="padding: 10px 12px; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--neu-bg-light); box-shadow: var(--neu-inset-sm);">
+        <span style="font-size: 12px; font-weight: 700; color: var(--neu-text-light);">只显示当前实例</span>
+        <button class="neu-button" style="padding: 6px 10px; font-size: 11px; font-weight: 700;" onclick="window.currentWorkspace.clearAnnotationFocus()">显示全部</button>
+      </div>
+    */
+
+    list.innerHTML = `${anns.map(ann => `
+      <div class="neu-box ann-item-focus" data-ann-id="${ann.id}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${this.focusedAnnotationId === ann.id ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${this.focusedAnnotationId === ann.id ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.getClassColor(ann.class_name)};"></span>
@@ -1252,14 +1420,40 @@ export const ImageWorkspace = {
           <span>${ann.polygon ? 'Polygon' : 'BBox'}</span>
         </div>
       </div>
-    `).join('');
+    `).join('')}`;
+    list.querySelectorAll('.ann-item-focus').forEach((item) => {
+      item.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        this.toggleAnnotationFocus(item.dataset.annId || '');
+      };
+    });
   },
 
   locateAnnotation(annId) {
     const ann = this.annotations.find(a => a.id === annId);
     if (ann && this.viewer) {
+      this.focusedAnnotationId = annId;
+      this.viewer.setFocusedAnnotation(annId);
       this.viewer.centerOn(ann.bbox);
+      this.renderAnnotations();
     }
+  },
+
+  toggleAnnotationFocus(annId) {
+    const nextId = String(this.focusedAnnotationId || '') === String(annId || '') ? null : annId;
+    this.focusedAnnotationId = nextId;
+    if (this.viewer) this.viewer.setFocusedAnnotation(nextId);
+    if (nextId) {
+      const ann = (this.annotations || []).find((item) => String(item?.id || '') === String(nextId));
+      if (ann?.bbox && this.viewer) this.viewer.centerOn(ann.bbox);
+    }
+    this.renderAnnotations();
+  },
+
+  clearAnnotationFocus() {
+    this.focusedAnnotationId = null;
+    if (this.viewer) this.viewer.setFocusedAnnotation(null);
+    this.renderAnnotations();
   },
 
   getSelectedClassesForInference() {

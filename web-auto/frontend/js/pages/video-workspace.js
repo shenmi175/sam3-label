@@ -23,6 +23,10 @@ export const VideoWorkspace = {
     this.projectId = params.id;
     this.isUnmounted = false;
     this.abortController = new AbortController();
+    this.currentPrompts = [];
+    this.previews = [];
+    this.promptMode = 'point';
+    window.currentWorkspace = this;
 
     try {
       const data = await api.getProject(this.projectId, false);
@@ -32,8 +36,6 @@ export const VideoWorkspace = {
       if (this.classes.length > 0) this.selectedClass = this.classes[0];
       
       await this.renderLayout();
-      this.initCanvas();
-      await this.loadAnnotations();
     } catch (err) {
       console.error('Failed to load project:', err);
       if (!this.isUnmounted) {
@@ -165,7 +167,10 @@ export const VideoWorkspace = {
           <div class="neu-box" id="v-right-panel" style="width: 320px; border-radius: 0; box-shadow: -4px 0 12px var(--neu-shadow-dark); z-index: 50; display: flex; flex-direction: column; background: var(--neu-bg); min-height: 0;">
             <div style="padding: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center;">
                <div style="display: flex; flex-direction: column;">
-                  <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('keyframes')}</h3>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('keyframes')}</h3>
+                    <span id="v-keyframe-count" class="neu-box" style="padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; box-shadow: var(--neu-inset);">0</span>
+                  </div>
                   <p style="font-size: 11px; margin: 2px 0 0 0; color: var(--neu-text-light);">${i18n.t('preview_results')}</p>
                </div>
             </div>
@@ -235,7 +240,12 @@ export const VideoWorkspace = {
     try {
       const data = await api.getVideoAnnotations(this.projectId);
       if (this.isUnmounted) return;
-      this.annotations = data.frames || [];
+      this.annotations = Array.isArray(data?.annotations?.frames)
+        ? data.annotations.frames.map((frame) => ({
+            ...frame,
+            annotations: Array.isArray(frame?.annotations) ? frame.annotations : [],
+          }))
+        : [];
       this.updateFrameInCanvas();
       this.renderKeyframes();
       this.updateTaskProgress();
@@ -257,12 +267,12 @@ export const VideoWorkspace = {
 
   bindEvents() {
     // Classes
-    document.getElementById('btn-add-class-video').onclick = async () => {
+    document.getElementById('btn-add-class-v').onclick = async () => {
       const name = prompt('New class name:');
       if (name) {
         try {
           await api.addClass(this.projectId, name);
-          this.classes.push(name);
+          if (!this.classes.includes(name)) this.classes.push(name);
           this.renderClasses();
         } catch (err) { alert(err.message); }
       }
@@ -353,10 +363,12 @@ export const VideoWorkspace = {
     if (!this.canvasViewer) return;
     const frameUrl = `/api/projects/${this.projectId}/video/frame/${this.currentFrame}`;
     await this.canvasViewer.loadImage(frameUrl);
+    this.canvasViewer.fitToScreen();
     
     const frameData = this.annotations.find(f => f.frame_index === this.currentFrame);
-    if (frameData && frameData.objects) {
-       this.canvasViewer.setAnnotations(frameData.objects.map(obj => ({
+    const frameAnnotations = Array.isArray(frameData?.annotations) ? frameData.annotations : [];
+    if (frameAnnotations.length > 0) {
+       this.canvasViewer.setAnnotations(frameAnnotations.map(obj => ({
           ...obj,
           color: this.getClassColor(obj.class_name)
        })));
@@ -379,28 +391,7 @@ export const VideoWorkspace = {
   },
 
   async inferFrame() {
-    if (!this.currentPrompts || this.currentPrompts.length === 0) return alert("Add prompts first");
-    const btn = document.getElementById('btn-infer-frame');
-    try {
-      btn.innerText = 'INFERRING...';
-      btn.disabled = true;
-      const res = await api.infer({
-        project_id: this.projectId,
-        frame_index: this.currentFrame,
-        class_name: this.selectedClass || (this.classes[0] || 'Object'),
-        prompts: this.currentPrompts
-      });
-      
-      if (res.annotations) {
-        this.previews = res.annotations;
-        this.canvasViewer.setPreviews(this.previews);
-        this.updateActionBar();
-      }
-    } catch(e) { alert(e.message); }
-    finally {
-      btn.innerText = 'INFER CURRENT FRAME';
-      btn.disabled = false;
-    }
+    alert('Current frame preview infer is not exposed by the current video backend yet. Use prompts plus Propagate, or save keyframes directly.');
   },
 
   updateActionBar() {
@@ -414,12 +405,12 @@ export const VideoWorkspace = {
     
     let frameData = this.annotations.find(f => f.frame_index === this.currentFrame);
     if (!frameData) {
-      frameData = { frame_index: this.currentFrame, objects: [] };
+      frameData = { frame_index: this.currentFrame, annotations: [] };
       this.annotations.push(frameData);
     }
     
     this.previews.forEach(p => {
-       frameData.objects.push({
+       frameData.annotations.push({
          ...p,
          id: 'obj_' + Math.random().toString(36).substr(2, 9),
          class_name: className
@@ -475,7 +466,7 @@ export const VideoWorkspace = {
             <button class="neu-button" style="width: 20px; height: 20px; padding: 0; font-size: 10px; color: #ef4444;" onclick="event.stopPropagation(); window.currentWorkspace.deleteKeyframe(${ann.frame_index})">×</button>
          </div>
          <div style="font-size: 11px; color: var(--neu-text-light);">
-            Objects: ${ann.objects.length}
+            Objects: ${(ann.annotations || []).length}
          </div>
       </div>
     `).join('');
@@ -489,17 +480,30 @@ export const VideoWorkspace = {
   },
 
   async startPropagation() {
-    const range = document.getElementById('propagate-range').value;
+    const range = String(document.getElementById('propagate-range').value || '').trim();
     const imgsz = document.getElementById('v-imgsz').value;
     const segment = document.getElementById('v-segment').value;
+    const match = range.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
+    const startFrame = match ? parseInt(match[1], 10) : 0;
+    const endFrame = match ? parseInt(match[2], 10) : null;
+    const promptBoxes = (this.currentPrompts || []).filter((item) => item.type === 'box').map((item) => item.data);
+    const useBoxPrompt = promptBoxes.length > 0 && !!this.selectedClass;
     
     try {
       await api.startVideoJob({
         project_id: this.projectId,
-        range: range,
+        mode: 'keyframe',
+        classes: useBoxPrompt ? [this.selectedClass] : (this.selectedClass ? [this.selectedClass] : this.classes),
+        start_frame_index: startFrame,
+        end_frame_index: endFrame,
         imgsz: parseInt(imgsz),
-        segment_size: parseInt(segment),
-        keyframes: this.annotations // Backend will use these as propagation seeds
+        segment_size_frames: parseInt(segment),
+        threshold: Number(store.state.config.threshold || 0.5),
+        prompt_mode: useBoxPrompt ? 'boxes' : 'text',
+        prompt_frame_index: this.currentFrame,
+        active_class: useBoxPrompt ? this.selectedClass : '',
+        boxes: useBoxPrompt ? promptBoxes : [],
+        api_base_url: store.state.config.sam3ApiUrl
       });
       alert("Propagation job started! Track it in Dashboard.");
     } catch(e) { alert(e.message); }

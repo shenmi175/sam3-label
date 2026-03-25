@@ -330,6 +330,68 @@ class Storage:
             return None
         return self._db_row_to_image(row)
 
+    def _get_project_unlabeled_image_db(
+        self,
+        project_id: str,
+        *,
+        after_sort_index: int = -1,
+        direction: str = 'next',
+    ) -> tuple[dict[str, Any] | None, int]:
+        nav_dir = 'prev' if str(direction or '').strip().lower() == 'prev' else 'next'
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                if nav_dir == 'prev':
+                    row = conn.execute(
+                        '''
+                        SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
+                        FROM project_images
+                        WHERE project_id = ? AND status = 'unlabeled' AND sort_index < ?
+                        ORDER BY sort_index DESC
+                        LIMIT 1
+                        ''',
+                        (str(project_id), int(after_sort_index)),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        '''
+                        SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
+                        FROM project_images
+                        WHERE project_id = ? AND status = 'unlabeled' AND sort_index > ?
+                        ORDER BY sort_index ASC
+                        LIMIT 1
+                        ''',
+                        (str(project_id), int(after_sort_index)),
+                    ).fetchone()
+                if row is None and int(after_sort_index) >= 0:
+                    if nav_dir == 'prev':
+                        row = conn.execute(
+                            '''
+                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
+                            FROM project_images
+                            WHERE project_id = ? AND status = 'unlabeled'
+                            ORDER BY sort_index DESC
+                            LIMIT 1
+                            ''',
+                            (str(project_id),),
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            '''
+                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
+                            FROM project_images
+                            WHERE project_id = ? AND status = 'unlabeled'
+                            ORDER BY sort_index ASC
+                            LIMIT 1
+                            ''',
+                            (str(project_id),),
+                        ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None, -1
+        return self._db_row_to_image(row), int(row['sort_index'])
+
     def _iter_project_image_ids_db(self, project_id: str) -> list[str]:
         with self._db_lock:
             conn = self._db_connect()
@@ -684,6 +746,21 @@ class Storage:
         image_index = self._get_project_image_index_db(project_id, image_id) if str(image_id or '').strip() else -1
         items = self._load_project_images_page_db(project_id, offset=safe_offset, limit=safe_limit)
         return items, total, safe_offset, safe_limit, image_index
+
+    def find_unlabeled_image(
+        self,
+        project_id: str,
+        *,
+        after_image_id: str = '',
+        direction: str = 'next',
+    ) -> tuple[dict[str, Any] | None, int]:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+        after_sort_index = -1
+        if str(after_image_id or '').strip():
+            after_sort_index = self._get_project_image_index_db(project_id, after_image_id)
+        return self._get_project_unlabeled_image_db(project_id, after_sort_index=after_sort_index, direction=direction)
 
     def create_project(
         self,

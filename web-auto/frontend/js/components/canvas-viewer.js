@@ -16,6 +16,7 @@ export class CanvasViewer {
     this.annotations = [];
     this.previews = []; // Temporary SAM results
     this.transform = { x: 0, y: 0, scale: 1 };
+    this.focusedAnnotationId = null;
     
     // Interaction state
     this.isPanning = false;
@@ -115,6 +116,7 @@ export class CanvasViewer {
       img.onload = () => {
         this.image = img;
         this.fitToScreen();
+        requestAnimationFrame(() => this.fitToScreen());
         resolve();
       };
       img.onerror = reject;
@@ -124,6 +126,11 @@ export class CanvasViewer {
   
   setAnnotations(anns) {
     this.annotations = anns || [];
+    this.draw();
+  }
+
+  setFocusedAnnotation(annotationId = null) {
+    this.focusedAnnotationId = annotationId || null;
     this.draw();
   }
 
@@ -299,8 +306,12 @@ export class CanvasViewer {
     // Draw image
     this.ctx.drawImage(this.image, 0, 0);
     
+    const visibleAnnotations = this.focusedAnnotationId
+      ? this.annotations.filter((ann) => String(ann?.id || '') === String(this.focusedAnnotationId))
+      : this.annotations;
+
     // Draw annotations (Permanent)
-    for(const ann of this.annotations) {
+    for(const ann of visibleAnnotations) {
       this.drawAnnotation(ann, false);
     }
     

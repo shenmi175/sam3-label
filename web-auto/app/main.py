@@ -3861,6 +3861,25 @@ def list_project_images(
         raise HTTPException(status_code=code, detail=msg) from exc
 
 
+@app.get('/api/projects/{project_id}/images/unlabeled')
+def get_unlabeled_project_image(
+    project_id: str,
+    after_image_id: str = Query(default=''),
+    direction: str = Query(default='next', pattern='^(next|prev)$'),
+) -> dict[str, Any]:
+    try:
+        image, image_index = storage.find_unlabeled_image(
+            project_id,
+            after_image_id=after_image_id,
+            direction=direction,
+        )
+        return {'image': image, 'image_index': image_index}
+    except ValueError as exc:
+        msg = str(exc)
+        code = 404 if msg == 'project not found' else 400
+        raise HTTPException(status_code=code, detail=msg) from exc
+
+
 @app.post('/api/projects/{project_id}/images/refresh')
 def refresh_project_images(project_id: str) -> dict[str, Any]:
     try:

@@ -32,6 +32,13 @@ export const api = {
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   
   getImages(projectId, offset=0, limit=200) { return this.request('GET', `/projects/${projectId}/images?offset=${offset}&limit=${limit}`); },
+  getUnlabeledImage(projectId, afterImageId='', direction='next') {
+    const params = new URLSearchParams();
+    if (afterImageId) params.set('after_image_id', afterImageId);
+    if (direction) params.set('direction', direction);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return this.request('GET', `/projects/${projectId}/images/unlabeled${suffix}`);
+  },
   refreshImages(projectId) { return this.request('POST', `/projects/${projectId}/images/refresh`); },
   uploadImage(projectId, file) {
     const fd = new FormData();

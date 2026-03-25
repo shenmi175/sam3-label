@@ -4,6 +4,7 @@ export const TaskManager = {
   container: null,
   activeJobs: new Map(), // jobId -> data
   pollTimer: null,
+  dismissedJobs: new Set(),
   
   init() {
     this.createUI();
@@ -64,6 +65,9 @@ export const TaskManager = {
       });
       
       this.activeJobs = newActive;
+      for (const jobId of Array.from(this.dismissedJobs)) {
+        if (!this.activeJobs.has(jobId)) this.dismissedJobs.delete(jobId);
+      }
       this.render();
       
     } catch(e) {
@@ -79,15 +83,20 @@ export const TaskManager = {
     
     let html = '';
     this.activeJobs.forEach((job, jobId) => {
+      if (this.dismissedJobs.has(jobId)) return;
       const pct = job.progress_pct != null ? job.progress_pct : 0;
-      const running = ['queued', 'running', 'pausing'].includes(job.status);
+      const running = ['queued', 'running'].includes(job.status);
+      const pausing = job.status === 'pausing';
       const failed = job.status === 'error';
       // Make elements clickable inside the non-clickable container
       html += `
         <div class="neu-card" style="pointer-events: auto; padding: 16px; position: relative;">
            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
               <span style="font-weight: 600; font-size: 14px;">${job.job_type || 'Task'}</span>
-              <span style="font-size: 12px; color: var(--neu-text-light);">${job.status.toUpperCase()}</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 12px; color: var(--neu-text-light);">${job.status.toUpperCase()}</span>
+                <button class="neu-button" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px;" onclick="window.taskManager.dismissJob('${jobId}')">×</button>
+              </div>
            </div>
            
            <div style="font-size: 12px; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
@@ -95,11 +104,12 @@ export const TaskManager = {
            </div>
            
            <div style="width: 100%; height: 8px; background: var(--neu-inset); border-radius: 4px; overflow: hidden; margin-bottom: 12px;">
-             <div style="height: 100%; width: ${pct}%; background: ${failed ? '#e53e3e' : running ? 'var(--neu-text-active)' : '#a0aec0'}; transition: width 0.3s;"></div>
+             <div style="height: 100%; width: ${pct}%; background: ${failed ? '#e53e3e' : (running || pausing) ? 'var(--neu-text-active)' : '#a0aec0'}; transition: width 0.3s;"></div>
            </div>
            
            <div style="display: flex; gap: 8px; justify-content: flex-end;">
              ${running ? `<button class="neu-button" style="padding: 4px 8px; font-size: 11px;" onclick="window.taskManager.stopJob('${jobId}', '${job.job_type}', '${job.project_id}')">Stop</button>` : ''}
+             ${pausing ? `<span style="font-size: 11px; color: var(--neu-text-light); align-self: center;">Stopping...</span>` : ''}
              ${job.status === 'paused' ? `<button class="neu-button" style="padding: 4px 8px; font-size: 11px; color: var(--neu-text-active);" onclick="window.taskManager.resumeJob('${jobId}', '${job.job_type}', '${job.project_id}')">Resume</button>` : ''}
            </div>
         </div>
@@ -121,6 +131,11 @@ export const TaskManager = {
       }
       this.pollActiveJobs();
     } catch(e) { alert(e.message); }
+  },
+
+  dismissJob(jobId) {
+    this.dismissedJobs.add(jobId);
+    this.render();
   },
   
   async resumeJob(jobId, type, projectId) {
