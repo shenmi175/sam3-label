@@ -56,7 +56,7 @@ export const ProjectsPage = {
               </div>
               <div style="margin-bottom: 16px;">
                 <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('initial_classes')}</label>
-                <textarea id="inp-pj-classes" class="neu-input" style="height: 80px; resize: none;" placeholder="cat, dog, person"></textarea>
+                <textarea id="inp-pj-classes" class="neu-input" style="height: 80px; resize: none;" placeholder="每行一个类别，或使用逗号 / 分号分隔&#10;cat&#10;dog&#10;person face"></textarea>
               </div>
               <div style="margin-bottom: 24px;">
                 <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('save_dir')}</label>
@@ -200,7 +200,7 @@ export const ProjectsPage = {
         const payload = {
           name: document.getElementById('inp-pj-name').value,
           project_type: typeSelect.value,
-          classes_text: document.getElementById('inp-pj-classes').value,
+          classes_text: document.getElementById('inp-pj-classes').value.replace(/\r\n?/g, '\n'),
         };
         const saveDir = document.getElementById('inp-pj-savedir').value.trim();
         if (saveDir) payload.save_dir = saveDir;
@@ -358,7 +358,7 @@ export const ProjectsPage = {
 
             <div style="font-size: 12px; color: var(--neu-text-light); display: flex; gap: 20px;">
                <span><strong style="color:var(--neu-text);">${i18n.t('path')}:</strong> ${p.image_dir || p.video_path}</span>
-               <span style="margin-left:auto;">${i18n.t('created')}: ${new Date(p.created_at * 1000).toLocaleDateString()}</span>
+               <span style="margin-left:auto;">${i18n.t('created')}: ${this.safeFormatDate(p.created_at)}</span>
             </div>
 
             <div style="width: 100%; height: 6px; background: var(--neu-inset); border-radius: 3px; overflow: hidden; margin-top: 4px;">
@@ -371,6 +371,20 @@ export const ProjectsPage = {
     } catch (err) {
       listCont.innerHTML = `<div style="padding: 40px; text-align: center; color: #e53e3e;">Failed to load projects: ${err.message}</div>`;
     }
+  },
+
+  safeFormatDate(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '--';
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const ts = numeric > 1e12 ? numeric : numeric * 1000;
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime()) ? '--' : d.toLocaleString();
+    }
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const d = new Date(normalized);
+    return Number.isNaN(d.getTime()) ? raw : d.toLocaleString();
   },
 
   showUpload(projectId) {

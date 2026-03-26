@@ -90,6 +90,17 @@ export const api = {
     });
   },
 
+  getUIState(projectId = '') {
+    const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+    return this.request('GET', `/ui_state${suffix}`);
+  },
+  setUIState(projectId, state) {
+    return this.request('POST', '/ui_state', {
+      project_id: projectId || null,
+      state: state || {}
+    });
+  },
+
   // Configuration
   getCacheDir() { return this.request('GET', '/config/cache_dir'); },
   setCacheDir(path) { return this.request('POST', '/config/cache_dir', {cache_dir: path}); }

@@ -120,13 +120,13 @@ export const VideoWorkspace = {
           </div>
           
           <!-- Middle Column: Canvas & Timeline -->
-          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #1a1c1e; min-width: 0; min-height: 0;">
+          <div style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--canvas-bg); min-width: 0; min-height: 0;">
              <!-- Canvas Area -->
              <div id="video-canvas-container" style="flex: 1; position: relative;">
                 <!-- CanvasViewer will be here -->
                 
                 <!-- Hovering Toolbar -->
-                <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); background: rgba(30, 33, 36, 0.9); border: 1px solid rgba(255,255,255,0.1);">
+                <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); background: var(--canvas-toolbar-bg); border: 1px solid rgba(255,255,255,0.1);">
                    <button class="neu-button active" id="btn-vtool-point" title="Point" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
                    <button class="neu-button" id="btn-vtool-box" title="Box" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                    <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1); margin: 0 5px;"></div>

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -73,7 +74,7 @@ def norm_text(value: str) -> str:
 def parse_classes_text(text: str) -> list[str]:
     classes: list[str] = []
     seen = set()
-    for raw in str(text or '').split(','):
+    for raw in re.split(r'[,;\r\n\u2028\u2029\uFF0C\uFF1B]+', str(text or '')):
         name = raw.strip()
         if not name:
             continue

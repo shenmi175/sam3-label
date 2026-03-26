@@ -9,6 +9,7 @@ export const ImageWorkspace = {
   projectId: null,
   projectMeta: null,
   images: [],
+  annotations: [],
   offset: 0,
   limit: 50,
   totalImages: 0,
@@ -21,11 +22,19 @@ export const ImageWorkspace = {
   previewSectionCollapsed: false,
   focusedAnnotationId: null,
   unlabeledNavigationEnabled: false,
+  uiStateSaveTimer: null,
+  batchResultShownForJobId: '',
   
   async render(container, params) {
     this.container = container;
     this.projectId = params.id;
     this.isUnmounted = false;
+    this.projectMeta = null;
+    this.images = [];
+    this.annotations = [];
+    this.selectedImageId = null;
+    this.selectedImagePath = null;
+    this.offset = 0;
     this.currentPrompts = [];
     this.previews = []; // Storage for Pure Vision results
     this.promptMode = 'pointer';
@@ -37,6 +46,7 @@ export const ImageWorkspace = {
     this.previewSectionCollapsed = false;
     this.focusedAnnotationId = null;
     this.unlabeledNavigationEnabled = false;
+    this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -164,7 +174,7 @@ export const ImageWorkspace = {
           </div>
           
           <!-- Middle Column: Canvas & Hover Tools -->
-          <div id="center-panel" style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: #eaeff2; min-width: 0; min-height: 0;">
+          <div id="center-panel" style="flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--canvas-bg); min-width: 0; min-height: 0;">
              <!-- Canvas Area -->
              <div id="canvas-container" style="flex: 1; position: relative;">
                 <div id="canvas-placeholder" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
@@ -173,7 +183,7 @@ export const ImageWorkspace = {
                 </div>
 
                 <!-- Hovering Toolbar -->
-                 <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+                 <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); background: var(--canvas-toolbar-bg);">
                     <button class="neu-button" id="btn-tool-pan" title="Pan / Drag Image" style="width: 40px; height: 40px; border-radius: 50%;">✋</button>
                     <button class="neu-button" id="btn-tool-point" title="Point Prompt" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
                     <button class="neu-button" id="btn-tool-box" title="Box Prompt" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
@@ -218,7 +228,7 @@ export const ImageWorkspace = {
              <!-- Annotations List -->
              <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                 <div style="padding: 12px 20px; border-bottom: 1px solid rgba(0,0,0,0.03); display: flex; justify-content: space-between; align-items: center;">
-                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('annotation_list') || '标注列表'}</h3>
+                   <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('标注列表') || '标注列表'}</h3>
                    <button id="btn-collapse-anns" class="neu-button" style="width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px;" title="折叠/展开">−</button>
                 </div>
                 <div id="annotation-list-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
@@ -249,6 +259,8 @@ export const ImageWorkspace = {
       <!-- Modals -->
       <div id="modal-filter-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-export-full" class="modal-overlay" style="display: none;"></div>
+      <div id="modal-batch-full" class="modal-overlay" style="display: none;"></div>
+      <div id="modal-batch-result" class="modal-overlay" style="display: none;"></div>
     `;
 
     this.initializeLayoutControls();
@@ -262,7 +274,10 @@ export const ImageWorkspace = {
     window.currentWorkspace = this;
     
     await this.loadProjectInfo();
+    await this.restoreProjectUIState();
+    this.applyLayoutState();
     await this.loadImages();
+    await this.restoreSelectedImage();
     this.startHealthCheck();
   },
 
@@ -382,20 +397,126 @@ export const ImageWorkspace = {
     // and bound in bindEvents(). No dynamic injection needed here.
   },
 
+  applyLayoutState() {
+    const leftPanel = document.getElementById('left-panel');
+    const rightPanel = document.getElementById('right-panel');
+    const leftBtn = document.getElementById('btn-toggle-left-panel');
+    const rightBtn = document.getElementById('btn-toggle-right-panel');
+    if (leftPanel) leftPanel.style.display = this.leftPanelHidden ? 'none' : 'flex';
+    if (rightPanel) rightPanel.style.display = this.rightPanelHidden ? 'none' : 'flex';
+    if (leftBtn) leftBtn.textContent = this.leftPanelHidden ? '>' : '<';
+    if (rightBtn) rightBtn.textContent = this.rightPanelHidden ? '<' : '>';
+
+    const classesBody = document.getElementById('classes-section-body');
+    const classesBtn = document.getElementById('btn-toggle-classes-section');
+    if (classesBody) classesBody.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
+    if (classesBtn) classesBtn.textContent = this.classesSectionCollapsed ? '+' : '-';
+
+    const annWrapper = document.getElementById('annotation-list-wrapper');
+    const annBtn = document.getElementById('btn-collapse-anns');
+    if (annWrapper) annWrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
+    if (annBtn) annBtn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
+
+    const previewWrapper = document.getElementById('preview-section-body');
+    const previewBtn = document.getElementById('btn-collapse-preview');
+    if (previewWrapper) previewWrapper.style.display = this.previewSectionCollapsed ? 'none' : 'flex';
+    if (previewBtn) previewBtn.textContent = this.previewSectionCollapsed ? '+' : '-';
+
+    requestAnimationFrame(() => {
+      if (this.viewer) this.viewer.onResize();
+    });
+  },
+
   unmount() {
     this.isUnmounted = true;
+    this.flushProjectUIState();
     if (this.viewer) {
       this.viewer.destroy();
       this.viewer = null;
     }
     if (this.healthInterval) clearInterval(this.healthInterval);
     if (this.filterJobTimer) clearTimeout(this.filterJobTimer);
+    if (this.uiStateSaveTimer) {
+      clearTimeout(this.uiStateSaveTimer);
+      this.uiStateSaveTimer = null;
+    }
     if (this._keyHandler) {
       document.removeEventListener('keydown', this._keyHandler);
       this._keyHandler = null;
     }
     this.container = null;
     window.currentWorkspace = null;
+  },
+
+  sanitizeOffset(offsetValue = this.offset, totalValue = this.totalImages) {
+    const total = Math.max(0, Number(totalValue || 0));
+    const limit = Math.max(1, Number(this.limit || 50));
+    let nextOffset = Math.max(0, Number(offsetValue || 0));
+    if (total > 0 && nextOffset >= total) {
+      nextOffset = Math.max(0, Math.floor((total - 1) / limit) * limit);
+    }
+    return nextOffset;
+  },
+
+  async restoreProjectUIState() {
+    try {
+      const res = await api.getUIState(this.projectId);
+      const state = res?.state || {};
+      this.offset = this.sanitizeOffset(state.offset ?? 0, this.totalImages);
+      this.limit = Math.max(1, Number(state.limit || this.limit || 50));
+      this.selectedImageId = state.selectedImageId || null;
+      this.selectedImagePath = state.selectedImagePath || null;
+      this.focusedAnnotationId = state.focusedAnnotationId || null;
+      this.unlabeledNavigationEnabled = Boolean(state.unlabeledNavigationEnabled);
+      this.leftPanelHidden = Boolean(state.leftPanelHidden);
+      this.rightPanelHidden = Boolean(state.rightPanelHidden);
+      this.classesSectionCollapsed = Boolean(state.classesSectionCollapsed);
+      this.annotationsSectionCollapsed = Boolean(state.annotationsSectionCollapsed);
+      this.previewSectionCollapsed = Boolean(state.previewSectionCollapsed);
+      this.refreshUnlabeledButton();
+    } catch (err) {
+      console.warn('restore project ui state failed', err);
+      this.offset = 0;
+    }
+  },
+
+  scheduleProjectUIStateSave() {
+    if (this.isUnmounted || !this.projectId) return;
+    if (this.uiStateSaveTimer) clearTimeout(this.uiStateSaveTimer);
+    this.uiStateSaveTimer = setTimeout(() => this.flushProjectUIState(), 150);
+  },
+
+  async flushProjectUIState() {
+    if (this.isUnmounted || !this.projectId) return;
+    try {
+      await api.setUIState(this.projectId, {
+        offset: this.sanitizeOffset(this.offset, this.totalImages),
+        limit: this.limit,
+        selectedImageId: this.selectedImageId || '',
+        selectedImagePath: this.selectedImagePath || '',
+        focusedAnnotationId: this.focusedAnnotationId || '',
+        unlabeledNavigationEnabled: Boolean(this.unlabeledNavigationEnabled),
+        leftPanelHidden: Boolean(this.leftPanelHidden),
+        rightPanelHidden: Boolean(this.rightPanelHidden),
+        classesSectionCollapsed: Boolean(this.classesSectionCollapsed),
+        annotationsSectionCollapsed: Boolean(this.annotationsSectionCollapsed),
+        previewSectionCollapsed: Boolean(this.previewSectionCollapsed),
+      });
+    } catch (err) {
+      console.warn('save project ui state failed', err);
+    }
+  },
+
+  async restoreSelectedImage() {
+    let targetId = this.selectedImageId;
+    let targetPath = this.selectedImagePath;
+    if (!targetId && this.images.length > 0) {
+      targetId = this.images[0].id;
+      targetPath = this.images[0].rel_path;
+    }
+    if (targetId) {
+      await this.selectImage(targetId, targetPath, { preserveFit: false });
+    }
   },
 
   startHealthCheck() {
@@ -634,6 +755,7 @@ export const ImageWorkspace = {
   toggleUnlabeledNavigation() {
     this.unlabeledNavigationEnabled = !this.unlabeledNavigationEnabled;
     this.refreshUnlabeledButton();
+    this.scheduleProjectUIStateSave();
     showToast(
       this.unlabeledNavigationEnabled
         ? '未标注导航已开启，方向键将只切换未标注图片'
@@ -682,9 +804,12 @@ export const ImageWorkspace = {
     if (!panel) return;
     const hidden = panel.style.display === 'none';
     panel.style.display = hidden ? 'flex' : 'none';
+    if (side === 'left') this.leftPanelHidden = !hidden;
+    else this.rightPanelHidden = !hidden;
     if (btn) btn.textContent = side === 'left'
       ? (hidden ? '<' : '>')
       : (hidden ? '>' : '<');
+    this.scheduleProjectUIStateSave();
     requestAnimationFrame(() => {
       if (this.viewer) this.viewer.onResize();
     });
@@ -700,6 +825,7 @@ export const ImageWorkspace = {
       const classesSection = document.getElementById('classes-section');
       if (classesSection) classesSection.style.maxHeight = this.classesSectionCollapsed ? 'auto' : '40%';
       if (btn) btn.textContent = this.classesSectionCollapsed ? '+' : '-';
+      this.scheduleProjectUIStateSave();
     } else if (section === 'annotations') {
       const wrapper = document.getElementById('annotation-list-wrapper');
       const btn = document.getElementById('btn-collapse-anns') || document.getElementById('btn-toggle-annotations-section');
@@ -707,6 +833,7 @@ export const ImageWorkspace = {
       this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
       wrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
       if (btn) btn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
+      this.scheduleProjectUIStateSave();
     } else if (section === 'preview') {
       const wrapper = document.getElementById('preview-section-body');
       const btn = document.getElementById('btn-collapse-preview');
@@ -714,6 +841,7 @@ export const ImageWorkspace = {
       this.previewSectionCollapsed = !this.previewSectionCollapsed;
       wrapper.style.display = this.previewSectionCollapsed ? 'none' : 'flex';
       if (btn) btn.textContent = this.previewSectionCollapsed ? '+' : '-';
+      this.scheduleProjectUIStateSave();
     }
   },
 
@@ -841,7 +969,6 @@ export const ImageWorkspace = {
   },
 
   showAddClassModal() {
-    // Use a custom UI modal instead of browser prompt
     const existing = document.getElementById('modal-add-class');
     if (existing) existing.remove();
 
@@ -851,12 +978,12 @@ export const ImageWorkspace = {
     modal.style.cssText = 'position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 9999; background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);';
     modal.innerHTML = `
       <div class="neu-card" style="width: 380px; padding: 28px; border-radius: 20px; position: relative;">
-        <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-add-class').remove()">×</button>
-        <h3 style="margin: 0 0 20px 0; font-size: 16px;">➕ 新建类别</h3>
-        <textarea id="inp-new-class-names" class="neu-input" rows="4" placeholder="每行一个类别，支持批量输入" style="width: 100%; resize: vertical; font-size: 13px; padding: 10px;"></textarea>
+        <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-add-class').remove()">&times;</button>
+        <h3 style="margin: 0 0 20px 0; font-size: 16px;">\u65B0\u589E\u7C7B\u522B</h3>
+        <textarea id="inp-new-class-names" class="neu-input" rows="4" placeholder="\u6BCF\u884C\u4E00\u4E2A\u7C7B\u522B\uFF0C\u4E5F\u652F\u6301\u9017\u53F7\u6216\u5206\u53F7\u6279\u91CF\u8F93\u5165" style="width: 100%; resize: vertical; font-size: 13px; padding: 10px;"></textarea>
         <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
-          <button class="neu-button" style="padding: 10px 20px;" id="btn-cancel-add-class">取消</button>
-          <button class="neu-button" style="padding: 10px 20px; color: var(--neu-text-active); font-weight: 700;" id="btn-confirm-add-class">确认</button>
+          <button class="neu-button" style="padding: 10px 20px;" id="btn-cancel-add-class">\u53D6\u6D88</button>
+          <button class="neu-button" style="padding: 10px 20px; color: var(--neu-text-active); font-weight: 700;" id="btn-confirm-add-class">\u786E\u8BA4</button>
         </div>
       </div>
     `;
@@ -867,16 +994,17 @@ export const ImageWorkspace = {
 
     document.getElementById('btn-cancel-add-class').onclick = () => modal.remove();
     document.getElementById('btn-confirm-add-class').onclick = async () => {
-      const names = inp.value.trim();
-      if (!names) return showToast('请输入类别名称', 'error');
+      const names = inp.value.replace(/\r\n?/g, '\n').trim();
+      if (!names) return showToast('\u8BF7\u8F93\u5165\u7C7B\u522B\u540D\u79F0', 'error');
       try {
         await api.addClass(this.projectId, names);
         modal.remove();
         await this.loadProjectInfo();
-        showToast('类别已添加', 'success');
-      } catch(e) { showToast(e.message, 'error'); }
+        showToast('\u7C7B\u522B\u5DF2\u6DFB\u52A0', 'success');
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
     };
-    // Enter submits, Escape cancels
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') modal.remove();
     });
@@ -1051,6 +1179,7 @@ export const ImageWorkspace = {
       if (metaLabeled) metaLabeled.innerText = labeled;
       
       this.totalImages = total;
+      this.offset = this.sanitizeOffset(this.offset, total);
       this.renderClasses();
       
       // Check for active job
@@ -1066,11 +1195,13 @@ export const ImageWorkspace = {
   async loadImages() {
     const listCont = document.getElementById('image-list-container');
     try {
+      this.offset = this.sanitizeOffset(this.offset, this.totalImages);
       const data = await api.getImages(this.projectId, this.offset, this.limit);
       if (this.isUnmounted) return;
       
       this.images = data.items || [];
       this.totalImages = data.total || 0;
+      this.offset = this.sanitizeOffset(this.offset, this.totalImages);
       
       const totalPages = Math.ceil(this.totalImages / this.limit) || 1;
       const currPage = Math.floor(this.offset / this.limit) + 1;
@@ -1102,12 +1233,13 @@ export const ImageWorkspace = {
       }
       html += '</div>';
       listCont.innerHTML = html;
+      this.scheduleProjectUIStateSave();
       
     } catch(e) {
       listCont.innerHTML = `<div style="color: #ef4444; padding: 10px; font-size: 12px;">${e.message}</div>`;
     }
   },
-  async selectImage(id, relPath) {
+  async selectImage(id, relPath, options = {}) {
     this.selectedImageId = id;
     this.selectedImagePath = relPath;
     this.currentPrompts = [];
@@ -1146,6 +1278,7 @@ export const ImageWorkspace = {
       });
       this.renderClasses();
       this.renderAnnotations();
+      this.scheduleProjectUIStateSave();
       
     } catch(e) {
       console.error("Failed to load image/annotations:", e);
@@ -1229,7 +1362,7 @@ export const ImageWorkspace = {
   async startBatchTask(type) {
     const classes = this.getSelectedClassesForInference();
     if (type === 'text' && classes.length === 0) return showToast("Select at least one class for text inference", "error");
-    
+
     let payload = {
       project_id: this.projectId,
       threshold: store.state.config.threshold,
@@ -1238,8 +1371,14 @@ export const ImageWorkspace = {
     };
 
     if (type === 'text') {
+      const batchConfig = await this.openBatchConfigModal(classes);
+      if (!batchConfig) return;
       payload.classes = classes;
-      payload.all_images = true;
+      payload.scope_mode = batchConfig.scope_mode;
+      payload.related_classes = batchConfig.related_classes || [];
+      payload.image_ids = batchConfig.image_ids || [];
+      payload.retry_image_ids = batchConfig.retry_image_ids || [];
+      payload.all_images = batchConfig.scope_mode === 'all' && payload.image_ids.length === 0 && payload.retry_image_ids.length === 0;
     } else {
       if (!this.selectedImageId) return showToast("Select a source image first", "error");
       const boxes = this.currentPrompts.filter(p => p.type === 'box').map(p => p.data);
@@ -1258,6 +1397,7 @@ export const ImageWorkspace = {
         
       this.activeJobId = res?.job?.job_id || '';
       if (!this.activeJobId) throw new Error('batch task did not return job_id');
+      this.batchResultShownForJobId = '';
       this.pollTaskStatus();
       showToast("Batch task started", "success");
     } catch(e) {
@@ -1300,6 +1440,9 @@ export const ImageWorkspace = {
         
         if (job.status === 'done' || job.status === 'error') {
           setTimeout(() => bar.style.display = 'none', 3000);
+          if (job.job_type === 'text_batch' && job.status === 'done') {
+            this.showBatchResultModal(job);
+          }
           this.activeJobId = null;
           this.isPolling = false;
           if (resumeBtn) resumeBtn.style.display = 'none';
@@ -1439,6 +1582,157 @@ export const ImageWorkspace = {
     }
   },
 
+  openBatchConfigModal(defaultClasses = []) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('modal-batch-full');
+      if (!modal) {
+        resolve(null);
+        return;
+      }
+      const classes = this.projectMeta?.classes || [];
+      const defaultSet = new Set((defaultClasses || []).map(x => String(x)));
+      modal.innerHTML = `
+        <div class="neu-card" style="width: 520px; max-width: calc(100vw - 40px); padding: 28px; position: relative;">
+          <button class="neu-button" id="btn-close-batch-modal" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; color: #ef4444;">×</button>
+          <h2 style="margin: 0 0 18px 0; font-size: 18px;">全图文本推理</h2>
+          <div style="display: flex; flex-direction: column; gap: 18px;">
+            <div class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light);">
+              <div style="font-size: 12px; font-weight: 700; margin-bottom: 10px;">本次将推理这些类别</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                ${(defaultClasses || []).map(cls => `<span class="neu-box" style="padding: 4px 10px; border-radius: 999px; font-size: 12px; box-shadow: var(--neu-inset);">${cls}</span>`).join('') || '<span style="font-size: 12px; color: var(--neu-text-light);">未选择类别</span>'}
+              </div>
+            </div>
+            <div>
+              <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">处理范围</div>
+              <select id="batch-scope-mode" class="neu-input" style="width: 100%;">
+                <option value="all">重新标注全部图片</option>
+                <option value="unlabeled">只标注未标注图片</option>
+                <option value="class_related">重新标注指定类别相关图片</option>
+                <option value="class_related_unlabeled">只标注当前缺少这些类别的图片</option>
+              </select>
+            </div>
+            <div id="batch-related-classes-panel" style="display: none;">
+              <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">相关类别范围</div>
+              <div class="neu-box" style="padding: 12px; border-radius: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 180px; overflow-y: auto;">
+                ${classes.map(cls => `
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                    <input type="checkbox" class="batch-related-cls" value="${cls.replace(/"/g, '&quot;')}" ${defaultSet.has(cls) ? 'checked' : ''} />
+                    <span>${cls}</span>
+                  </label>
+                `).join('')}
+              </div>
+              <div style="margin-top: 8px; font-size: 11px; color: var(--neu-text-light);">按现有标注判断“相关图片”；“缺少这些类别”表示当前图片里还没有这些类别的标注。</div>
+            </div>
+            <div class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light);">
+              <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.6;">
+                阈值：${store.state.config.threshold}，批大小：${store.state.config.batchSize}<br />
+                任务完成后会显示结果汇总，并支持一键重试失败图片。
+              </div>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+              <button id="btn-cancel-batch-modal" class="neu-button">取消</button>
+              <button id="btn-confirm-batch-modal" class="neu-button" style="color: var(--neu-text-active); font-weight: 700;">开始任务</button>
+            </div>
+          </div>
+        </div>
+      `;
+      modal.style.display = 'flex';
+
+      const cleanup = (result) => {
+        modal.style.display = 'none';
+        modal.innerHTML = '';
+        resolve(result);
+      };
+      const scopeSel = document.getElementById('batch-scope-mode');
+      const relatedPanel = document.getElementById('batch-related-classes-panel');
+      const syncScope = () => {
+        const needRelated = scopeSel.value === 'class_related' || scopeSel.value === 'class_related_unlabeled';
+        relatedPanel.style.display = needRelated ? 'block' : 'none';
+      };
+      syncScope();
+      scopeSel.onchange = syncScope;
+      document.getElementById('btn-close-batch-modal').onclick = () => cleanup(null);
+      document.getElementById('btn-cancel-batch-modal').onclick = () => cleanup(null);
+      document.getElementById('btn-confirm-batch-modal').onclick = () => {
+        const related = Array.from(document.querySelectorAll('.batch-related-cls:checked')).map(el => el.value);
+        if ((scopeSel.value === 'class_related' || scopeSel.value === 'class_related_unlabeled') && related.length === 0) {
+          showToast('请至少选择一个相关类别', 'error');
+          return;
+        }
+        cleanup({
+          scope_mode: scopeSel.value,
+          related_classes: related,
+          image_ids: [],
+          retry_image_ids: []
+        });
+      };
+    });
+  },
+
+  showBatchResultModal(job) {
+    if (!job || this.batchResultShownForJobId === job.job_id) return;
+    this.batchResultShownForJobId = job.job_id;
+    const modal = document.getElementById('modal-batch-result');
+    if (!modal) return;
+    const result = job.result || {};
+    const classAdditions = result.class_additions || {};
+    const retryImageIds = result.retry_image_ids || [];
+    const classRows = Object.entries(classAdditions);
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 560px; max-width: calc(100vw - 40px); padding: 28px; position: relative;">
+        <button class="neu-button" id="btn-close-batch-result" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; color: #ef4444;">×</button>
+        <h2 style="margin: 0 0 18px 0; font-size: 18px;">批量推理结果</h2>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>请求图片</b><div style="margin-top: 6px;">${result.requested || job.requested || 0}</div></div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>已处理</b><div style="margin-top: 6px;">${result.processed_images || job.progress_done || 0}</div></div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>成功</b><div style="margin-top: 6px; color: #10b981;">${result.saved_images || result.succeeded || job.succeeded || 0}</div></div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>失败</b><div style="margin-top: 6px; color: #ef4444;">${result.failed_images || result.failed || job.failed || 0}</div></div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>跳过</b><div style="margin-top: 6px;">${result.skipped_images || result.skipped || job.skipped || 0}</div></div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px;"><b>新增标注</b><div style="margin-top: 6px;">${result.new_annotations || job.new_annotations || 0}</div></div>
+        </div>
+        <div class="neu-box" style="padding: 14px; border-radius: 12px; margin-top: 16px; background: var(--neu-bg-light);">
+          <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">类别新增统计</div>
+          ${classRows.length > 0 ? classRows.map(([cls, count]) => `<div style="display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0;"><span>${cls}</span><b>${count}</b></div>`).join('') : '<div style="font-size: 12px; color: var(--neu-text-light);">无新增类别统计</div>'}
+        </div>
+        <div style="margin-top: 16px; font-size: 12px; color: var(--neu-text-light); line-height: 1.7;">${job.message || result.message || '任务结束'}</div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+          ${retryImageIds.length > 0 ? '<button id="btn-retry-batch-result" class="neu-button" style="color: var(--neu-text-active); font-weight: 700;">重试未完成</button>' : ''}
+          <button id="btn-confirm-batch-result" class="neu-button">关闭</button>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    const close = () => {
+      modal.style.display = 'none';
+      modal.innerHTML = '';
+    };
+    document.getElementById('btn-close-batch-result').onclick = close;
+    document.getElementById('btn-confirm-batch-result').onclick = close;
+    const retryBtn = document.getElementById('btn-retry-batch-result');
+    if (retryBtn) {
+      retryBtn.onclick = async () => {
+        close();
+        try {
+          const res = await api.startBatchInfer({
+            project_id: this.projectId,
+            classes: this.getSelectedClassesForInference(),
+            retry_image_ids: retryImageIds,
+            threshold: store.state.config.threshold,
+            batch_size: store.state.config.batchSize,
+            api_base_url: store.state.config.sam3ApiUrl
+          });
+          this.activeJobId = res?.job?.job_id || '';
+          if (!this.activeJobId) throw new Error('batch task did not return job_id');
+          this.batchResultShownForJobId = '';
+          this.pollTaskStatus();
+          showToast('已启动未完成图片重试', 'success');
+        } catch (e) {
+          showToast(e.message, 'error');
+        }
+      };
+    }
+  },
+
   toggleAnnotationFocus(annId) {
     const nextId = String(this.focusedAnnotationId || '') === String(annId || '') ? null : annId;
     this.focusedAnnotationId = nextId;
@@ -1496,88 +1790,141 @@ export const ImageWorkspace = {
   openSmartFilter() {
     const modal = document.getElementById('modal-filter-full');
     const classes = this.projectMeta?.classes || [];
-    
+
     modal.innerHTML = `
-      <div class="neu-card" style="width: 600px; padding: 30px; position: relative; max-height: 90vh; overflow-y: auto;">
-        <button class="neu-button" style="position: absolute; top: 20px; right: 20px; width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 20px; color: #ef4444;" onclick="document.getElementById('modal-filter-full').style.display='none'">×</button>
-        <h2 style="margin-top: 0; display: flex; align-items: center; gap: 10px;">✨ ${i18n.t('smart_filter')}</h2>
-        
-        <div style="display: flex; flex-direction: column; gap: 24px;">
-          <!-- 1. Configuration Row -->
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-            <div>
-              <label class="neu-label">${i18n.t('filter_mode')}</label>
-              <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
-                <option value="same_class">${i18n.t('filter_mode_iou')}</option>
-                <option value="canonical_class">${i18n.t('filter_mode_master_slave')}</option>
-              </select>
+      <div class="neu-card" style="width: 760px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
+        <button class="neu-button" style="position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-filter-full').style.display='none'">&times;</button>
+        <h2 style="margin-top: 0; margin-bottom: 18px;">\u667A\u80FD\u8FC7\u6EE4</h2>
+        <div style="display: flex; flex-direction: column; gap: 18px;">
+          <div class="neu-box" style="padding: 8px; border-radius: 14px; display: flex; gap: 8px;">
+            <button id="btn-filter-op-merge" class="neu-button" style="flex: 1; font-weight: 700;">\u5408\u5E76\u8FC7\u6EE4</button>
+            <button id="btn-filter-op-rule" class="neu-button" style="flex: 1; font-weight: 700;">\u89C4\u5219\u8FC7\u6EE4</button>
+          </div>
+
+          <div id="filter-op-hint" class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light); font-size: 12px; line-height: 1.8;"></div>
+
+          <div id="filter-merge-panel" style="display: flex; flex-direction: column; gap: 18px;">
+            <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;">
+              <div>
+                <label class="neu-label">\u5408\u5E76\u6A21\u5F0F</label>
+                <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
+                  <option value="same_class">\u540C\u7C7B\u53BB\u91CD</option>
+                  <option value="canonical_class">\u6765\u6E90\u7C7B\u5E76\u5165\u76EE\u6807\u7C7B</option>
+                </select>
+              </div>
+              <div>
+                <label class="neu-label">\u9762\u79EF\u6307\u6807</label>
+                <select id="filter-area-sel" class="neu-input" style="width: 100%;">
+                  <option value="instance">\u5B9E\u4F8B\u9762\u79EF</option>
+                  <option value="bbox">\u8FB9\u6846\u9762\u79EF</option>
+                </select>
+              </div>
             </div>
+
+            <div id="filter-ms-panel" style="display: none; flex-direction: column; gap: 14px; padding: 16px; border-radius: 14px; background: var(--neu-bg-light);">
+              <div>
+                <label class="neu-label">\u76EE\u6807\u7C7B\u522B</label>
+                <select id="filter-target-cls" class="neu-input" style="width: 100%;">
+                  ${classes.map(c => `<option value="${c}">${c}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="neu-label">\u6765\u6E90\u7C7B\u522B</label>
+                <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 140px; overflow-y: auto; padding: 10px; border-radius: 10px; background: var(--neu-bg); box-shadow: var(--neu-inset);">
+                  ${classes.map(c => `<label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" class="source-cls-chk" value="${c}" /> <span>${c}</span></label>`).join('')}
+                </div>
+              </div>
+            </div>
+
             <div>
-              <label class="neu-label">${i18n.t('area_mode')}</label>
-              <select id="filter-area-sel" class="neu-input" style="width: 100%;">
-                <option value="instance">${i18n.t('area_mode_instance')}</option>
-                <option value="bbox">${i18n.t('area_mode_bbox')}</option>
-              </select>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+                <label class="neu-label">\u91CD\u53E0\u9608\u503C</label>
+                <span id="filter-cov-val" style="font-size:12px; font-weight:700; color: var(--neu-text-active);">0.98</span>
+              </div>
+              <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width:100%;" />
             </div>
           </div>
 
-          <!-- 2. Master-Slave Config (Conditional) -->
-          <div id="filter-ms-panel" style="display: none; flex-direction: column; gap: 20px; padding: 20px; background: var(--neu-bg-light); border-radius: 12px; border: 1px dashed rgba(0,0,0,0.05);">
-            <div>
-              <label class="neu-label">${i18n.t('target_class')}</label>
-              <select id="filter-target-cls" class="neu-input" style="width: 100%;">
-                ${classes.map(c => `<option value="${c}">${c}</option>`).join('')}
-              </select>
+          <div id="filter-rule-panel" style="display: none; flex-direction: column; gap: 18px;">
+            <div class="neu-box" style="padding: 14px; border-radius: 12px; background: rgba(239, 68, 68, 0.08); font-size: 12px; line-height: 1.8; color: var(--neu-text);">
+              \u89C4\u5219\u8FC7\u6EE4\u53EA\u4F1A\u5220\u9664\u547D\u4E2D\u7684\u6807\u6CE8\uFF0C\u4E0D\u4F1A\u6539\u7C7B\u6216\u5408\u5E76\u3002\u8BF7\u5148\u9884\u89C8\uFF0C\u786E\u8BA4\u547D\u4E2D\u8303\u56F4\u540E\u518D\u6267\u884C\u5220\u9664\u3002
             </div>
-            <div>
-              <label class="neu-label">${i18n.t('source_classes')}</label>
-              <div id="filter-source-list" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 120px; overflow-y: auto; padding: 10px; border: 1px solid rgba(0,0,0,0.03); border-radius: 8px; background: var(--neu-bg);">
-                ${classes.map(c => `
-                  <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
-                    <input type="checkbox" class="source-cls-chk" value="${c}" /> ${c}
-                  </label>
-                `).join('')}
+
+            <div class="neu-box" style="padding: 16px; border-radius: 14px; display: flex; flex-direction: column; gap: 14px;">
+              <div style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">\u7B5B\u9009\u6761\u4EF6</div>
+              <div>
+                <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">\u7C7B\u522B\u8303\u56F4</div>
+                <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-height: 140px; overflow-y:auto;">
+                  ${classes.map(c => `<label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" class="rule-cls-chk" value="${c}" checked /> <span>${c}</span></label>`).join('')}
+                </div>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
+                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-small-enabled" /> \u5C0F\u76EE\u6807\u8FC7\u6EE4</label>
+                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u9762\u79EF\u5360\u6BD4\u4E0D\u8D85\u8FC7\u8BE5\u503C\u7684\u76EE\u6807\u3002</div>
+                  <input type="number" id="filter-small-ratio" class="neu-input" min="0" max="1" step="0.001" value="0.02" />
+                </div>
+                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
+                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-count-enabled" /> \u5B9E\u4F8B\u6570\u91CF\u8FC7\u6EE4</label>
+                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u5B9E\u4F8B\u603B\u6570\u843D\u5728\u8BE5\u8303\u56F4\u5185\u7684\u56FE\u7247\u6807\u6CE8\u3002\u5DE6\u8FB9\u662F\u6700\u5C11\u6570\u91CF\uFF0C\u53F3\u8FB9\u662F\u6700\u591A\u6570\u91CF\uFF0C0 \u8868\u793A\u4E0D\u9650\u5236\u4E0A\u9650\u3002</div>
+                  <div style="display:flex; gap: 8px;">
+                    <input type="number" id="filter-min-count" class="neu-input" min="0" value="1" placeholder="\u6700\u5C0F\u503C" />
+                    <input type="number" id="filter-max-count" class="neu-input" min="0" value="0" placeholder="\u6700\u5927\u503C(0=\u4E0D\u9650)" />
+                  </div>
+                </div>
+                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
+                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-pos-enabled" /> \u4F4D\u7F6E\u8FC7\u6EE4</label>
+                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4E2D\u5FC3\u77E9\u5F62\u5185\u547D\u4E2D\u7684\u6807\u6CE8\u4F1A\u88AB\u5220\u9664\u3002</div>
+                  <div style="display:flex; gap: 8px;">
+                    <input type="number" id="filter-center-x" class="neu-input" min="0" max="0.5" step="0.01" value="0.25" placeholder="\u534A\u5BBD" />
+                    <input type="number" id="filter-center-y" class="neu-input" min="0" max="0.5" step="0.01" value="0.05" placeholder="\u534A\u9AD8" />
+                  </div>
+                </div>
+                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
+                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-conf-enabled" /> \u7F6E\u4FE1\u5EA6\u8FC7\u6EE4</label>
+                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u7F6E\u4FE1\u5EA6\u843D\u5728\u8BE5\u533A\u95F4\u5185\u7684\u6807\u6CE8\u3002\u5DE6\u8FB9\u662F\u6700\u5C0F\u5206\u6570\uFF0C\u53F3\u8FB9\u662F\u6700\u5927\u5206\u6570\u3002</div>
+                  <div style="display:flex; gap: 8px;">
+                    <input type="number" id="filter-conf-min" class="neu-input" min="0" max="1" step="0.01" value="0.00" placeholder="\u6700\u5C0F\u5206\u6570" />
+                    <input type="number" id="filter-conf-max" class="neu-input" min="0" max="1" step="0.01" value="1.00" placeholder="\u6700\u5927\u5206\u6570" />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- 3. Parameter Row -->
-          <div>
-            <div style="display: flex; justify-content: space-between;">
-              <label class="neu-label">${i18n.t('coverage_threshold')}</label>
-              <span id="filter-cov-val" style="font-size: 12px; font-weight: 800; color: var(--neu-text-active);">0.98</span>
-            </div>
-            <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width: 100%;" />
-          </div>
-
-          <!-- 4. Rule Description Area -->
-          <div class="neu-box" style="padding: 15px; background: var(--neu-bg-light); border-radius: 12px; border: 1px solid rgba(0,0,0,0.03);">
-            <div style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 5px;">${i18n.t('filter_rule_desc')}</div>
-            <div id="filter-rule-text" style="font-size: 12px; line-height: 1.6; color: var(--neu-text);">--</div>
+          <div class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light);">
+            <div style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 6px;">\u6267\u884C\u6458\u8981</div>
+            <div id="filter-rule-text" style="font-size: 12px; line-height: 1.7;">--</div>
           </div>
 
           <div class="neu-box" style="padding: 16px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">任务进度</span>
-              <span id="filter-job-progress-text" style="font-size: 11px; color: var(--neu-text-light);">未开始</span>
+              <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">\u4EFB\u52A1\u8FDB\u5EA6</span>
+              <span id="filter-job-progress-text" style="font-size: 11px; color: var(--neu-text-light);">\u7A7A\u95F2</span>
             </div>
             <div style="height: 8px; background: rgba(0,0,0,0.05); border-radius: 999px; overflow: hidden;">
               <div id="filter-job-progress-fill" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.25s ease;"></div>
             </div>
-            <div id="filter-job-status" style="font-size: 12px; color: var(--neu-text); min-height: 18px;">点击“开始分析预览”后会在这里显示进度和结果。</div>
+            <div id="filter-job-status" style="font-size: 12px; color: var(--neu-text); min-height: 18px;">\u5148\u6267\u884C\u9884\u89C8\u4EE5\u67E5\u770B\u547D\u4E2D\u7ED3\u679C\u3002</div>
             <div id="filter-preview-summary" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;"></div>
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button class="neu-button" style="padding: 10px 24px;" onclick="document.getElementById('modal-filter-full').style.display='none'">${i18n.t('cancel')}</button>
-            <button id="btn-start-filter-preview" class="neu-button" style="padding: 10px 24px; color: var(--neu-text-active); font-weight: 700;">${i18n.t('start_preview')}</button>
-            <button id="btn-apply-filter" class="neu-button" style="padding: 10px 24px; color: #10b981; font-weight: 700; display: none;">${i18n.t('apply_filter')}</button>
+            <button class="neu-button" style="padding: 10px 24px;" onclick="document.getElementById('modal-filter-full').style.display='none'">\u53D6\u6D88</button>
+            <button id="btn-start-filter-preview" class="neu-button" style="padding: 10px 24px; color: var(--neu-text-active); font-weight: 700;">\u5F00\u59CB\u9884\u89C8</button>
+            <button id="btn-apply-filter" class="neu-button" style="padding: 10px 24px; color: #10b981; font-weight: 700; display: none;">\u786E\u8BA4\u5408\u5E76</button>
           </div>
         </div>
       </div>
     `;
     modal.style.display = 'flex';
-    
+
+    let operationMode = 'merge';
+    const mergeBtn = document.getElementById('btn-filter-op-merge');
+    const ruleBtn = document.getElementById('btn-filter-op-rule');
+    const opHint = document.getElementById('filter-op-hint');
+    const mergePanel = document.getElementById('filter-merge-panel');
+    const rulePanel = document.getElementById('filter-rule-panel');
     const modeSel = document.getElementById('filter-mode-sel');
     const msPanel = document.getElementById('filter-ms-panel');
     const statusEl = document.getElementById('filter-job-status');
@@ -1586,53 +1933,128 @@ export const ImageWorkspace = {
     const summaryEl = document.getElementById('filter-preview-summary');
     const previewBtn = document.getElementById('btn-start-filter-preview');
     const applyBtn = document.getElementById('btn-apply-filter');
-    const updateUI = () => {
-      msPanel.style.display = modeSel.value === 'canonical_class' ? 'flex' : 'none';
-      this.updateFilterRuleText();
-    };
-    modeSel.onchange = updateUI;
-    
     const cov = document.getElementById('filter-cov');
-    cov.oninput = (e) => {
-      document.getElementById('filter-cov-val').innerText = e.target.value;
-      this.updateFilterRuleText();
+    const filterInputs = [
+      'filter-mode-sel', 'filter-area-sel', 'filter-target-cls', 'filter-small-enabled', 'filter-small-ratio',
+      'filter-count-enabled', 'filter-min-count', 'filter-max-count', 'filter-pos-enabled', 'filter-center-x',
+      'filter-center-y', 'filter-conf-enabled', 'filter-conf-min', 'filter-conf-max'
+    ].map(id => document.getElementById(id)).filter(Boolean);
+
+    const syncOperationUI = () => {
+      const mergeActive = operationMode === 'merge';
+      mergePanel.style.display = mergeActive ? 'flex' : 'none';
+      rulePanel.style.display = mergeActive ? 'none' : 'flex';
+      msPanel.style.display = mergeActive && modeSel.value === 'canonical_class' ? 'flex' : 'none';
+      mergeBtn.style.boxShadow = mergeActive ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+      ruleBtn.style.boxShadow = mergeActive ? 'var(--neu-outset-sm)' : 'var(--neu-inset)';
+      mergeBtn.style.color = mergeActive ? 'var(--neu-text-active)' : 'var(--neu-text)';
+      ruleBtn.style.color = mergeActive ? 'var(--neu-text)' : '#ef4444';
+      opHint.innerText = mergeActive
+        ? '\u5408\u5E76\u8FC7\u6EE4\uFF1A\u7528\u4E8E\u5904\u7406\u91CD\u590D\u6807\u6CE8\u6216\u628A\u6765\u6E90\u7C7B\u522B\u5E76\u5165\u76EE\u6807\u7C7B\u522B\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u4F7F\u7528\u89C4\u5219\u8FC7\u6EE4\u6761\u4EF6\u3002'
+        : '\u89C4\u5219\u8FC7\u6EE4\uFF1A\u53EA\u6839\u636E\u5DF2\u52FE\u9009\u7684\u89C4\u5219\u7B5B\u51FA\u547D\u4E2D\u6807\u6CE8\uFF0C\u5E76\u5728\u786E\u8BA4\u540E\u5220\u9664\u8FD9\u4E9B\u547D\u4E2D\u6807\u6CE8\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u505A\u6539\u7C7B\u6216\u5408\u5E76\u3002';
+      applyBtn.innerText = mergeActive ? '\u786E\u8BA4\u5408\u5E76' : '\u5220\u9664\u547D\u4E2D\u6807\u6CE8';
+      this.updateFilterRuleText(operationMode);
     };
 
+    const updateUI = () => {
+      syncOperationUI();
+      this.updateFilterRuleText(operationMode);
+    };
+
+    mergeBtn.onclick = () => {
+      operationMode = 'merge';
+      applyBtn.style.display = 'none';
+      summaryEl.innerHTML = '';
+      this.currentFilterToken = '';
+      updateUI();
+    };
+    ruleBtn.onclick = () => {
+      operationMode = 'rule';
+      applyBtn.style.display = 'none';
+      summaryEl.innerHTML = '';
+      this.currentFilterToken = '';
+      updateUI();
+    };
+
+    cov.oninput = () => {
+      document.getElementById('filter-cov-val').innerText = Number(cov.value).toFixed(2);
+      this.updateFilterRuleText(operationMode);
+    };
+    modeSel.onchange = updateUI;
+    Array.from(document.querySelectorAll('.source-cls-chk, .rule-cls-chk')).forEach(el => {
+      el.onchange = () => this.updateFilterRuleText(operationMode);
+    });
+    filterInputs.forEach(el => {
+      el.onchange = () => this.updateFilterRuleText(operationMode);
+      el.oninput = () => this.updateFilterRuleText(operationMode);
+    });
     updateUI();
 
     const collectPayload = () => {
-      const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
-      const target = document.getElementById('filter-target-cls').value;
       const mode = modeSel.value;
-      if (mode === 'canonical_class' && sources.length === 0) {
-        throw new Error('Please select at least one source class');
+      const target = document.getElementById('filter-target-cls').value;
+      const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
+      const ruleClasses = Array.from(document.querySelectorAll('.rule-cls-chk:checked')).map(el => el.value);
+      const smallEnabled = document.getElementById('filter-small-enabled').checked;
+      const countEnabled = document.getElementById('filter-count-enabled').checked;
+      const posEnabled = document.getElementById('filter-pos-enabled').checked;
+      const confEnabled = document.getElementById('filter-conf-enabled').checked;
+
+      if (operationMode === 'merge' && mode === 'canonical_class' && sources.length === 0) {
+        throw new Error('\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u6765\u6E90\u7C7B\u522B');
       }
+      if (operationMode === 'rule' && ruleClasses.length === 0) {
+        throw new Error('\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u7C7B\u522B\u8303\u56F4');
+      }
+      if (operationMode === 'rule' && !(smallEnabled || countEnabled || posEnabled || confEnabled)) {
+        throw new Error('\u89C4\u5219\u8FC7\u6EE4\u81F3\u5C11\u8981\u542F\u7528\u4E00\u6761\u89C4\u5219\u6761\u4EF6');
+      }
+
       return {
         project_id: this.projectId,
-        merge_mode: mode,
+        operation_mode: operationMode,
+        merge_mode: operationMode === 'merge' ? mode : 'same_class',
         coverage_threshold: parseFloat(cov.value),
-        canonical_class: mode === 'canonical_class' ? target : '',
-        source_classes: mode === 'canonical_class' ? sources : [],
-        area_mode: document.getElementById('filter-area-sel').value
+        canonical_class: operationMode === 'merge' && mode === 'canonical_class' ? target : '',
+        source_classes: operationMode === 'merge' && mode === 'canonical_class' ? sources : [],
+        area_mode: document.getElementById('filter-area-sel').value,
+        rule_classes: operationMode === 'rule' ? ruleClasses : [],
+        small_target_enabled: operationMode === 'rule' ? smallEnabled : false,
+        max_area_ratio: parseFloat(document.getElementById('filter-small-ratio').value || '0.02'),
+        instance_count_enabled: operationMode === 'rule' ? countEnabled : false,
+        min_instances: parseInt(document.getElementById('filter-min-count').value || '1', 10),
+        max_instances: parseInt(document.getElementById('filter-max-count').value || '0', 10),
+        position_enabled: operationMode === 'rule' ? posEnabled : false,
+        center_x_half_width: parseFloat(document.getElementById('filter-center-x').value || '0.25'),
+        center_y_half_height: parseFloat(document.getElementById('filter-center-y').value || '0.05'),
+        confidence_enabled: operationMode === 'rule' ? confEnabled : false,
+        min_confidence: parseFloat(document.getElementById('filter-conf-min').value || '0'),
+        max_confidence: parseFloat(document.getElementById('filter-conf-max').value || '1')
       };
     };
 
     const renderFilterSummary = (result, kind) => {
       const items = Array.isArray(result?.items) ? result.items : [];
+      const op = String(result?.operation_mode || operationMode || 'merge');
       if (items.length === 0) {
-        summaryEl.innerHTML = `<div style="font-size: 12px; color: var(--neu-text-light);">没有需要处理的目标。</div>`;
+        summaryEl.innerHTML = `<div style="font-size: 12px; color: var(--neu-text-light);">${op === 'merge' ? '\u5F53\u524D\u5408\u5E76\u89C4\u5219\u4E0B\u6CA1\u6709\u5019\u9009\u56FE\u7247\u3002' : '\u5F53\u524D\u89C4\u5219\u4E0B\u6CA1\u6709\u547D\u4E2D\u6807\u6CE8\u3002'}</div>`;
         return;
       }
-      summaryEl.innerHTML = items.slice(0, 20).map((item) => {
+      summaryEl.innerHTML = items.slice(0, 30).map((item) => {
         const primaryCount = kind === 'preview'
-          ? `候选删除 ${item.candidate_count || 0}`
-          : `已删除 ${item.removed_count || 0}`;
+          ? (op === 'merge' ? `\u9884\u89C8\u5220\u9664 ${item.candidate_count || 0}` : `\u547D\u4E2D\u5F85\u5220 ${item.candidate_count || 0}`)
+          : (op === 'merge' ? `\u5DF2\u5220\u9664 ${item.removed_count || 0}` : `\u5DF2\u5220\u9664 ${item.removed_count || 0}`);
+        const relabelText = op === 'merge' ? `<span>\u6539\u7C7B ${item.relabel_count || 0}</span>` : '';
+        const scopedText = op === 'merge' && item.scoped_annotation_count != null
+          ? `<span>\u547D\u4E2D\u8303\u56F4 ${item.scoped_annotation_count}</span>`
+          : '';
         return `
           <div class="neu-box" style="padding: 10px 12px; border-radius: 10px; background: var(--neu-bg-light);">
             <div style="font-size: 12px; font-weight: 700; color: var(--neu-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.rel_path || item.image_id || '--'}</div>
-            <div style="margin-top: 6px; display: flex; gap: 12px; font-size: 11px; color: var(--neu-text-light);">
+            <div style="margin-top: 6px; display: flex; gap: 12px; font-size: 11px; color: var(--neu-text-light); flex-wrap: wrap;">
               <span>${primaryCount}</span>
-              <span>改类 ${item.relabel_count || 0}</span>
+              ${relabelText}
+              ${scopedText}
             </div>
           </div>
         `;
@@ -1646,13 +2068,13 @@ export const ImageWorkspace = {
         const res = await api.getFilterJob(jobId);
         const job = res?.job || null;
         if (!job) {
-          statusEl.innerText = '未找到智能过滤任务状态';
+          statusEl.innerText = '\u672A\u627E\u5230\u667A\u80FD\u8FC7\u6EE4\u4EFB\u52A1\u72B6\u6001';
           return;
         }
         const pct = Number(job.progress_pct || 0);
         progressFillEl.style.width = `${pct}%`;
         progressTextEl.innerText = `${Math.round(pct)}%`;
-        statusEl.innerText = job.message || '处理中...';
+        statusEl.innerText = job.message || '\u5904\u7406\u4E2D...';
 
         if (job.status === 'done') {
           const result = job.result || {};
@@ -1673,14 +2095,14 @@ export const ImageWorkspace = {
 
         if (job.status === 'error') {
           progressFillEl.style.background = '#ef4444';
-          statusEl.innerText = job.error || job.message || '智能过滤任务失败';
+          statusEl.innerText = job.error || job.message || '\u667A\u80FD\u8FC7\u6EE4\u4EFB\u52A1\u5931\u8D25';
           return;
         }
 
         progressFillEl.style.background = 'var(--neu-text-active)';
         this.filterJobTimer = setTimeout(() => pollFilterJob(jobId, kind), 1200);
-      } catch(e) {
-        statusEl.innerText = `轮询失败: ${e.message}`;
+      } catch (e) {
+        statusEl.innerText = `\u8F6E\u8BE2\u5931\u8D25: ${e.message}`;
       }
     };
 
@@ -1694,71 +2116,87 @@ export const ImageWorkspace = {
         progressFillEl.style.width = '0%';
         progressFillEl.style.background = 'var(--neu-text-active)';
         progressTextEl.innerText = '0%';
-        statusEl.innerText = '正在提交智能过滤预览任务...';
+        statusEl.innerText = '\u63D0\u4EA4\u9884\u89C8\u4EFB\u52A1...';
         const res = await api.smartFilterPreview(payload);
         const job = res?.job || null;
-        if (!job?.job_id) throw new Error('preview task did not return job_id');
-        statusEl.innerText = '预览分析已开始，正在处理...';
+        if (!job?.job_id) throw new Error('\u9884\u89C8\u4EFB\u52A1\u672A\u8FD4\u56DE job_id');
+        statusEl.innerText = '\u9884\u89C8\u4EFB\u52A1\u5DF2\u542F\u52A8...';
         await pollFilterJob(job.job_id, 'preview');
-      } catch(e) {
+      } catch (e) {
         statusEl.innerText = e.message;
-        showToast(e.message, "error");
+        showToast(e.message, 'error');
       } finally {
         previewBtn.disabled = false;
       }
     };
 
     applyBtn.onclick = async () => {
-      if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), "error");
-      if (!confirm(i18n.t('confirm_apply_filter'))) return;
+      if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), 'error');
+      const confirmText = operationMode === 'merge'
+        ? '\u786E\u8BA4\u6309\u9884\u89C8\u7ED3\u679C\u6267\u884C\u5408\u5E76\u8FC7\u6EE4\u5417\uFF1F'
+        : '\u786E\u8BA4\u5220\u9664\u6240\u6709\u547D\u4E2D\u89C4\u5219\u7684\u6807\u6CE8\u5417\uFF1F\u8BE5\u64CD\u4F5C\u4F1A\u76F4\u63A5\u4FEE\u6539\u6807\u6CE8\u3002';
+      if (!confirm(confirmText)) return;
       try {
         applyBtn.disabled = true;
         summaryEl.innerHTML = '';
         progressFillEl.style.width = '0%';
         progressFillEl.style.background = 'var(--neu-text-active)';
         progressTextEl.innerText = '0%';
-        statusEl.innerText = '正在提交智能过滤确认合并任务...';
+        statusEl.innerText = '\u63D0\u4EA4\u786E\u8BA4\u4EFB\u52A1...';
         const res = await api.smartFilterApply({
           ...collectPayload(),
           preview_token: this.currentFilterToken
         });
         const job = res?.job || null;
-        if (!job?.job_id) throw new Error('apply task did not return job_id');
-        statusEl.innerText = '确认合并已开始，正在写回标注...';
+        if (!job?.job_id) throw new Error('\u786E\u8BA4\u4EFB\u52A1\u672A\u8FD4\u56DE job_id');
+        statusEl.innerText = operationMode === 'merge' ? '\u6B63\u5728\u5E94\u7528\u5408\u5E76\u7ED3\u679C...' : '\u6B63\u5728\u5220\u9664\u547D\u4E2D\u6807\u6CE8...';
         await pollFilterJob(job.job_id, 'apply');
-        showToast("Filter applied successfully", "success");
-      } catch(e) {
-        showToast(e.message, "error");
+        showToast(operationMode === 'merge' ? '\u5408\u5E76\u8FC7\u6EE4\u5DF2\u5E94\u7528' : '\u89C4\u5219\u8FC7\u6EE4\u5220\u9664\u5DF2\u5E94\u7528', 'success');
+      } catch (e) {
+        showToast(e.message, 'error');
       } finally {
         applyBtn.disabled = false;
       }
     };
   },
 
-  updateFilterRuleText() {
+  updateFilterRuleText(operationMode = 'merge') {
     const mode = document.getElementById('filter-mode-sel')?.value;
-    const cov = document.getElementById('filter-cov')?.value;
+    const cov = parseFloat(document.getElementById('filter-cov')?.value || '0.98');
     const target = document.getElementById('filter-target-cls')?.value;
     const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
-    
-    const el = document.getElementById('filter-rule-text');
-    if (!el) return;
+    const ruleClasses = Array.from(document.querySelectorAll('.rule-cls-chk:checked')).map(el => el.value);
+    const chunks = [];
 
-    if (mode === 'same_class') {
-      el.innerText = `扫描全图标注，当同目录下同一图片中相同类别的两个框 IoU (覆盖率) 超过 ${cov * 100}% 时，保留较大者并删除冗余项。`;
+    if (operationMode === 'merge') {
+      if (mode === 'same_class') {
+        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u5F53\u540C\u7C7B\u6807\u6CE8\u7684\u91CD\u53E0\u7387\u8D85\u8FC7 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002`);
+      } else {
+        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u5F53\u91CD\u53E0\u7387\u8D85\u8FC7 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5C06 [${sources.join(', ') || '\u672A\u9009\u62E9'}] \u5E76\u5165 [${target || '--'}]\u3002`);
+      }
+      chunks.push('\u8BE5\u6A21\u5F0F\u53EA\u4F1A\u6267\u884C\u5408\u5E76 / \u6539\u7C7B\u903B\u8F91\uFF0C\u4E0D\u4F1A\u5E94\u7528\u89C4\u5219\u5220\u9664\u6761\u4EF6\u3002');
     } else {
-      const srcText = sources.length > 0 ? ` [${sources.join(', ')}] ` : ' (未选) ';
-      el.innerText = `扫描全图标注，当源类别 ${srcText} 被目标类别 [${target}] 的框覆盖超过 ${cov * 100}% 时，将源类别标注合并入目标类别。`;
+      chunks.push(`\u89C4\u5219\u8FC7\u6EE4\uFF1A\u5728 [${ruleClasses.length > 0 ? ruleClasses.join(', ') : '\u672A\u9009\u62E9'}] \u8303\u56F4\u5185\u67E5\u627E\u547D\u4E2D\u89C4\u5219\u7684\u6807\u6CE8\uFF0C\u9884\u89C8\u540E\u5220\u9664\u547D\u4E2D\u9879\u3002`);
+      if (document.getElementById('filter-small-enabled')?.checked) {
+        chunks.push(`\u5C0F\u76EE\u6807\uFF1A\u9762\u79EF\u5360\u6BD4 <= ${document.getElementById('filter-small-ratio').value}\u3002`);
+      }
+      if (document.getElementById('filter-count-enabled')?.checked) {
+        const maxValue = document.getElementById('filter-max-count').value || '\u4E0D\u9650';
+        chunks.push(`\u5B9E\u4F8B\u6570\u91CF\uFF1A${document.getElementById('filter-min-count').value} \u5230 ${maxValue}\u3002`);
+      }
+      if (document.getElementById('filter-pos-enabled')?.checked) {
+        chunks.push(`\u4F4D\u7F6E\uFF1A\u4E2D\u5FC3\u534A\u5BBD ${document.getElementById('filter-center-x').value}\uFF0C\u4E2D\u5FC3\u534A\u9AD8 ${document.getElementById('filter-center-y').value}\u3002`);
+      }
+      if (document.getElementById('filter-conf-enabled')?.checked) {
+        chunks.push(`\u7F6E\u4FE1\u5EA6\uFF1A${document.getElementById('filter-conf-min').value} - ${document.getElementById('filter-conf-max').value}\u3002`);
+      }
+      if (chunks.length === 1) {
+        chunks.push('\u8BF7\u81F3\u5C11\u542F\u7528\u4E00\u6761\u89C4\u5219\u6761\u4EF6\uFF0C\u5426\u5219\u4E0D\u4F1A\u5141\u8BB8\u6267\u884C\u5220\u9664\u3002');
+      }
     }
-  },
 
-  async pollFilterStatus() {
-     const activeRes = await api.getFilterActiveJob(this.projectId);
-     const active = activeRes?.job || null;
-     if (active && active.job_id) {
-        this.activeJobId = active.job_id;
-        this.pollTaskStatus(); 
-     }
+    const el = document.getElementById('filter-rule-text');
+    if (el) el.innerText = chunks.join(' ');
   },
 
   openExport() {

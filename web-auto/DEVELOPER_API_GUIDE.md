@@ -563,3 +563,73 @@
 - 视频标注读取接口 `/api/projects/{project_id}/video/annotations`
 - 视频标注保存接口 `/api/projects/{project_id}/video/annotations/save`
 - 全局缓存目录接口 `/api/config/cache_dir`
+
+## 15. 2026-03 Batch And Filter Update
+
+### `POST /api/infer/jobs/start_batch`
+
+Additional request fields:
+
+```json
+{
+  "project_id": "prj_xxx",
+  "classes": ["cat", "dog"],
+  "scope_mode": "all",
+  "related_classes": [],
+  "retry_image_ids": [],
+  "image_ids": [],
+  "all_images": true,
+  "batch_size": 8,
+  "threshold": 0.5,
+  "api_base_url": "http://127.0.0.1:8001"
+}
+```
+
+`scope_mode` values:
+
+- `all`
+- `unlabeled`
+- `class_related`
+- `class_related_unlabeled`
+
+Result / job fields added for large-dataset review:
+
+- `processed_images`
+- `saved_images`
+- `failed_images`
+- `skipped_images`
+- `failed_image_ids`
+- `skipped_image_ids`
+- `retry_image_ids`
+- `class_additions`
+- `image_results`
+- `selection`
+
+### Smart Filter Job Payload
+
+Additional request fields:
+
+```json
+{
+  "rule_classes": ["cat", "dog"],
+  "small_target_enabled": false,
+  "max_area_ratio": 0.02,
+  "instance_count_enabled": false,
+  "min_instances": 1,
+  "max_instances": 0,
+  "position_enabled": false,
+  "center_x_half_width": 0.25,
+  "center_y_half_height": 0.05,
+  "confidence_enabled": false,
+  "min_confidence": 0.0,
+  "max_confidence": 1.0
+}
+```
+
+Meaning:
+
+- `rule_classes`: class scope for rule analysis
+- `small_target_enabled + max_area_ratio`: object area ratio filter
+- `instance_count_enabled + min/max_instances`: per-image scoped instance-count filter
+- `position_enabled + center_x_half_width + center_y_half_height`: center-rectangle filter
+- `confidence_enabled + min/max_confidence`: score range filter

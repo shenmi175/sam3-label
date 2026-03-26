@@ -13,6 +13,8 @@
   --neu-outset-sm: 5px 5px 10px var(--neu-shadow-dark), -5px -5px 10px var(--neu-shadow-light);
   --neu-inset: inset 6px 6px 10px 0 var(--neu-shadow-dark), inset -6px -6px 10px 0 var(--neu-shadow-light);
   --neu-inset-strong: inset 10px 10px 15px 0 var(--neu-shadow-dark), inset -10px -10px 15px 0 var(--neu-shadow-light);
+  --canvas-bg: #eaeff2;
+  --canvas-toolbar-bg: rgba(255, 255, 255, 0.86);
 
   --neu-radius: 12px;
   --neu-radius-sm: 8px;
@@ -29,6 +31,8 @@
   
   --neu-shadow-light: #2a2d31;
   --neu-shadow-dark: #121416;
+  --canvas-bg: #16191c;
+  --canvas-toolbar-bg: rgba(30, 33, 36, 0.92);
 }
 
 * {

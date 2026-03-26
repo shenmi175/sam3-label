@@ -114,7 +114,10 @@ class InferBatchIn(BaseModel):
     project_id: str
     classes: list[str] = Field(default_factory=list)
     image_ids: list[str] = Field(default_factory=list)
+    retry_image_ids: list[str] = Field(default_factory=list)
     all_images: bool = False
+    scope_mode: str = Field(default='all', pattern='^(all|unlabeled|class_related|class_related_unlabeled)$')
+    related_classes: list[str] = Field(default_factory=list)
     batch_size: int = 8
     threshold: float = 0.5
     api_base_url: str = DEFAULT_API_BASE_URL
@@ -164,11 +167,24 @@ class ExportIn(BaseModel):
 
 class SmartFilterIn(BaseModel):
     project_id: str
+    operation_mode: str = Field(default='merge', pattern='^(merge|rule)$')
     merge_mode: str = Field(default='same_class', pattern='^(same_class|canonical_class)$')
     coverage_threshold: float = 0.98
     canonical_class: str = ''
     source_classes: list[str] = Field(default_factory=list)
     area_mode: str = Field(default='instance', pattern='^(instance|bbox)$')
+    rule_classes: list[str] = Field(default_factory=list)
+    small_target_enabled: bool = False
+    max_area_ratio: float = 0.02
+    instance_count_enabled: bool = False
+    min_instances: int = 1
+    max_instances: int = 0
+    position_enabled: bool = False
+    center_x_half_width: float = 0.25
+    center_y_half_height: float = 0.05
+    confidence_enabled: bool = False
+    min_confidence: float = 0.0
+    max_confidence: float = 1.0
     preview_token: str = ''
 
 
@@ -414,6 +430,110 @@ def _replace_by_classes(
     return kept
 
 
+def _annotation_score(ann: dict[str, Any]) -> float:
+    try:
+        return float(ann.get('score') or ann.get('confidence') or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _get_image_dimensions(image: dict[str, Any]) -> tuple[int, int]:
+    image_path = str(image.get('abs_path') or '').strip()
+    if not image_path:
+        return 0, 0
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(image_path) as im:
+            width, height = im.size
+        return max(0, int(width)), max(0, int(height))
+    except Exception:
+        return 0, 0
+
+
+def _annotation_has_any_class(
+    annotations: list[dict[str, Any]],
+    class_names: list[str],
+) -> bool:
+    wanted = {norm_text(x) for x in class_names if norm_text(x)}
+    if not wanted:
+        return bool(annotations)
+    for ann in annotations:
+        if norm_text(str(ann.get('class_name') or '')) in wanted:
+            return True
+    return False
+
+
+def _smart_filter_image_scope_count(
+    annotations: list[dict[str, Any]],
+    *,
+    rule_classes: list[str],
+) -> int:
+    wanted = {norm_text(x) for x in rule_classes if norm_text(x)}
+    if not wanted:
+        return len([ann for ann in annotations if _annotation_class_name(ann)])
+    count = 0
+    for ann in annotations:
+        cls_norm = norm_text(_annotation_class_name(ann))
+        if cls_norm in wanted:
+            count += 1
+    return count
+
+
+def _smart_filter_annotation_allowed(
+    ann: dict[str, Any],
+    *,
+    area_mode: str,
+    rule_classes: list[str],
+    image_width: int,
+    image_height: int,
+    small_target_enabled: bool,
+    max_area_ratio: float,
+    position_enabled: bool,
+    center_x_half_width: float,
+    center_y_half_height: float,
+    confidence_enabled: bool,
+    min_confidence: float,
+    max_confidence: float,
+    require_geometry: bool = False,
+) -> bool:
+    cls = _annotation_class_name(ann)
+    if not cls:
+        return False
+    wanted = {norm_text(x) for x in rule_classes if norm_text(x)}
+    cls_norm = norm_text(cls)
+    if wanted and cls_norm not in wanted:
+        return False
+
+    score = _annotation_score(ann)
+    if confidence_enabled and not (float(min_confidence) <= score <= float(max_confidence)):
+        return False
+
+    bbox = _ann_bbox(ann)
+    if require_geometry and not bbox:
+        return False
+
+    if small_target_enabled and image_width > 0 and image_height > 0:
+        if not bbox:
+            return False
+        image_area = float(image_width * image_height)
+        ann_area = _annotation_metric_area(ann, area_mode=area_mode)
+        if image_area > 0.0 and (ann_area / image_area) > float(max_area_ratio):
+            return False
+
+    if position_enabled and image_width > 0 and image_height > 0:
+        if not bbox:
+            return False
+        cx = ((bbox[0] + bbox[2]) / 2.0) / float(image_width)
+        cy = ((bbox[1] + bbox[3]) / 2.0) / float(image_height)
+        if abs(cx - 0.5) > float(center_x_half_width):
+            return False
+        if abs(cy - 0.5) > float(center_y_half_height):
+            return False
+
+    return True
+
+
 def _assign_unique_annotation_ids(
     *,
     existing: list[dict[str, Any]],
@@ -460,6 +580,7 @@ def _infer_job_state_default(*, job_id: str, project_id: str, job_type: str) -> 
         'batch_size': 0,
         'succeeded': 0,
         'failed': 0,
+        'skipped': 0,
         'new_annotations': 0,
         'current_image_id': '',
         'current_image_rel_path': '',
@@ -468,6 +589,10 @@ def _infer_job_state_default(*, job_id: str, project_id: str, job_type: str) -> 
         'finished_at': '',
         'error': '',
         'errors': [],
+        'failed_image_ids': [],
+        'skipped_image_ids': [],
+        'class_additions': {},
+        'image_results': [],
         'params': {},
         'payload_dict': {},
         'pending_image_ids': [],
@@ -662,53 +787,143 @@ def _get_active_smart_filter_job_for_project(project_id: str) -> dict[str, Any] 
 
 def _smart_filter_signature(
     *,
+    operation_mode: str,
     merge_mode: str,
     coverage_threshold: float,
     canonical_class: str,
     source_classes: list[str],
     area_mode: str,
+    rule_classes: list[str],
+    small_target_enabled: bool,
+    max_area_ratio: float,
+    instance_count_enabled: bool,
+    min_instances: int,
+    max_instances: int,
+    position_enabled: bool,
+    center_x_half_width: float,
+    center_y_half_height: float,
+    confidence_enabled: bool,
+    min_confidence: float,
+    max_confidence: float,
 ) -> str:
     source = sorted(str(x).strip() for x in source_classes if str(x).strip())
+    rules = sorted(str(x).strip() for x in rule_classes if str(x).strip())
     return '|'.join(
         [
+            str(operation_mode or 'merge').strip().lower(),
             str(merge_mode or 'same_class').strip().lower(),
             f'{float(coverage_threshold):.6f}',
             str(canonical_class or '').strip(),
             ','.join(source),
             str(area_mode or 'instance').strip().lower(),
+            ','.join(rules),
+            '1' if small_target_enabled else '0',
+            f'{float(max_area_ratio):.6f}',
+            '1' if instance_count_enabled else '0',
+            str(max(0, int(min_instances))),
+            str(max(0, int(max_instances))),
+            '1' if position_enabled else '0',
+            f'{float(center_x_half_width):.6f}',
+            f'{float(center_y_half_height):.6f}',
+            '1' if confidence_enabled else '0',
+            f'{float(min_confidence):.6f}',
+            f'{float(max_confidence):.6f}',
         ]
     )
 
 
 def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
+    operation_mode = str(payload.operation_mode or 'merge').strip().lower()
     merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
     coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
     canonical_class = str(payload.canonical_class or '').strip()
     source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
     area_mode = str(payload.area_mode or 'instance').strip().lower()
-    if merge_mode == 'canonical_class' and not canonical_class:
+    rule_classes = [str(x).strip() for x in payload.rule_classes if str(x).strip()]
+    small_target_enabled = bool(payload.small_target_enabled)
+    max_area_ratio = max(0.0, min(1.0, float(payload.max_area_ratio or 0.0)))
+    instance_count_enabled = bool(payload.instance_count_enabled)
+    min_instances = max(0, int(payload.min_instances or 0))
+    max_instances = max(0, int(payload.max_instances or 0))
+    position_enabled = bool(payload.position_enabled)
+    center_x_half_width = max(0.0, min(0.5, float(payload.center_x_half_width or 0.25)))
+    center_y_half_height = max(0.0, min(0.5, float(payload.center_y_half_height or 0.05)))
+    confidence_enabled = bool(payload.confidence_enabled)
+    min_confidence = max(0.0, min(1.0, float(payload.min_confidence or 0.0)))
+    max_confidence = max(0.0, min(1.0, float(payload.max_confidence if payload.max_confidence is not None else 1.0)))
+    if operation_mode == 'merge' and merge_mode == 'canonical_class' and not canonical_class:
         raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
-    if merge_mode == 'canonical_class' and not source_classes:
+    if operation_mode == 'merge' and merge_mode == 'canonical_class' and not source_classes:
         raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
+    if instance_count_enabled and max_instances > 0 and max_instances < min_instances:
+        raise HTTPException(status_code=400, detail='max_instances must be >= min_instances')
+    if confidence_enabled and max_confidence < min_confidence:
+        raise HTTPException(status_code=400, detail='max_confidence must be >= min_confidence')
+    if operation_mode == 'rule' and not (
+        small_target_enabled
+        or instance_count_enabled
+        or position_enabled
+        or confidence_enabled
+    ):
+        raise HTTPException(status_code=400, detail='rule filter requires at least one enabled rule')
     return {
         'project_id': str(payload.project_id or '').strip(),
+        'operation_mode': operation_mode,
         'merge_mode': merge_mode,
         'coverage_threshold': coverage_threshold,
         'canonical_class': canonical_class,
         'source_classes': source_classes,
         'area_mode': area_mode,
+        'rule_classes': rule_classes,
+        'small_target_enabled': small_target_enabled,
+        'max_area_ratio': max_area_ratio,
+        'instance_count_enabled': instance_count_enabled,
+        'min_instances': min_instances,
+        'max_instances': max_instances,
+        'position_enabled': position_enabled,
+        'center_x_half_width': center_x_half_width,
+        'center_y_half_height': center_y_half_height,
+        'confidence_enabled': confidence_enabled,
+        'min_confidence': min_confidence,
+        'max_confidence': max_confidence,
         'preview_token': str(payload.preview_token or '').strip(),
         'signature': _smart_filter_signature(
+            operation_mode=operation_mode,
             merge_mode=merge_mode,
             coverage_threshold=coverage_threshold,
             canonical_class=canonical_class,
             source_classes=source_classes,
             area_mode=area_mode,
+            rule_classes=rule_classes,
+            small_target_enabled=small_target_enabled,
+            max_area_ratio=max_area_ratio,
+            instance_count_enabled=instance_count_enabled,
+            min_instances=min_instances,
+            max_instances=max_instances,
+            position_enabled=position_enabled,
+            center_x_half_width=center_x_half_width,
+            center_y_half_height=center_y_half_height,
+            confidence_enabled=confidence_enabled,
+            min_confidence=min_confidence,
+            max_confidence=max_confidence,
         ),
     }
 
 
 def _analyze_smart_filter_project(
+    *,
+    project: dict[str, Any],
+    config: dict[str, Any],
+    progress_cb: Optional[Callable[..., None]] = None,
+) -> dict[str, Any]:
+    operation_mode = str(config.get('operation_mode') or 'merge').strip().lower()
+    if operation_mode == 'rule':
+        return _analyze_rule_filter_project(project=project, config=config, progress_cb=progress_cb)
+
+    return _analyze_merge_filter_project(project=project, config=config, progress_cb=progress_cb)
+
+
+def _analyze_merge_filter_project(
     *,
     project: dict[str, Any],
     config: dict[str, Any],
@@ -729,14 +944,59 @@ def _analyze_smart_filter_project(
             progress_total=total,
         )
 
+    need_image_metrics = bool(config.get('small_target_enabled')) or bool(config.get('position_enabled'))
+
     for idx, image in enumerate(images, start=1):
         image_id = str(image.get('id') or '')
         if not image_id:
             continue
         rel_path = str(image.get('rel_path') or image_id)
         annotations = storage.load_annotations(str(project.get('id') or ''), image_id)
-        analysis = _analyze_smart_merge_annotations(
+
+        scoped_count = _smart_filter_image_scope_count(
             annotations,
+            rule_classes=list(config.get('rule_classes') or []),
+        )
+        if bool(config.get('instance_count_enabled')):
+            min_instances = max(0, int(config.get('min_instances') or 0))
+            max_instances = max(0, int(config.get('max_instances') or 0))
+            if scoped_count < min_instances or (max_instances > 0 and scoped_count > max_instances):
+                if progress_cb:
+                    progress_cb(
+                        message=f'分析 {idx}/{total}: {rel_path}',
+                        progress_done=idx,
+                        progress_total=total,
+                        current_image_id=image_id,
+                        current_image_rel_path=rel_path,
+                    )
+                continue
+
+        width, height = _get_image_dimensions(image) if need_image_metrics else (0, 0)
+        filtered_annotations: list[dict[str, Any]] = []
+        untouched_annotations: list[dict[str, Any]] = []
+        for ann in annotations:
+            if _smart_filter_annotation_allowed(
+                ann,
+                area_mode=str(config.get('area_mode') or 'instance'),
+                rule_classes=list(config.get('rule_classes') or []),
+                image_width=width,
+                image_height=height,
+                small_target_enabled=bool(config.get('small_target_enabled')),
+                max_area_ratio=float(config.get('max_area_ratio') or 0.0),
+                position_enabled=bool(config.get('position_enabled')),
+                center_x_half_width=float(config.get('center_x_half_width') or 0.25),
+                center_y_half_height=float(config.get('center_y_half_height') or 0.05),
+                confidence_enabled=bool(config.get('confidence_enabled')),
+                min_confidence=float(config.get('min_confidence') or 0.0),
+                max_confidence=float(config.get('max_confidence') if config.get('max_confidence') is not None else 1.0),
+                require_geometry=True,
+            ):
+                filtered_annotations.append(ann)
+            else:
+                untouched_annotations.append(ann)
+
+        analysis = _analyze_smart_merge_annotations(
+            filtered_annotations,
             merge_mode=str(config.get('merge_mode') or 'same_class'),
             coverage_threshold=float(config.get('coverage_threshold') or 0.98),
             canonical_class=str(config.get('canonical_class') or ''),
@@ -746,7 +1006,8 @@ def _analyze_smart_filter_project(
         removed = analysis.get('removed_annotations', [])
         pairs = analysis.get('pairs', [])
         relabeled = analysis.get('relabeled_annotations', [])
-        kept_annotations = analysis.get('kept_annotations', annotations)
+        kept_filtered = analysis.get('kept_annotations', filtered_annotations)
+        kept_annotations = list(untouched_annotations) + (kept_filtered if isinstance(kept_filtered, list) else filtered_annotations)
         remove_count = len(removed) if isinstance(removed, list) else 0
         relabel_count = len(relabeled) if isinstance(relabeled, list) else 0
         if remove_count > 0 or relabel_count > 0:
@@ -760,6 +1021,7 @@ def _analyze_smart_filter_project(
                     'candidate_count': remove_count,
                     'relabel_count': relabel_count,
                     'pair_count': len(pairs) if isinstance(pairs, list) else 0,
+                    'scoped_annotation_count': len(filtered_annotations),
                 }
             )
             apply_items.append(
@@ -768,7 +1030,7 @@ def _analyze_smart_filter_project(
                     'rel_path': rel_path,
                     'removed_count': remove_count,
                     'relabel_count': relabel_count,
-                    'kept_annotations': kept_annotations if isinstance(kept_annotations, list) else annotations,
+                    'kept_annotations': kept_annotations,
                 }
             )
         if progress_cb:
@@ -791,6 +1053,120 @@ def _analyze_smart_filter_project(
     }
 
 
+def _analyze_rule_filter_project(
+    *,
+    project: dict[str, Any],
+    config: dict[str, Any],
+    progress_cb: Optional[Callable[..., None]] = None,
+) -> dict[str, Any]:
+    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
+    total = len(images)
+    items: list[dict[str, Any]] = []
+    apply_items: list[dict[str, Any]] = []
+    total_candidates = 0
+    total_images = 0
+
+    if progress_cb:
+        progress_cb(
+            message=f'规则过滤预览准备中，待扫描 {total} 张',
+            progress_done=0,
+            progress_total=total,
+        )
+
+    need_image_metrics = bool(config.get('small_target_enabled')) or bool(config.get('position_enabled'))
+
+    for idx, image in enumerate(images, start=1):
+        image_id = str(image.get('id') or '')
+        if not image_id:
+            continue
+        rel_path = str(image.get('rel_path') or image_id)
+        annotations = storage.load_annotations(str(project.get('id') or ''), image_id)
+
+        scoped_count = _smart_filter_image_scope_count(
+            annotations,
+            rule_classes=list(config.get('rule_classes') or []),
+        )
+        if bool(config.get('instance_count_enabled')):
+            min_instances = max(0, int(config.get('min_instances') or 0))
+            max_instances = max(0, int(config.get('max_instances') or 0))
+            if scoped_count < min_instances or (max_instances > 0 and scoped_count > max_instances):
+                if progress_cb:
+                    progress_cb(
+                        message=f'规则过滤 {idx}/{total}: {rel_path}',
+                        progress_done=idx,
+                        progress_total=total,
+                        current_image_id=image_id,
+                        current_image_rel_path=rel_path,
+                    )
+                continue
+
+        width, height = _get_image_dimensions(image) if need_image_metrics else (0, 0)
+        matched_annotations: list[dict[str, Any]] = []
+        kept_annotations: list[dict[str, Any]] = []
+        for ann in annotations:
+            if _smart_filter_annotation_allowed(
+                ann,
+                area_mode=str(config.get('area_mode') or 'instance'),
+                rule_classes=list(config.get('rule_classes') or []),
+                image_width=width,
+                image_height=height,
+                small_target_enabled=bool(config.get('small_target_enabled')),
+                max_area_ratio=float(config.get('max_area_ratio') or 0.0),
+                position_enabled=bool(config.get('position_enabled')),
+                center_x_half_width=float(config.get('center_x_half_width') or 0.25),
+                center_y_half_height=float(config.get('center_y_half_height') or 0.05),
+                confidence_enabled=bool(config.get('confidence_enabled')),
+                min_confidence=float(config.get('min_confidence') or 0.0),
+                max_confidence=float(config.get('max_confidence') if config.get('max_confidence') is not None else 1.0),
+                require_geometry=False,
+            ):
+                matched_annotations.append(ann)
+            else:
+                kept_annotations.append(ann)
+
+        matched_count = len(matched_annotations)
+        if matched_count > 0:
+            total_candidates += matched_count
+            total_images += 1
+            items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'candidate_count': matched_count,
+                    'relabel_count': 0,
+                    'pair_count': 0,
+                }
+            )
+            apply_items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'removed_count': matched_count,
+                    'relabel_count': 0,
+                    'kept_annotations': kept_annotations,
+                }
+            )
+
+        if progress_cb:
+            progress_cb(
+                message=f'规则过滤 {idx}/{total}: {rel_path}',
+                progress_done=idx,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
+
+    items.sort(key=lambda x: (int(x.get('candidate_count') or 0), str(x.get('rel_path') or '')), reverse=True)
+    apply_items.sort(key=lambda x: (int(x.get('removed_count') or 0), str(x.get('rel_path') or '')), reverse=True)
+    return {
+        'image_count': total_images,
+        'candidate_count': total_candidates,
+        'relabel_count': 0,
+        'items': items,
+        'apply_items': apply_items,
+    }
+
+
 def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
     payload = SmartFilterIn(**payload_dict)
     config = _normalize_smart_filter_payload(payload)
@@ -803,17 +1179,31 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
     analysis = _analyze_smart_filter_project(project=project, config=config, progress_cb=progress_cb)
     preview_token = new_id('sfp_')
     project_rev = int(project.get('content_rev', 1) or 1)
+    operation_mode = str(config.get('operation_mode') or 'merge')
     preview_entry = {
         'preview_token': preview_token,
         'project_id': config['project_id'],
         'project_content_rev': project_rev,
         'signature': str(config['signature']),
         'config': {
+            'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
             'coverage_threshold': float(config['coverage_threshold']),
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
             'area_mode': config['area_mode'],
+            'rule_classes': list(config['rule_classes']),
+            'small_target_enabled': bool(config['small_target_enabled']),
+            'max_area_ratio': float(config['max_area_ratio']),
+            'instance_count_enabled': bool(config['instance_count_enabled']),
+            'min_instances': int(config['min_instances']),
+            'max_instances': int(config['max_instances']),
+            'position_enabled': bool(config['position_enabled']),
+            'center_x_half_width': float(config['center_x_half_width']),
+            'center_y_half_height': float(config['center_y_half_height']),
+            'confidence_enabled': bool(config['confidence_enabled']),
+            'min_confidence': float(config['min_confidence']),
+            'max_confidence': float(config['max_confidence']),
         },
         'result': analysis,
     }
@@ -824,6 +1214,7 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
     relabel_count = int(analysis.get('relabel_count') or 0)
     return {
         'project_id': config['project_id'],
+        'operation_mode': operation_mode,
         'preview_token': preview_token,
         'project_content_rev': project_rev,
         'image_count': int(analysis.get('image_count') or 0),
@@ -831,22 +1222,44 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
         'relabel_count': relabel_count,
         'items': analysis.get('items', []),
         'rule': {
+            'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
             'same_class': config['merge_mode'] == 'same_class',
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
             'area_mode': config['area_mode'],
+            'rule_classes': list(config['rule_classes']),
+            'small_target_enabled': bool(config['small_target_enabled']),
+            'max_area_ratio': float(config['max_area_ratio']),
+            'instance_count_enabled': bool(config['instance_count_enabled']),
+            'min_instances': int(config['min_instances']),
+            'max_instances': int(config['max_instances']),
+            'position_enabled': bool(config['position_enabled']),
+            'center_x_half_width': float(config['center_x_half_width']),
+            'center_y_half_height': float(config['center_y_half_height']),
+            'confidence_enabled': bool(config['confidence_enabled']),
+            'min_confidence': float(config['min_confidence']),
+            'max_confidence': float(config['max_confidence']),
             'small_box_covered_by_large_gte': float(config['coverage_threshold']),
             'keep': 'larger_area',
         },
         'message': (
-            f'智能过滤分析完成: 可移除 {candidate_count} 个目标'
-            + (f'，改类 {relabel_count} 个目标' if relabel_count > 0 else '')
-            if (candidate_count > 0 or relabel_count > 0)
-            else '智能过滤分析完成: 无可合并目标'
+            (
+                f'合并过滤预览完成：可删除 {candidate_count} 个标注'
+                + (f'，可改类 {relabel_count} 个标注' if relabel_count > 0 else '')
+            )
+            if operation_mode == 'merge' and (candidate_count > 0 or relabel_count > 0)
+            else (
+                '合并过滤预览完成：没有命中可处理标注'
+                if operation_mode == 'merge'
+                else (
+                    f'规则过滤预览完成：命中 {candidate_count} 个待删除标注'
+                    if candidate_count > 0
+                    else '规则过滤预览完成：没有命中标注'
+                )
+            )
         ),
     }
-
 
 def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
     payload = SmartFilterIn(**payload_dict)
@@ -876,6 +1289,7 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
     cached_result = preview_entry.get('result', {}) if isinstance(preview_entry.get('result', {}), dict) else {}
     apply_items = list(cached_result.get('apply_items', [])) if isinstance(cached_result.get('apply_items', []), list) else []
     total = len(apply_items)
+    operation_mode = str(config.get('operation_mode') or 'merge')
     changed_images = 0
     removed_annotations = 0
     relabeled_annotations = 0
@@ -883,7 +1297,7 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
 
     if progress_cb:
         progress_cb(
-            message=f'准备执行智能过滤，待写回 {total} 张',
+            message=(f'准备执行合并过滤，待写回 {total} 张' if operation_mode == 'merge' else f'准备执行规则过滤删除，待写回 {total} 张'),
             progress_done=0,
             progress_total=total,
         )
@@ -908,7 +1322,7 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
         )
         if progress_cb:
             progress_cb(
-                message=f'写回 {idx}/{total}: {rel_path}',
+                message=(f'合并过滤写回 {idx}/{total}: {rel_path}' if operation_mode == 'merge' else f'规则过滤删除 {idx}/{total}: {rel_path}'),
                 progress_done=idx,
                 progress_total=total,
                 current_image_id=image_id,
@@ -923,10 +1337,12 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
     items.sort(key=lambda x: (int(x.get('removed_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
     return {
         'project_id': config['project_id'],
+        'operation_mode': operation_mode,
         'changed_images': changed_images,
         'removed_annotations': removed_annotations,
         'relabeled_annotations': relabeled_annotations,
         'rule': {
+            'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
@@ -935,11 +1351,12 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
         },
         'items': items,
         'message': (
-            f'智能过滤完成: 处理 {changed_images} 张图片, 移除 {removed_annotations} 个目标'
-            + (f', 改类 {relabeled_annotations} 个目标' if relabeled_annotations > 0 else '')
+            f'合并过滤已应用：修改 {changed_images} 张图片，删除 {removed_annotations} 个标注'
+            + (f'，改类 {relabeled_annotations} 个标注' if relabeled_annotations > 0 else '')
+            if operation_mode == 'merge'
+            else f'规则过滤已应用：修改 {changed_images} 张图片，删除 {removed_annotations} 个命中标注'
         ),
     }
-
 
 def _spawn_smart_filter_job(
     *,
@@ -3260,8 +3677,11 @@ def _infer_single(
     if save_result:
         old = storage.load_annotations(str(project.get('id')), str(image.get('id')))
         if infer_mode == 'text':
-            # Text inference should reflect latest run result directly.
-            merged = converted
+            merged = _replace_by_classes(
+                old_annotations=old,
+                impacted_classes=impacted_classes,
+                new_annotations=converted,
+            )
         else:
             merged = _merge_visual_annotations(
                 old,
@@ -3323,6 +3743,69 @@ def _infer_example_preview(
     }
 
 
+def _select_text_batch_target_images(
+    project: dict[str, Any],
+    payload: InferBatchIn,
+    *,
+    impacted_classes: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
+    scope_mode = str(payload.scope_mode or 'all').strip().lower()
+    retry_image_ids = [str(x).strip() for x in payload.retry_image_ids if str(x).strip()]
+    explicit_ids = [str(x).strip() for x in payload.image_ids if str(x).strip()]
+    related_classes = [str(x).strip() for x in payload.related_classes if str(x).strip()]
+    if not related_classes:
+        related_classes = [str(x).strip() for x in impacted_classes if str(x).strip()]
+
+    reason = 'all_images'
+    if retry_image_ids:
+        wanted = set(retry_image_ids)
+        target_images = [img for img in images if str(img.get('id') or '') in wanted]
+        reason = 'retry_image_ids'
+    elif explicit_ids and not payload.all_images:
+        wanted = set(explicit_ids)
+        target_images = [img for img in images if str(img.get('id') or '') in wanted]
+        reason = 'explicit_image_ids'
+    elif payload.all_images or scope_mode == 'all':
+        target_images = list(images)
+        reason = 'all_images'
+    elif scope_mode == 'unlabeled':
+        project_id = str(project.get('id') or '')
+        target_images = []
+        for img in images:
+            image_id = str(img.get('id') or '')
+            status = str(img.get('status') or 'unlabeled').strip().lower()
+            if status != 'labeled':
+                target_images.append(img)
+                continue
+            if project_id and image_id:
+                annotations = storage.load_annotations(project_id, image_id)
+                if not annotations:
+                    target_images.append({**img, 'status': 'unlabeled'})
+        reason = 'unlabeled_only'
+    else:
+        target_images = []
+        wanted_norm = {norm_text(x) for x in related_classes if norm_text(x)}
+        for image in images:
+            image_id = str(image.get('id') or '')
+            if not image_id:
+                continue
+            annotations = storage.load_annotations(str(project.get('id') or ''), image_id)
+            has_related = _annotation_has_any_class(annotations, related_classes)
+            if scope_mode == 'class_related' and has_related:
+                target_images.append(image)
+            elif scope_mode == 'class_related_unlabeled' and not has_related:
+                target_images.append(image)
+        reason = scope_mode
+
+    return target_images, {
+        'scope_mode': scope_mode,
+        'reason': reason,
+        'related_classes': related_classes,
+        'requested_selector_count': len(retry_image_ids or explicit_ids),
+    }
+
+
 def _run_infer_batch(
     payload: InferBatchIn,
     *,
@@ -3340,12 +3823,7 @@ def _run_infer_batch(
     if not classes:
         raise HTTPException(status_code=400, detail='no classes selected')
 
-    images = project.get('images', [])
-    if payload.all_images:
-        target_images = images
-    else:
-        wanted = {str(x) for x in payload.image_ids}
-        target_images = [img for img in images if str(img.get('id') or '') in wanted]
+    target_images, selection_meta = _select_text_batch_target_images(project, payload, impacted_classes=classes)
     if not target_images:
         raise HTTPException(status_code=400, detail='no target images')
 
@@ -3353,42 +3831,53 @@ def _run_infer_batch(
     prior = resume_state if isinstance(resume_state, dict) else {}
     succeeded = max(0, int(prior.get('succeeded') or 0))
     failed = max(0, int(prior.get('failed') or 0))
+    skipped = max(0, int(prior.get('skipped') or 0))
     total_new = max(0, int(prior.get('new_annotations') or 0))
     errors = list(prior.get('errors', [])) if isinstance(prior.get('errors'), list) else []
+    failed_image_ids = [str(x).strip() for x in prior.get('failed_image_ids', []) if str(x).strip()]
+    skipped_image_ids = [str(x).strip() for x in prior.get('skipped_image_ids', []) if str(x).strip()]
+    image_results = list(prior.get('image_results', [])) if isinstance(prior.get('image_results'), list) else []
+    class_additions = dict(prior.get('class_additions', {})) if isinstance(prior.get('class_additions'), dict) else {}
     processed = max(0, int(prior.get('progress_done') or 0))
     total = max(int(prior.get('progress_total') or 0), processed + len(target_images))
     prompt = ', '.join(classes)
     pending_images = list(target_images)
 
-    if progress_cb:
+    def emit_progress(**extra: Any) -> None:
+        if not progress_cb:
+            return
         progress_cb(
-            message=f'准备文本批量推理，剩余 {len(target_images)} 张',
-            progress_done=processed,
-            progress_total=total,
             requested=total,
             batch_size=batch_size,
             succeeded=succeeded,
             failed=failed,
+            skipped=skipped,
             new_annotations=total_new,
+            failed_image_ids=failed_image_ids,
+            skipped_image_ids=skipped_image_ids,
+            class_additions=class_additions,
+            image_results=image_results,
+            selection=selection_meta,
             pending_image_ids=_infer_job_image_ids(pending_images),
+            **extra,
         )
+
+    emit_progress(
+        message=f'Preparing text batch inference, remaining {len(target_images)} images',
+        progress_done=processed,
+        progress_total=total,
+    )
 
     for batch_images in _chunked(target_images, batch_size):
         if should_stop and should_stop():
-            if progress_cb:
-                progress_cb(
-                    status='paused',
-                    message='已停止，可调整参数后继续',
-                    progress_done=processed,
-                    progress_total=total,
-                    requested=total,
-                    batch_size=batch_size,
-                    succeeded=succeeded,
-                    failed=failed,
-                    new_annotations=total_new,
-                    pending_image_ids=_infer_job_image_ids(pending_images),
-                )
-            raise InferJobPaused('已停止，可调整参数后继续')
+            emit_progress(
+                status='paused',
+                message='Paused. Adjust parameters and resume when ready.',
+                progress_done=processed,
+                progress_total=total,
+            )
+            raise InferJobPaused('Paused. Adjust parameters and resume when ready.')
+
         batch_paths = [str(img.get('abs_path') or '') for img in batch_images]
         try:
             batch_result = sam3.infer_batch(
@@ -3408,46 +3897,45 @@ def _run_infer_batch(
             for image in batch_images:
                 processed += 1
                 failed += 1
-                rel_path = str(image.get('rel_path') or image.get('id') or '')
-                errors.append({'image_id': image.get('id'), 'error': str(exc)})
+                image_id = str(image.get('id') or '')
+                rel_path = str(image.get('rel_path') or image_id)
+                errors.append({'image_id': image_id, 'error': str(exc)})
+                failed_image_ids.append(image_id)
+                image_results.append(
+                    {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'status': 'failed',
+                        'reason': 'remote_batch_error',
+                        'new_annotations': 0,
+                        'error': str(exc),
+                    }
+                )
                 if pending_images:
                     pending_images.pop(0)
-                if progress_cb:
-                    progress_cb(
-                        message=f'失败 {processed}/{total}: {rel_path}',
-                        progress_done=processed,
-                        progress_total=total,
-                        requested=total,
-                        batch_size=batch_size,
-                        succeeded=succeeded,
-                        failed=failed,
-                        new_annotations=total_new,
-                        current_image_id=str(image.get('id') or ''),
-                        current_image_rel_path=rel_path,
-                        pending_image_ids=_infer_job_image_ids(pending_images),
-                    )
+                emit_progress(
+                    message=f'Failed {processed}/{total}: {rel_path}',
+                    progress_done=processed,
+                    progress_total=total,
+                    current_image_id=image_id,
+                    current_image_rel_path=rel_path,
+                )
             continue
 
         for image, item in zip(batch_images, items):
             if should_stop and should_stop():
-                if progress_cb:
-                    progress_cb(
-                        status='paused',
-                        message='已停止，可调整参数后继续',
-                        progress_done=processed,
-                        progress_total=total,
-                        requested=total,
-                        batch_size=batch_size,
-                        succeeded=succeeded,
-                        failed=failed,
-                        new_annotations=total_new,
-                        pending_image_ids=_infer_job_image_ids(pending_images),
-                    )
-                raise InferJobPaused('已停止，可调整参数后继续')
+                emit_progress(
+                    status='paused',
+                    message='Paused. Adjust parameters and resume when ready.',
+                    progress_done=processed,
+                    progress_total=total,
+                )
+                raise InferJobPaused('Paused. Adjust parameters and resume when ready.')
+
             processed += 1
             image_id = str(image.get('id') or '')
             rel_path = str(image.get('rel_path') or image_id)
-            message = f'处理中 {processed}/{total}: {rel_path}'
+            message = f'Processing {processed}/{total}: {rel_path}'
             try:
                 if not isinstance(item, dict):
                     raise RuntimeError('remote batch item is not an object')
@@ -3459,43 +3947,77 @@ def _run_infer_batch(
                 detections = result.get('detections', [])
                 detections = detections if isinstance(detections, list) else []
                 converted = _convert_detections(detections=detections, classes=classes, forced_class='')
-                storage.save_annotations(payload.project_id, image_id, converted)
+                old = storage.load_annotations(payload.project_id, image_id)
+                merged = _replace_by_classes(
+                    old_annotations=old,
+                    impacted_classes=classes,
+                    new_annotations=converted,
+                )
+                storage.save_annotations(payload.project_id, image_id, merged)
                 succeeded += 1
                 total_new += len(converted)
+                for ann in converted:
+                    cls = str(ann.get('class_name') or '').strip()
+                    if cls:
+                        class_additions[cls] = int(class_additions.get(cls, 0) or 0) + 1
+                image_results.append(
+                    {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'status': 'saved',
+                        'reason': 'ok',
+                        'new_annotations': len(converted),
+                    }
+                )
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                message = f'失败 {processed}/{total}: {rel_path}'
+                message = f'Failed {processed}/{total}: {rel_path}'
                 errors.append({'image_id': image_id, 'error': str(exc)})
+                failed_image_ids.append(image_id)
+                image_results.append(
+                    {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'status': 'failed',
+                        'reason': 'save_failed',
+                        'new_annotations': 0,
+                        'error': str(exc),
+                    }
+                )
             if pending_images:
                 pending_images.pop(0)
-            if progress_cb:
-                progress_cb(
-                    message=message,
-                    progress_done=processed,
-                    progress_total=total,
-                    requested=total,
-                    batch_size=batch_size,
-                    succeeded=succeeded,
-                    failed=failed,
-                    new_annotations=total_new,
-                    current_image_id=image_id,
-                    current_image_rel_path=rel_path,
-                    pending_image_ids=_infer_job_image_ids(pending_images),
-                )
+            emit_progress(
+                message=message,
+                progress_done=processed,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
 
     summary = (
-        f'文本批推完成: 成功 {succeeded}, 失败 {failed}, 新增 {total_new}, batch={batch_size}'
-        if failed > 0
-        else f'文本批推完成: 成功 {succeeded}, 新增 {total_new}, batch={batch_size}'
+        f'Text batch complete: success {succeeded}, failed {failed}, skipped {skipped}, new {total_new}, batch={batch_size}'
+        if failed > 0 or skipped > 0
+        else f'Text batch complete: success {succeeded}, new {total_new}, batch={batch_size}'
     )
     return {
         'project_id': payload.project_id,
         'requested': total,
+        'processed_images': processed,
+        'saved_images': succeeded,
+        'failed_images': failed,
+        'skipped_images': skipped,
         'batch_size': batch_size,
         'succeeded': succeeded,
         'failed': failed,
+        'skipped': skipped,
         'new_annotations': total_new,
         'errors': errors,
+        'failed_image_ids': failed_image_ids,
+        'skipped_image_ids': skipped_image_ids,
+        'retry_image_ids': failed_image_ids + skipped_image_ids,
+        'class_additions': class_additions,
+        'image_results': image_results,
+        'selection': selection_meta,
         'message': summary,
     }
 
