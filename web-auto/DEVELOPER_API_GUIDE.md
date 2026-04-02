@@ -611,6 +611,11 @@ Additional request fields:
 
 ```json
 {
+  "operation_mode": "merge",
+  "merge_mode": "same_class",
+  "spatial_mode": "instance_cover",
+  "coverage_threshold": 0.98,
+  "area_mode": "instance",
   "rule_classes": ["cat", "dog"],
   "small_target_enabled": false,
   "max_area_ratio": 0.02,
@@ -628,8 +633,18 @@ Additional request fields:
 
 Meaning:
 
+- `operation_mode`: `merge` or `rule`
+- `merge_mode`: `same_class` or `canonical_class`
+- `spatial_mode`: `instance_cover` or `bbox_cover`
+- `coverage_threshold`: remove the smaller instance when the larger instance covers at least this ratio of it
+- `area_mode`: choose which instance is considered larger, by instance area or bbox area
 - `rule_classes`: class scope for rule analysis
 - `small_target_enabled + max_area_ratio`: object area ratio filter
 - `instance_count_enabled + min/max_instances`: per-image scoped instance-count filter
 - `position_enabled + center_x_half_width + center_y_half_height`: center-rectangle filter
 - `confidence_enabled + min/max_confidence`: score range filter
+
+Notes:
+
+- `spatial_mode=instance_cover` prefers polygon/mask coverage and falls back to bbox coverage when instance geometry is unavailable
+- `spatial_mode=bbox_cover` always uses bbox containment coverage

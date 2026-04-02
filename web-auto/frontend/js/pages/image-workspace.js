@@ -1804,12 +1804,19 @@ export const ImageWorkspace = {
           <div id="filter-op-hint" class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light); font-size: 12px; line-height: 1.8;"></div>
 
           <div id="filter-merge-panel" style="display: flex; flex-direction: column; gap: 18px;">
-            <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;">
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;">
               <div>
                 <label class="neu-label">\u5408\u5E76\u6A21\u5F0F</label>
                 <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
                   <option value="same_class">\u540C\u7C7B\u53BB\u91CD</option>
                   <option value="canonical_class">\u6765\u6E90\u7C7B\u5E76\u5165\u76EE\u6807\u7C7B</option>
+                </select>
+              </div>
+              <div>
+                <label class="neu-label">\u7A7A\u95F4\u5224\u5B9A</label>
+                <select id="filter-spatial-sel" class="neu-input" style="width: 100%;">
+                  <option value="instance_cover">\u5B9E\u4F8B\u5D4C\u5957</option>
+                  <option value="bbox_cover">\u8FB9\u6846\u5D4C\u5957</option>
                 </select>
               </div>
               <div>
@@ -1838,10 +1845,11 @@ export const ImageWorkspace = {
 
             <div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-                <label class="neu-label">\u91CD\u53E0\u9608\u503C</label>
+                <label class="neu-label">\u5305\u542B\u9608\u503C</label>
                 <span id="filter-cov-val" style="font-size:12px; font-weight:700; color: var(--neu-text-active);">0.98</span>
               </div>
               <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width:100%;" />
+              <div style="margin-top: 6px; font-size: 11px; color: var(--neu-text-light);">\u5F53\u8F83\u5927\u5B9E\u4F8B\u8986\u76D6\u8F83\u5C0F\u5B9E\u4F8B\u8FBE\u5230\u8BE5\u6BD4\u4F8B\u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002</div>
             </div>
           </div>
 
@@ -1935,7 +1943,7 @@ export const ImageWorkspace = {
     const applyBtn = document.getElementById('btn-apply-filter');
     const cov = document.getElementById('filter-cov');
     const filterInputs = [
-      'filter-mode-sel', 'filter-area-sel', 'filter-target-cls', 'filter-small-enabled', 'filter-small-ratio',
+      'filter-mode-sel', 'filter-spatial-sel', 'filter-area-sel', 'filter-target-cls', 'filter-small-enabled', 'filter-small-ratio',
       'filter-count-enabled', 'filter-min-count', 'filter-max-count', 'filter-pos-enabled', 'filter-center-x',
       'filter-center-y', 'filter-conf-enabled', 'filter-conf-min', 'filter-conf-max'
     ].map(id => document.getElementById(id)).filter(Boolean);
@@ -2014,6 +2022,7 @@ export const ImageWorkspace = {
         project_id: this.projectId,
         operation_mode: operationMode,
         merge_mode: operationMode === 'merge' ? mode : 'same_class',
+        spatial_mode: operationMode === 'merge' ? document.getElementById('filter-spatial-sel').value : 'instance_cover',
         coverage_threshold: parseFloat(cov.value),
         canonical_class: operationMode === 'merge' && mode === 'canonical_class' ? target : '',
         source_classes: operationMode === 'merge' && mode === 'canonical_class' ? sources : [],
@@ -2162,19 +2171,26 @@ export const ImageWorkspace = {
 
   updateFilterRuleText(operationMode = 'merge') {
     const mode = document.getElementById('filter-mode-sel')?.value;
+    const spatialMode = document.getElementById('filter-spatial-sel')?.value || 'instance_cover';
     const cov = parseFloat(document.getElementById('filter-cov')?.value || '0.98');
+    const areaMode = document.getElementById('filter-area-sel')?.value || 'instance';
     const target = document.getElementById('filter-target-cls')?.value;
     const sources = Array.from(document.querySelectorAll('.source-cls-chk:checked')).map(el => el.value);
     const ruleClasses = Array.from(document.querySelectorAll('.rule-cls-chk:checked')).map(el => el.value);
     const chunks = [];
+    const spatialLabel = spatialMode === 'bbox_cover' ? '\u8FB9\u6846\u5D4C\u5957' : '\u5B9E\u4F8B\u5D4C\u5957';
+    const areaLabel = areaMode === 'bbox' ? '\u8FB9\u6846\u9762\u79EF' : '\u5B9E\u4F8B\u9762\u79EF';
 
     if (operationMode === 'merge') {
       if (mode === 'same_class') {
-        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u5F53\u540C\u7C7B\u6807\u6CE8\u7684\u91CD\u53E0\u7387\u8D85\u8FC7 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002`);
+        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u4F7F\u7528${spatialLabel}\u5224\u5B9A\u540C\u7C7B\u91CD\u590D\uFF0C\u5F53\u8F83\u5927\u5B9E\u4F8B\u5BF9\u8F83\u5C0F\u5B9E\u4F8B\u7684\u8986\u76D6\u8FBE\u5230 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002`);
       } else {
-        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u5F53\u91CD\u53E0\u7387\u8D85\u8FC7 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5C06 [${sources.join(', ') || '\u672A\u9009\u62E9'}] \u5E76\u5165 [${target || '--'}]\u3002`);
+        chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u4F7F\u7528${spatialLabel}\u5224\u5B9A\u91CD\u590D\uFF0C\u5F53\u6765\u6E90\u7C7B [${sources.join(', ') || '\u672A\u9009\u62E9'}] \u88AB [${target || '--'}] \u8986\u76D6\u8FBE\u5230 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u6267\u884C\u5E76\u5165\u3002`);
       }
-      chunks.push('\u8BE5\u6A21\u5F0F\u53EA\u4F1A\u6267\u884C\u5408\u5E76 / \u6539\u7C7B\u903B\u8F91\uFF0C\u4E0D\u4F1A\u5E94\u7528\u89C4\u5219\u5220\u9664\u6761\u4EF6\u3002');
+      if (spatialMode === 'instance_cover') {
+        chunks.push('\u5B9E\u4F8B\u5D4C\u5957\u4F1A\u4F18\u5148\u4F7F\u7528 polygon / mask \u8BA1\u7B97\u8F83\u5C0F\u5B9E\u4F8B\u88AB\u8986\u76D6\u7684\u6BD4\u4F8B\uFF1B\u7F3A\u5C11\u5B9E\u4F8B\u8F6E\u5ED3\u65F6\u4F1A\u56DE\u9000\u5230\u8FB9\u6846\u5D4C\u5957\u3002');
+      }
+      chunks.push(`\u4FDD\u7559\u5BF9\u8C61\u7531${areaLabel}\u5224\u5B9A\uFF1A\u9ED8\u8BA4\u4FDD\u7559\u9762\u79EF\u66F4\u5927\u7684\u5B9E\u4F8B\u3002\u8BE5\u6A21\u5F0F\u53EA\u4F1A\u6267\u884C\u5408\u5E76 / \u6539\u7C7B\u903B\u8F91\uFF0C\u4E0D\u4F1A\u5E94\u7528\u89C4\u5219\u5220\u9664\u6761\u4EF6\u3002`);
     } else {
       chunks.push(`\u89C4\u5219\u8FC7\u6EE4\uFF1A\u5728 [${ruleClasses.length > 0 ? ruleClasses.join(', ') : '\u672A\u9009\u62E9'}] \u8303\u56F4\u5185\u67E5\u627E\u547D\u4E2D\u89C4\u5219\u7684\u6807\u6CE8\uFF0C\u9884\u89C8\u540E\u5220\u9664\u547D\u4E2D\u9879\u3002`);
       if (document.getElementById('filter-small-enabled')?.checked) {

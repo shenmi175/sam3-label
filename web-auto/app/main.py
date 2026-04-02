@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import mimetypes
 import os
 import shutil
@@ -169,6 +170,7 @@ class SmartFilterIn(BaseModel):
     project_id: str
     operation_mode: str = Field(default='merge', pattern='^(merge|rule)$')
     merge_mode: str = Field(default='same_class', pattern='^(same_class|canonical_class)$')
+    spatial_mode: str = Field(default='instance_cover', pattern='^(bbox_cover|instance_cover)$')
     coverage_threshold: float = 0.98
     canonical_class: str = ''
     source_classes: list[str] = Field(default_factory=list)
@@ -789,6 +791,7 @@ def _smart_filter_signature(
     *,
     operation_mode: str,
     merge_mode: str,
+    spatial_mode: str,
     coverage_threshold: float,
     canonical_class: str,
     source_classes: list[str],
@@ -812,6 +815,7 @@ def _smart_filter_signature(
         [
             str(operation_mode or 'merge').strip().lower(),
             str(merge_mode or 'same_class').strip().lower(),
+            str(spatial_mode or 'instance_cover').strip().lower(),
             f'{float(coverage_threshold):.6f}',
             str(canonical_class or '').strip(),
             ','.join(source),
@@ -835,6 +839,7 @@ def _smart_filter_signature(
 def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
     operation_mode = str(payload.operation_mode or 'merge').strip().lower()
     merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
+    spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
     coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
     canonical_class = str(payload.canonical_class or '').strip()
     source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
@@ -870,6 +875,7 @@ def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
         'project_id': str(payload.project_id or '').strip(),
         'operation_mode': operation_mode,
         'merge_mode': merge_mode,
+        'spatial_mode': spatial_mode,
         'coverage_threshold': coverage_threshold,
         'canonical_class': canonical_class,
         'source_classes': source_classes,
@@ -890,6 +896,7 @@ def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
         'signature': _smart_filter_signature(
             operation_mode=operation_mode,
             merge_mode=merge_mode,
+            spatial_mode=spatial_mode,
             coverage_threshold=coverage_threshold,
             canonical_class=canonical_class,
             source_classes=source_classes,
@@ -998,6 +1005,7 @@ def _analyze_merge_filter_project(
         analysis = _analyze_smart_merge_annotations(
             filtered_annotations,
             merge_mode=str(config.get('merge_mode') or 'same_class'),
+            spatial_mode=str(config.get('spatial_mode') or 'instance_cover'),
             coverage_threshold=float(config.get('coverage_threshold') or 0.98),
             canonical_class=str(config.get('canonical_class') or ''),
             source_classes=list(config.get('source_classes') or []),
@@ -1188,6 +1196,7 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
         'config': {
             'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
+            'spatial_mode': config['spatial_mode'],
             'coverage_threshold': float(config['coverage_threshold']),
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
@@ -1224,6 +1233,7 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
         'rule': {
             'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
+            'spatial_mode': config['spatial_mode'],
             'same_class': config['merge_mode'] == 'same_class',
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
@@ -1344,6 +1354,7 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
         'rule': {
             'operation_mode': operation_mode,
             'merge_mode': config['merge_mode'],
+            'spatial_mode': config['spatial_mode'],
             'canonical_class': config['canonical_class'],
             'source_classes': list(config['source_classes']),
             'area_mode': config['area_mode'],
@@ -1792,6 +1803,81 @@ def _annotation_metric_area(ann: dict[str, Any], *, area_mode: str) -> float:
     return _bbox_area_value(bbox)
 
 
+def _ann_polygon(ann: dict[str, Any]) -> list[list[float]]:
+    raw = ann.get('polygon') or []
+    out: list[list[float]] = []
+    if isinstance(raw, list):
+        for p in raw:
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                continue
+            try:
+                out.append([float(p[0]), float(p[1])])
+            except (TypeError, ValueError):
+                continue
+    if len(out) >= 3:
+        return out
+    mask_poly = _polygon_from_mask(str(ann.get('mask_png_base64') or ann.get('mask_png') or ''))
+    if len(mask_poly) >= 3:
+        return [[float(p[0]), float(p[1])] for p in mask_poly]
+    return []
+
+
+def _polygon_cover_ratio(outer_poly: list[list[float]], inner_poly: list[list[float]]) -> float | None:
+    if len(outer_poly) < 3 or len(inner_poly) < 3:
+        return None
+    try:
+        from PIL import Image, ImageChops, ImageDraw  # type: ignore
+
+        xs = [float(p[0]) for p in outer_poly] + [float(p[0]) for p in inner_poly]
+        ys = [float(p[1]) for p in outer_poly] + [float(p[1]) for p in inner_poly]
+        min_x = math.floor(min(xs)) - 2
+        min_y = math.floor(min(ys)) - 2
+        max_x = math.ceil(max(xs)) + 2
+        max_y = math.ceil(max(ys)) + 2
+        width = max(1, int(max_x - min_x + 1))
+        height = max(1, int(max_y - min_y + 1))
+
+        def _shift(poly: list[list[float]]) -> list[tuple[float, float]]:
+            return [(float(p[0]) - min_x, float(p[1]) - min_y) for p in poly]
+
+        outer_mask = Image.new('L', (width, height), 0)
+        inner_mask = Image.new('L', (width, height), 0)
+        ImageDraw.Draw(outer_mask).polygon(_shift(outer_poly), fill=255)
+        ImageDraw.Draw(inner_mask).polygon(_shift(inner_poly), fill=255)
+        inter_mask = ImageChops.multiply(outer_mask, inner_mask)
+        inner_area = inner_mask.tobytes().count(255)
+        if inner_area <= 0:
+            return None
+        inter_area = inter_mask.tobytes().count(255)
+        return float(inter_area) / float(inner_area)
+    except Exception:
+        return None
+
+
+def _annotation_cover_ratio(
+    bigger_ann: dict[str, Any],
+    smaller_ann: dict[str, Any],
+    *,
+    spatial_mode: str,
+) -> float:
+    bigger_bbox = _ann_bbox(bigger_ann)
+    smaller_bbox = _ann_bbox(smaller_ann)
+    smaller_bbox_area = _bbox_area_value(smaller_bbox)
+    if not bigger_bbox or not smaller_bbox or smaller_bbox_area <= 0.0:
+        return 0.0
+
+    bbox_cover = _bbox_intersection_area(bigger_bbox, smaller_bbox) / smaller_bbox_area
+    if str(spatial_mode or 'instance_cover').strip().lower() == 'bbox_cover':
+        return bbox_cover
+
+    bigger_poly = _ann_polygon(bigger_ann)
+    smaller_poly = _ann_polygon(smaller_ann)
+    poly_cover = _polygon_cover_ratio(bigger_poly, smaller_poly)
+    if poly_cover is not None:
+        return poly_cover
+    return bbox_cover
+
+
 def _annotation_class_name(ann: dict[str, Any]) -> str:
     return str(ann.get('class_name') or ann.get('label') or '').strip()
 
@@ -1818,6 +1904,7 @@ def _analyze_smart_merge_annotations(
     annotations: list[dict[str, Any]],
     *,
     merge_mode: str = 'same_class',
+    spatial_mode: str = 'instance_cover',
     coverage_threshold: float = 0.98,
     canonical_class: str = '',
     source_classes: list[str] | None = None,
@@ -1870,7 +1957,11 @@ def _analyze_smart_merge_annotations(
                 smaller_area = max(float(smaller['area']), 0.0)
                 if smaller_area <= 0.0:
                     continue
-                cover = _bbox_intersection_area(bigger['bbox'], smaller['bbox']) / smaller_area
+                cover = _annotation_cover_ratio(
+                    anns[keep_idx],
+                    anns[s_idx],
+                    spatial_mode=spatial_mode,
+                )
                 if cover < float(coverage_threshold):
                     continue
                 remove_indices.add(s_idx)
@@ -1905,7 +1996,11 @@ def _analyze_smart_merge_annotations(
                     smaller_area = max(float(smaller['area']), 0.0)
                     if smaller_area <= 0.0:
                         continue
-                    cover = _bbox_intersection_area(bigger['bbox'], smaller['bbox']) / smaller_area
+                    cover = _annotation_cover_ratio(
+                        anns[int(bigger['idx'])],
+                        anns[s_idx],
+                        spatial_mode=spatial_mode,
+                    )
                     if cover < float(coverage_threshold):
                         continue
                     remove_indices.add(s_idx)
@@ -4822,6 +4917,7 @@ def preview_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail='only image project is supported')
 
     merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
+    spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
     coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
     canonical_class = str(payload.canonical_class or '').strip()
     source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
@@ -4843,6 +4939,7 @@ def preview_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         analysis = _analyze_smart_merge_annotations(
             annotations,
             merge_mode=merge_mode,
+            spatial_mode=spatial_mode,
             coverage_threshold=coverage_threshold,
             canonical_class=canonical_class,
             source_classes=source_classes,
@@ -4877,6 +4974,7 @@ def preview_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         'items': items,
         'rule': {
             'merge_mode': merge_mode,
+            'spatial_mode': spatial_mode,
             'same_class': merge_mode == 'same_class',
             'canonical_class': canonical_class,
             'source_classes': source_classes,
@@ -4894,6 +4992,7 @@ def apply_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail='only image project is supported')
 
     merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
+    spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
     coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
     canonical_class = str(payload.canonical_class or '').strip()
     source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
@@ -4915,6 +5014,7 @@ def apply_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         analysis = _analyze_smart_merge_annotations(
             annotations,
             merge_mode=merge_mode,
+            spatial_mode=spatial_mode,
             coverage_threshold=coverage_threshold,
             canonical_class=canonical_class,
             source_classes=source_classes,
@@ -4948,6 +5048,7 @@ def apply_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
         'relabeled_annotations': relabeled_annotations,
         'rule': {
             'merge_mode': merge_mode,
+            'spatial_mode': spatial_mode,
             'canonical_class': canonical_class,
             'source_classes': source_classes,
             'area_mode': area_mode,

@@ -486,3 +486,65 @@ requests.post(
 - 原生图像引擎: `app/engine.py`
 - 图像语义引擎: `app/semantic_engine.py`
 - 视频语义引擎: `app/video_semantic_engine.py`
+
+## 9. MCP Adapter
+
+为保证不影响现有 REST 调用方式，MCP 适配层是独立进程，不修改 `run.py` 或任何现有 `/v1/*` 路由。
+
+文件：
+
+- `app/mcp_adapter.py`
+- `mcp_server.py`
+- `run_mcp.py`
+- `requirements-mcp.txt`
+
+建议：
+
+- MCP 适配层单独运行在轻量环境里
+- 不需要安装 `torch`、`ultralytics`、模型权重
+- 只需要能访问现有 `sam3-api` HTTP 服务
+
+设计：
+
+- MCP Server 不直接调用模型，而是通过 HTTP 调现有 `sam3-api`
+- 同时支持 `stdio` 和 `Streamable HTTP`
+- 更适合 LiteLLM 集成
+
+环境变量：
+
+- `SAM3_API_BASE_URL`
+- `SAM3_MCP_TIMEOUT_SEC`
+- `SAM3_MCP_HTTP_MOUNT_PATH`
+
+启动：
+
+```bash
+python run_mcp.py --transport stdio
+python run_mcp.py --transport http --host 127.0.0.1 --port 8011 --mount-path /mcp
+```
+
+LiteLLM 示例：
+
+stdio:
+
+```yaml
+mcp_servers:
+  sam3:
+    transport: stdio
+    command: python
+    args:
+      - J:/project_code/sam3/sam3-api/run_mcp.py
+      - --transport
+      - stdio
+    env:
+      SAM3_API_BASE_URL: http://127.0.0.1:8001
+```
+
+HTTP:
+
+```yaml
+mcp_servers:
+  sam3:
+    transport: http
+    url: http://127.0.0.1:8011/mcp
+```

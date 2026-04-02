@@ -10,11 +10,15 @@ sam3-api/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── engine.py
+│   ├── mcp_adapter.py
 │   ├── semantic_engine.py
 │   ├── main.py
 │   ├── schemas.py
 │   └── utils.py
+├── mcp_server.py
 ├── requirements.txt
+├── requirements-mcp.txt
+├── run_mcp.py
 └── run.py
 ```
 
@@ -118,6 +122,92 @@ curl -X POST "http://127.0.0.1:8001/v1/infer" \
 
 字段：
 - `files`: 多张图片
+
+## MCP 适配层
+
+当前仓库已新增独立 MCP 适配层，不影响现有 `run.py` 提供的 REST API。
+
+新增文件：
+
+- `app/mcp_adapter.py`
+- `mcp_server.py`
+- `run_mcp.py`
+- `requirements-mcp.txt`
+
+### 安装
+
+MCP 适配层建议单独放到一个轻量环境里运行，不需要安装 `torch` 或模型权重依赖。
+
+```bash
+pip install -r requirements-mcp.txt
+```
+
+### 启动方式
+
+stdio:
+
+```bash
+python run_mcp.py --transport stdio
+```
+
+Streamable HTTP:
+
+```bash
+python run_mcp.py --transport http --host 127.0.0.1 --port 8011 --mount-path /mcp
+```
+
+默认上游 REST 服务地址：
+
+- `SAM3_API_BASE_URL=http://127.0.0.1:8001`
+
+可选环境变量：
+
+- `SAM3_MCP_TIMEOUT_SEC`
+- `SAM3_MCP_HTTP_MOUNT_PATH`
+
+### LiteLLM 接入示例
+
+stdio 模式：
+
+```yaml
+mcp_servers:
+  sam3:
+    transport: stdio
+    command: python
+    args:
+      - J:/project_code/sam3/sam3-api/run_mcp.py
+      - --transport
+      - stdio
+    env:
+      SAM3_API_BASE_URL: http://127.0.0.1:8001
+```
+
+Streamable HTTP 模式：
+
+```yaml
+mcp_servers:
+  sam3:
+    transport: http
+    url: http://127.0.0.1:8011/mcp
+```
+
+### MCP Tool 列表
+
+- `sam3_server_info`
+- `sam3_health`
+- `sam3_warmup`
+- `sam3_image_infer_text`
+- `sam3_image_infer_points`
+- `sam3_image_infer_boxes`
+- `sam3_image_infer_batch_text`
+- `sam3_semantic_infer`
+- `sam3_semantic_batch`
+- `sam3_video_start_session`
+- `sam3_video_get_session`
+- `sam3_video_add_prompt`
+- `sam3_video_propagate`
+- `sam3_video_reset_session`
+- `sam3_video_close_session`
 - 其余参数同 `/v1/infer`（包含 `mode/points/boxes`）
 
 返回每张图片的成功/失败状态，不会因单张失败中断整个批次。
