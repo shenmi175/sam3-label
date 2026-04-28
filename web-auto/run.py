@@ -8,16 +8,18 @@ import uvicorn
 
 if __name__ == '__main__':
     base_dir = Path(__file__).resolve().parent
-    print('web-auto API: http://127.0.0.1:8000')
-    print('OpenAPI 文档: http://127.0.0.1:8000/docs')
+    host = os.getenv('WEB_AUTO_HOST', '127.0.0.1')
+    port = int(os.getenv('WEB_AUTO_PORT', '8000'))
+    print(f'web-auto API: http://{host}:{port}')
+    print(f'OpenAPI 文档: http://{host}:{port}/docs')
 
     # Windows 下默认禁用 reload，避免热重载导致请求不进入应用进程。
     use_reload = os.getenv('WEB_AUTO_RELOAD', '0') == '1'
 
     uvicorn.run(
         'app.main:app',
-        host='127.0.0.1',
-        port=8000,
+        host=host,
+        port=port,
         reload=use_reload,
         reload_dirs=[str(base_dir)],
     )

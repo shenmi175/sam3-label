@@ -57,8 +57,21 @@ export const store = {
     }
   },
   
-  init() {
+  async init() {
     this.applyTheme(this.state.config.theme);
+    if (localStorage.getItem('sam3ApiUrl')) return;
+    try {
+      const response = await fetch('/api/config/defaults');
+      if (!response.ok) return;
+      const defaults = await response.json();
+      const apiUrl = String(defaults?.sam3_api_base_url || '').trim();
+      if (apiUrl) {
+        this.state.config.sam3ApiUrl = apiUrl;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('load default config failed', err);
+    }
   },
   
   notify() {

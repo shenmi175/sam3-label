@@ -28,8 +28,8 @@ from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, 
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ensure_dir(BASE_DIR / 'data')
-DEFAULT_API_BASE_URL = 'http://172.16.1.65:8001'
+DATA_DIR = ensure_dir(Path(os.getenv('WEB_AUTO_DATA_DIR', str(BASE_DIR / 'data'))).expanduser().resolve())
+DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
 
 
@@ -4395,6 +4395,15 @@ def health() -> dict[str, Any]:
         'mode': 'api_only',
         'projects': len(storage.list_projects()),
         'allowed_origins': ALLOWED_ORIGINS,
+    }
+
+
+@app.get('/api/config/defaults')
+def get_default_config() -> dict[str, Any]:
+    return {
+        'sam3_api_base_url': DEFAULT_API_BASE_URL,
+        'data_dir': str(CURRENT_DATA_DIR),
+        'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
     }
 
 

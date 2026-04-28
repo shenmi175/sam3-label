@@ -5,9 +5,9 @@ import { router } from './router.js';
 import { TaskManager } from './components/tasks.js';
 import { store } from './store.js';
 
-export function bootstrap() {
+export async function bootstrap() {
   console.log('web-auto App initialized');
-  store.init();
+  await store.init();
   
   // UI Helpers
   window.showToast = (message, type = 'info') => {
@@ -37,4 +37,6 @@ export function bootstrap() {
   TaskManager.init();
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  console.error('web-auto bootstrap failed', err);
+});

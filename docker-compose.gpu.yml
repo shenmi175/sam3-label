@@ -1,0 +1,5 @@
+services:
+  sam3-api:
+    gpus: all
+    environment:
+      SAM3_API_DEVICE: cuda

@@ -1,0 +1,15 @@
+.git
+.codex
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+web-auto/data
+sam3-api/data
+sam3_checkpoints
+datasets
+outputs
+*.log
