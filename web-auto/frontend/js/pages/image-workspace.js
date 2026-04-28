@@ -2099,7 +2099,7 @@ export const ImageWorkspace = {
             <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">总图片</div><b style="font-size: 22px;">${fmt(stats.total_images)}</b></div>
             <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">已标注</div><b style="font-size: 22px; color: #10b981;">${fmt(stats.labeled_images)}</b><div>${pct(stats.labeled_images, stats.total_images)}</div></div>
             <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">实例数</div><b style="font-size: 22px;">${fmt(stats.annotation_count)}</b></div>
-            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">索引图片</div><b style="font-size: 22px;">${fmt(stats.indexed_images)}</b><div>${pct(stats.indexed_images, stats.total_images)}</div></div>
+            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">SQLite 标注</div><b style="font-size: 22px;">${fmt(stats.annotation_store_images)}</b><div>${pct(stats.annotation_store_images, stats.total_images)}</div></div>
           </div>
 
           <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px;">
@@ -2130,7 +2130,7 @@ export const ImageWorkspace = {
           rebuildBtn.innerText = i18n.t('rebuilding_index');
           const rebuildRes = await api.rebuildAnnotationIndex(this.projectId);
           const result = rebuildRes?.result || {};
-          showToast(`索引重建完成：${fmt(result.indexed_images)} 张图片`, 'success');
+          showToast(`标注存储/索引重建完成：${fmt(result.annotation_store_images || result.indexed_images)} 张图片`, 'success');
           await this.loadProjectInfo();
           await this.loadImages();
           await this.openDataDashboard();

@@ -31,6 +31,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ensure_dir(Path(os.getenv('WEB_AUTO_DATA_DIR', str(BASE_DIR / 'data'))).expanduser().resolve())
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
+MAX_PENDING_IMAGE_IDS_IN_JOB_STATE = 200
 
 
 def _parse_positive_int_env(key: str, default: int) -> int:
@@ -613,6 +614,8 @@ def _infer_job_state_default(*, job_id: str, project_id: str, job_type: str) -> 
         'params': {},
         'payload_dict': {},
         'pending_image_ids': [],
+        'pending_image_count': 0,
+        'pending_image_ids_truncated': False,
         'resume_count': 0,
         'result': {},
     }
@@ -648,6 +651,20 @@ def _update_infer_job_state(job_id: str, **updates: Any) -> None:
         state['updated_at'] = now_ts()
 
 
+def _compact_infer_job_state_for_response(state: dict[str, Any]) -> dict[str, Any]:
+    out = dict(state)
+    pending = [str(x).strip() for x in out.get('pending_image_ids', []) if str(x).strip()] if isinstance(out.get('pending_image_ids'), list) else []
+    pending_count = int(out.get('pending_image_count') or len(pending))
+    if len(pending) > MAX_PENDING_IMAGE_IDS_IN_JOB_STATE:
+        out['pending_image_ids'] = pending[:MAX_PENDING_IMAGE_IDS_IN_JOB_STATE]
+        out['pending_image_ids_truncated'] = True
+    else:
+        out['pending_image_ids'] = pending
+        out['pending_image_ids_truncated'] = bool(out.get('pending_image_ids_truncated')) and pending_count > len(pending)
+    out['pending_image_count'] = pending_count
+    return out
+
+
 def _get_infer_job_state_or_404(job_id: str) -> dict[str, Any]:
     with INFER_JOB_LOCK:
         state = INFER_JOB_STATES.get(job_id)
@@ -658,7 +675,7 @@ def _get_infer_job_state_or_404(job_id: str) -> dict[str, Any]:
         running = bool(thread and thread.is_alive())
         out = dict(state)
         out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return out
+        return _compact_infer_job_state_for_response(out)
 
 
 def _get_active_infer_job_for_project(project_id: str) -> dict[str, Any] | None:
@@ -676,7 +693,7 @@ def _get_active_infer_job_for_project(project_id: str) -> dict[str, Any] | None:
         running = bool(thread and thread.is_alive())
         out = dict(state)
         out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return out
+        return _compact_infer_job_state_for_response(out)
 
 
 def _get_latest_infer_job_for_project(
@@ -701,7 +718,7 @@ def _get_latest_infer_job_for_project(
         thread = holder.get('thread')
         running = bool(thread and thread.is_alive())
         out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return out
+        return _compact_infer_job_state_for_response(out)
 
 
 def _pause_infer_job(project_id: str) -> bool:
@@ -1539,13 +1556,24 @@ def _infer_job_params_from_payload(job_type: str, payload_dict: dict[str, Any]) 
     return params
 
 
-def _infer_job_image_ids(items: list[dict[str, Any]]) -> list[str]:
+def _infer_job_image_ids(items: list[dict[str, Any]], *, limit: int = 0) -> list[str]:
     out: list[str] = []
     for image in items:
         image_id = str(image.get('id') or '').strip()
         if image_id:
             out.append(image_id)
+            if limit > 0 and len(out) >= limit:
+                break
     return out
+
+
+def _pending_image_progress_payload(items: list[dict[str, Any]]) -> dict[str, Any]:
+    pending_count = len(items)
+    return {
+        'pending_image_ids': _infer_job_image_ids(items, limit=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE),
+        'pending_image_count': pending_count,
+        'pending_image_ids_truncated': pending_count > MAX_PENDING_IMAGE_IDS_IN_JOB_STATE,
+    }
 
 
 def _merge_infer_resume_payload(job_type: str, base_payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -1649,6 +1677,8 @@ def _spawn_infer_job(
                     progress_total=int(result.get('requested') or 0),
                     progress_pct=100.0,
                     pending_image_ids=[],
+                    pending_image_count=0,
+                    pending_image_ids_truncated=False,
                 )
             except InferJobPaused as exc:
                 _update_infer_job_state(
@@ -1691,14 +1721,26 @@ def _resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
 
     job_type = str(paused.get('job_type') or '').strip().lower()
     pending_image_ids = [str(x).strip() for x in paused.get('pending_image_ids', []) if str(x).strip()]
-    if not pending_image_ids:
+    pending_count = max(0, int(paused.get('pending_image_count') or len(pending_image_ids)))
+    pending_truncated = bool(paused.get('pending_image_ids_truncated'))
+    if pending_count <= 0:
         raise HTTPException(status_code=409, detail='paused infer job has no remaining images to continue')
 
     overrides = payload.model_dump(exclude_unset=True, exclude_none=True)
     merged = _merge_infer_resume_payload(job_type, paused.get('payload_dict') or {}, overrides)
 
     if job_type == 'text_batch':
-        merged['image_ids'] = pending_image_ids
+        scope = str(merged.get('scope_mode') or 'all').strip().lower()
+        if pending_truncated:
+            if scope not in {'unlabeled', 'class_related', 'class_related_unlabeled'}:
+                raise HTTPException(
+                    status_code=409,
+                    detail='paused job has too many remaining images to resume exactly; start a new "unlabeled only" job instead',
+                )
+            merged['image_ids'] = []
+            merged['retry_image_ids'] = []
+        else:
+            merged['image_ids'] = pending_image_ids
         merged['all_images'] = False
         job = _spawn_infer_job(
             project_id=payload.project_id,
@@ -3883,7 +3925,7 @@ def _select_text_batch_target_images(
     *,
     impacted_classes: list[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
+    project_id = str(project.get('id') or payload.project_id or '').strip()
     scope_mode = str(payload.scope_mode or 'all').strip().lower()
     retry_image_ids = [str(x).strip() for x in payload.retry_image_ids if str(x).strip()]
     explicit_ids = [str(x).strip() for x in payload.image_ids if str(x).strip()]
@@ -3893,43 +3935,23 @@ def _select_text_batch_target_images(
 
     reason = 'all_images'
     if retry_image_ids:
-        wanted = set(retry_image_ids)
-        target_images = [img for img in images if str(img.get('id') or '') in wanted]
+        target_images = storage.get_project_images_for_infer_scope(project_id, image_ids=retry_image_ids)
         reason = 'retry_image_ids'
     elif explicit_ids and not payload.all_images:
-        wanted = set(explicit_ids)
-        target_images = [img for img in images if str(img.get('id') or '') in wanted]
+        target_images = storage.get_project_images_for_infer_scope(project_id, image_ids=explicit_ids)
         reason = 'explicit_image_ids'
     elif payload.all_images or scope_mode == 'all':
-        target_images = list(images)
+        target_images = storage.get_project_images_for_infer_scope(project_id, scope_mode='all')
         reason = 'all_images'
     elif scope_mode == 'unlabeled':
-        project_id = str(project.get('id') or '')
-        target_images = []
-        for img in images:
-            image_id = str(img.get('id') or '')
-            status = str(img.get('status') or 'unlabeled').strip().lower()
-            if status != 'labeled':
-                target_images.append(img)
-                continue
-            if project_id and image_id:
-                annotations = storage.load_annotations(project_id, image_id)
-                if not annotations:
-                    target_images.append({**img, 'status': 'unlabeled'})
+        target_images = storage.get_project_images_for_infer_scope(project_id, scope_mode='unlabeled')
         reason = 'unlabeled_only'
     else:
-        target_images = []
-        wanted_norm = {norm_text(x) for x in related_classes if norm_text(x)}
-        for image in images:
-            image_id = str(image.get('id') or '')
-            if not image_id:
-                continue
-            annotations = storage.load_annotations(str(project.get('id') or ''), image_id)
-            has_related = _annotation_has_any_class(annotations, related_classes)
-            if scope_mode == 'class_related' and has_related:
-                target_images.append(image)
-            elif scope_mode == 'class_related_unlabeled' and not has_related:
-                target_images.append(image)
+        target_images = storage.get_project_images_for_infer_scope(
+            project_id,
+            scope_mode=scope_mode,
+            related_classes=related_classes,
+        )
         reason = scope_mode
 
     return target_images, {
@@ -3937,6 +3959,7 @@ def _select_text_batch_target_images(
         'reason': reason,
         'related_classes': related_classes,
         'requested_selector_count': len(retry_image_ids or explicit_ids),
+        'selector_backend': 'sqlite',
     }
 
 
@@ -3947,7 +3970,7 @@ def _run_infer_batch(
     should_stop: Optional[Callable[[], bool]] = None,
     resume_state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id)
+    project = _get_project_or_404(payload.project_id, include_images=False)
     if project.get('project_type') != 'image':
         raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
 
@@ -3995,7 +4018,7 @@ def _run_infer_batch(
             class_additions=class_additions,
             image_results=image_results,
             selection=selection_meta,
-            pending_image_ids=_infer_job_image_ids(pending_images),
+            **_pending_image_progress_payload(pending_images),
             **extra,
         )
 
@@ -4218,7 +4241,7 @@ def _run_infer_batch_example(
             succeeded=succeeded,
             failed=failed,
             new_annotations=total_new,
-            pending_image_ids=_infer_job_image_ids(pending_images),
+            **_pending_image_progress_payload(pending_images),
         )
 
     for batch_images in _chunked(target_images, batch_size):
@@ -4236,7 +4259,7 @@ def _run_infer_batch_example(
                     succeeded=succeeded,
                     failed=failed,
                     new_annotations=total_new,
-                    pending_image_ids=_infer_job_image_ids(pending_images),
+                    **_pending_image_progress_payload(pending_images),
                 )
             raise InferJobPaused('已停止，可调整参数后继续')
         try:
@@ -4277,7 +4300,7 @@ def _run_infer_batch_example(
                         new_annotations=total_new,
                         current_image_id=str(image.get('id') or ''),
                         current_image_rel_path=rel_path,
-                        pending_image_ids=_infer_job_image_ids(pending_images),
+                        **_pending_image_progress_payload(pending_images),
                     )
             continue
 
@@ -4296,7 +4319,7 @@ def _run_infer_batch_example(
                         succeeded=succeeded,
                         failed=failed,
                         new_annotations=total_new,
-                        pending_image_ids=_infer_job_image_ids(pending_images),
+                        **_pending_image_progress_payload(pending_images),
                     )
                 raise InferJobPaused('已停止，可调整参数后继续')
             processed += 1
@@ -4343,7 +4366,7 @@ def _run_infer_batch_example(
                     new_annotations=total_new,
                     current_image_id=image_id,
                     current_image_rel_path=rel_path,
-                    pending_image_ids=_infer_job_image_ids(pending_images),
+                    **_pending_image_progress_payload(pending_images),
                 )
 
     summary = (

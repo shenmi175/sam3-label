@@ -77,6 +77,8 @@ class Storage:
                     ON project_images(project_id, rel_path);
                     CREATE INDEX IF NOT EXISTS idx_project_images_sort
                     ON project_images(project_id, sort_index);
+                    CREATE INDEX IF NOT EXISTS idx_project_images_status_sort
+                    ON project_images(project_id, status, sort_index);
                     CREATE TABLE IF NOT EXISTS annotation_ids (
                         project_id TEXT NOT NULL,
                         image_id TEXT NOT NULL,
@@ -86,6 +88,16 @@ class Storage:
                     );
                     CREATE INDEX IF NOT EXISTS idx_annotation_ids_image
                     ON annotation_ids(project_id, image_id);
+                    CREATE TABLE IF NOT EXISTS image_annotations (
+                        project_id TEXT NOT NULL,
+                        image_id TEXT NOT NULL,
+                        annotations_json TEXT NOT NULL DEFAULT '[]',
+                        annotation_count INTEGER NOT NULL DEFAULT 0,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (project_id, image_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_image_annotations_project
+                    ON image_annotations(project_id, annotation_count);
                     CREATE TABLE IF NOT EXISTS image_annotation_stats (
                         project_id TEXT NOT NULL,
                         image_id TEXT NOT NULL,
@@ -426,6 +438,10 @@ class Storage:
                     (str(project_id), str(image_id)),
                 )
                 conn.execute(
+                    'DELETE FROM image_annotations WHERE project_id = ? AND image_id = ?',
+                    (str(project_id), str(image_id)),
+                )
+                conn.execute(
                     'DELETE FROM image_annotation_stats WHERE project_id = ? AND image_id = ?',
                     (str(project_id), str(image_id)),
                 )
@@ -443,6 +459,7 @@ class Storage:
             try:
                 conn.execute('DELETE FROM project_images WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM annotation_ids WHERE project_id = ?', (str(project_id),))
+                conn.execute('DELETE FROM image_annotations WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_annotation_stats WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM smart_filter_snapshots WHERE project_id = ?', (str(project_id),))
@@ -673,26 +690,148 @@ class Storage:
                 conn.close()
         return {str(row['annotation_id']) for row in rows if str(row['annotation_id'] or '').strip()}
 
-    def _replace_annotation_ids_db(self, project_id: str, image_id: str, annotation_ids: list[str]) -> None:
-        rows = [str(x).strip() for x in annotation_ids if str(x).strip()]
+    def _registered_annotation_id_conflicts_db(
+        self,
+        project_id: str,
+        annotation_ids: list[str],
+        *,
+        exclude_image_id: str = '',
+    ) -> set[str]:
+        ids = [str(item).strip() for item in annotation_ids if str(item).strip()]
+        if not ids:
+            return set()
+
+        out: set[str] = set()
         with self._db_lock:
             conn = self._db_connect()
             try:
-                conn.execute(
-                    'DELETE FROM annotation_ids WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.executemany(
-                    '''
-                    INSERT OR REPLACE INTO annotation_ids (
-                        project_id, image_id, annotation_id, created_at
-                    ) VALUES (?, ?, ?, ?)
-                    ''',
-                    [(str(project_id), str(image_id), item, now_ts()) for item in rows],
-                )
-                conn.commit()
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    placeholders = ','.join('?' for _ in chunk)
+                    if exclude_image_id:
+                        rows = conn.execute(
+                            f'''
+                            SELECT annotation_id
+                            FROM annotation_ids
+                            WHERE project_id = ?
+                              AND image_id != ?
+                              AND annotation_id IN ({placeholders})
+                            ''',
+                            [str(project_id), str(exclude_image_id), *chunk],
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            f'''
+                            SELECT annotation_id
+                            FROM annotation_ids
+                            WHERE project_id = ?
+                              AND annotation_id IN ({placeholders})
+                            ''',
+                            [str(project_id), *chunk],
+                        ).fetchall()
+                    for row in rows:
+                        value = str(row['annotation_id'] or '').strip()
+                        if value:
+                            out.add(value)
             finally:
                 conn.close()
+        return out
+
+    def _replace_annotation_ids_db(
+        self,
+        project_id: str,
+        image_id: str,
+        annotation_ids: list[str],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        rows = [str(x).strip() for x in annotation_ids if str(x).strip()]
+        ts = now_ts()
+
+        def write(target: sqlite3.Connection) -> None:
+            target.execute(
+                'DELETE FROM annotation_ids WHERE project_id = ? AND image_id = ?',
+                (str(project_id), str(image_id)),
+            )
+            target.executemany(
+                '''
+                INSERT OR REPLACE INTO annotation_ids (
+                    project_id, image_id, annotation_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                ''',
+                [(str(project_id), str(image_id), item, ts) for item in rows],
+            )
+
+        if conn is not None:
+            write(conn)
+            return
+
+        with self._db_lock:
+            owned = self._db_connect()
+            try:
+                write(owned)
+                owned.commit()
+            finally:
+                owned.close()
+
+    def _load_annotations_db(self, project_id: str, image_id: str) -> list[dict[str, Any]] | None:
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                row = conn.execute(
+                    '''
+                    SELECT annotations_json
+                    FROM image_annotations
+                    WHERE project_id = ? AND image_id = ?
+                    ''',
+                    (str(project_id), str(image_id)),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        data = self._json_loads_db(row['annotations_json'], [])
+        return data if isinstance(data, list) else []
+
+    def _replace_annotations_db(
+        self,
+        project_id: str,
+        image_id: str,
+        annotations: list[dict[str, Any]],
+        *,
+        conn: sqlite3.Connection | None = None,
+        updated_at: str | None = None,
+    ) -> None:
+        rows = annotations if isinstance(annotations, list) else []
+        ts = str(updated_at or now_ts())
+
+        def write(target: sqlite3.Connection) -> None:
+            target.execute(
+                '''
+                INSERT OR REPLACE INTO image_annotations (
+                    project_id, image_id, annotations_json, annotation_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ''',
+                (
+                    str(project_id),
+                    str(image_id),
+                    self._json_dumps_db(rows),
+                    len(rows),
+                    ts,
+                ),
+            )
+
+        if conn is not None:
+            write(conn)
+            return
+
+        with self._db_lock:
+            owned = self._db_connect()
+            try:
+                write(owned)
+                owned.commit()
+            finally:
+                owned.close()
 
     @staticmethod
     def _looks_like_model_detection_id(raw: str) -> bool:
@@ -705,7 +844,18 @@ class Storage:
         image_id: str,
         annotations: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        project_used = self._registered_annotation_ids_db(project_id, exclude_image_id=image_id)
+        candidate_ids: list[str] = []
+        for raw in annotations if isinstance(annotations, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            original_id = str(raw.get('id') or '').strip()
+            if original_id and not self._looks_like_model_detection_id(original_id):
+                candidate_ids.append(original_id)
+        project_used = self._registered_annotation_id_conflicts_db(
+            project_id,
+            candidate_ids,
+            exclude_image_id=image_id,
+        )
         local_used: set[str] = set()
         normalized: list[dict[str, Any]] = []
 
@@ -733,6 +883,39 @@ class Storage:
             local_used.add(next_id)
             normalized.append(item)
 
+        return normalized
+
+    def _normalize_annotation_ids_with_used_set(
+        self,
+        annotations: list[dict[str, Any]],
+        project_used: set[str],
+    ) -> list[dict[str, Any]]:
+        local_used: set[str] = set()
+        normalized: list[dict[str, Any]] = []
+        for raw in annotations if isinstance(annotations, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            original_id = str(item.get('id') or '').strip()
+            needs_generated_id = (
+                not original_id
+                or original_id in local_used
+                or original_id in project_used
+                or self._looks_like_model_detection_id(original_id)
+            )
+            if self._looks_like_model_detection_id(original_id) and not item.get('model_det_id'):
+                item['model_det_id'] = original_id
+
+            next_id = original_id
+            if needs_generated_id:
+                next_id = new_id('ann_')
+            while (not next_id) or next_id in local_used or next_id in project_used:
+                next_id = new_id('ann_')
+
+            item['id'] = next_id
+            local_used.add(next_id)
+            project_used.add(next_id)
+            normalized.append(item)
         return normalized
 
     @staticmethod
@@ -873,6 +1056,118 @@ class Storage:
                     LIMIT ? OFFSET ?
                     ''',
                     params,
+                ).fetchall()
+            finally:
+                conn.close()
+        return [self._db_row_to_image(row) for row in rows]
+
+    def _load_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> list[dict[str, Any]]:
+        ids = [str(item).strip() for item in image_ids if str(item).strip()]
+        if not ids:
+            return []
+
+        rows: list[sqlite3.Row] = []
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    placeholders = ','.join('?' for _ in chunk)
+                    rows.extend(
+                        conn.execute(
+                            f'''
+                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
+                            FROM project_images
+                            WHERE project_id = ? AND image_id IN ({placeholders})
+                            ORDER BY sort_index ASC
+                            ''',
+                            [str(project_id), *chunk],
+                        ).fetchall()
+                    )
+            finally:
+                conn.close()
+
+        rows.sort(key=lambda row: int(row['sort_index']))
+        return [self._db_row_to_image(row) for row in rows]
+
+    def _load_project_images_filtered_list_db(
+        self,
+        project_id: str,
+        *,
+        status: str = '',
+    ) -> list[dict[str, Any]]:
+        join_sql, params, where_sql = self._project_images_filter_query(project_id, status=status)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                rows = conn.execute(
+                    f'''
+                    SELECT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index
+                    FROM project_images pi
+                    {join_sql}
+                    WHERE {where_sql}
+                    ORDER BY pi.sort_index ASC
+                    ''',
+                    params,
+                ).fetchall()
+            finally:
+                conn.close()
+        return [self._db_row_to_image(row) for row in rows]
+
+    def _load_project_images_with_any_classes_db(
+        self,
+        project_id: str,
+        class_names: list[str],
+    ) -> list[dict[str, Any]]:
+        class_norms = sorted({norm_text(item) for item in class_names if norm_text(item)})
+        if not class_norms:
+            return []
+        placeholders = ','.join('?' for _ in class_norms)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                rows = conn.execute(
+                    f'''
+                    SELECT DISTINCT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index, pi.sort_index
+                    FROM project_images pi
+                    INNER JOIN image_class_index ci
+                    ON ci.project_id = pi.project_id AND ci.image_id = pi.image_id
+                    WHERE pi.project_id = ? AND ci.class_name_norm IN ({placeholders})
+                    ORDER BY pi.sort_index ASC
+                    ''',
+                    [str(project_id), *class_norms],
+                ).fetchall()
+            finally:
+                conn.close()
+        return [self._db_row_to_image(row) for row in rows]
+
+    def _load_project_images_without_any_classes_db(
+        self,
+        project_id: str,
+        class_names: list[str],
+    ) -> list[dict[str, Any]]:
+        class_norms = sorted({norm_text(item) for item in class_names if norm_text(item)})
+        if not class_norms:
+            return []
+        placeholders = ','.join('?' for _ in class_norms)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                rows = conn.execute(
+                    f'''
+                    SELECT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index
+                    FROM project_images pi
+                    WHERE pi.project_id = ?
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM image_class_index ci
+                        WHERE ci.project_id = pi.project_id
+                          AND ci.image_id = pi.image_id
+                          AND ci.class_name_norm IN ({placeholders})
+                      )
+                    ORDER BY pi.sort_index ASC
+                    ''',
+                    [str(project_id), *class_norms],
                 ).fetchall()
             finally:
                 conn.close()
@@ -1361,6 +1656,31 @@ class Storage:
         )
         return items, total, safe_offset, safe_limit, image_index
 
+    def get_project_images_for_infer_scope(
+        self,
+        project_id: str,
+        *,
+        scope_mode: str = 'all',
+        image_ids: list[str] | None = None,
+        related_classes: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+
+        ids = [str(item).strip() for item in (image_ids or []) if str(item).strip()]
+        if ids:
+            return self._load_project_images_by_ids_db(project_id, ids)
+
+        scope = str(scope_mode or 'all').strip().lower()
+        if scope == 'unlabeled':
+            return self._load_project_images_filtered_list_db(project_id, status='unlabeled')
+        if scope == 'class_related':
+            return self._load_project_images_with_any_classes_db(project_id, related_classes or [])
+        if scope == 'class_related_unlabeled':
+            return self._load_project_images_without_any_classes_db(project_id, related_classes or [])
+        return self._load_project_images_filtered_list_db(project_id)
+
     def find_unlabeled_image(
         self,
         project_id: str,
@@ -1390,11 +1710,22 @@ class Storage:
         with self._db_lock:
             conn = self._db_connect()
             try:
+                conn.execute('DELETE FROM image_annotations WHERE project_id = ?', (str(project_id),))
+                conn.execute('DELETE FROM annotation_ids WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_annotation_stats WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
+                used_annotation_ids: set[str] = set()
                 for image_id in image_ids:
                     data = read_json(self._annotation_path(project, image_id), [])
-                    annotations = data if isinstance(data, list) else []
+                    raw_annotations = data if isinstance(data, list) else []
+                    annotations = self._normalize_annotation_ids_with_used_set(raw_annotations, used_annotation_ids)
+                    self._replace_annotations_db(project_id, image_id, annotations, conn=conn, updated_at=ts)
+                    self._replace_annotation_ids_db(
+                        project_id,
+                        image_id,
+                        [str(item.get('id') or '').strip() for item in annotations if isinstance(item, dict)],
+                        conn=conn,
+                    )
                     self._replace_annotation_index_db(project_id, image_id, annotations, conn=conn, updated_at=ts)
                     status = 'labeled' if annotations else 'unlabeled'
                     conn.execute(
@@ -1424,6 +1755,7 @@ class Storage:
         return {
             'project_id': project_id,
             'indexed_images': indexed_images,
+            'annotation_store_images': indexed_images,
             'labeled_images': labeled_images,
             'unlabeled_images': max(0, len(image_ids) - labeled_images),
             'annotation_count': annotation_count,
@@ -1449,6 +1781,14 @@ class Storage:
                         COALESCE(SUM(total_area), 0) AS total_area,
                         COALESCE(AVG(CASE WHEN annotation_count > 0 THEN avg_confidence END), 0) AS avg_confidence
                     FROM image_annotation_stats
+                    WHERE project_id = ?
+                    ''',
+                    (str(project_id),),
+                ).fetchone()
+                store_totals = conn.execute(
+                    '''
+                    SELECT COUNT(*) AS annotation_store_images
+                    FROM image_annotations
                     WHERE project_id = ?
                     ''',
                     (str(project_id),),
@@ -1491,6 +1831,7 @@ class Storage:
                 conn.close()
 
         indexed_images = int(totals['indexed_images'] if totals is not None else 0)
+        annotation_store_images = int(store_totals['annotation_store_images'] if store_totals is not None else 0)
         annotation_count = int(totals['annotation_count'] if totals is not None else 0)
         density_order = ['0', '1', '2', '3-5', '6-10', '>10']
         density_map = {str(row['bucket']): int(row['image_count']) for row in density_rows}
@@ -1500,10 +1841,11 @@ class Storage:
             'labeled_images': labeled_images,
             'unlabeled_images': unlabeled_images,
             'indexed_images': indexed_images,
+            'annotation_store_images': annotation_store_images,
             'annotation_count': annotation_count,
             'avg_confidence': float(totals['avg_confidence'] if totals is not None else 0.0),
             'total_area': float(totals['total_area'] if totals is not None else 0.0),
-            'needs_rebuild': indexed_images < total_images,
+            'needs_rebuild': indexed_images < total_images or annotation_store_images < total_images,
             'classes': [
                 {
                     'class_name': str(row['class_name'] or row['class_name_norm']),
@@ -1935,19 +2277,13 @@ class Storage:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
             raise ValueError('project not found')
+        annotations_db = self._load_annotations_db(project_id, image_id)
+        if annotations_db is not None:
+            return annotations_db
         path = self._annotation_path(project, image_id)
         data = read_json(path, [])
         annotations = data if isinstance(data, list) else []
-        normalized = self._normalize_annotation_ids(project_id, image_id, annotations)
-        if normalized != annotations:
-            self.save_annotations(project_id, image_id, normalized)
-        else:
-            self._replace_annotation_ids_db(
-                project_id,
-                image_id,
-                [str(item.get('id') or '').strip() for item in normalized if isinstance(item, dict)],
-            )
-        return normalized
+        return self._normalize_annotation_ids(project_id, image_id, annotations)
 
     def save_annotations(self, project_id: str, image_id: str, annotations: list[dict[str, Any]]) -> None:
         image = self._get_project_image_db(project_id, image_id)
@@ -1978,6 +2314,7 @@ class Storage:
             raise ValueError('project not found')
         path = self._annotation_path(project, image_id)
         atomic_write_json(path, annotations)
+        self._replace_annotations_db(project_id, image_id, annotations)
         self._replace_annotation_ids_db(
             project_id,
             image_id,

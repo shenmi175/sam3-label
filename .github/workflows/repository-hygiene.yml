@@ -1,0 +1,34 @@
+name: Repository Hygiene
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  no-runtime-data:
+    name: Reject runtime data and local secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tracked files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          forbidden=()
+          while IFS= read -r path; do
+            case "$path" in
+              .env.example)
+                ;;
+              web-auto/data/*|sam3-api/data/*|data/*|datasets/*|outputs/*|*.db|*.db-shm|*.db-wal|*.sqlite|*.sqlite-shm|*.sqlite-wal|*.sqlite3|*.sqlite3-shm|*.sqlite3-wal|.env|.env.*)
+                forbidden+=("$path")
+                ;;
+            esac
+          done < <(git ls-files)
+
+          if ((${#forbidden[@]})); then
+            printf 'Forbidden tracked runtime data or secret-like files:\n'
+            printf ' - %s\n' "${forbidden[@]}"
+            exit 1
+          fi
