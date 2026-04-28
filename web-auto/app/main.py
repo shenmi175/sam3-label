@@ -30,6 +30,18 @@ from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ensure_dir(BASE_DIR / 'data')
 DEFAULT_API_BASE_URL = 'http://172.16.1.65:8001'
+DEFAULT_SAM3_MAX_BATCH_FILES = 32
+
+
+def _parse_positive_int_env(key: str, default: int) -> int:
+    try:
+        value = int(os.getenv(key, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+
+SAM3_MAX_BATCH_FILES = _parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
 
 
 logger = logging.getLogger('web_auto')
@@ -398,7 +410,6 @@ def _replace_by_classes(
     new_annotations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     impacted_norm: set[str] = set()
-    impacted_alias_norm: set[str] = set()
     for c in impacted_classes:
         raw = str(c).strip()
         if not raw:
@@ -406,13 +417,8 @@ def _replace_by_classes(
         n = norm_text(raw)
         if n:
             impacted_norm.add(n)
-        # For renamed multi-word classes (e.g. "human face"), also clear
-        # stale single-word legacy labels (e.g. "face") on overwrite.
-        parts = [norm_text(p) for p in re.split(r'[\s_\-]+', raw) if norm_text(p)]
-        if len(parts) >= 2:
-            impacted_alias_norm.add(parts[-1])
 
-    if not impacted_norm and not impacted_alias_norm:
+    if not impacted_norm:
         return new_annotations
 
     kept: list[dict[str, Any]] = []
@@ -423,8 +429,6 @@ def _replace_by_classes(
             kept.append(a)
             continue
         if cls_norm in impacted_norm:
-            continue
-        if cls_norm in impacted_alias_norm:
             continue
         kept.append(a)
 
@@ -565,6 +569,17 @@ def _assign_unique_annotation_ids(
 def _chunked(items: list[Any], size: int) -> list[list[Any]]:
     chunk_size = max(1, int(size))
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def _requested_batch_size(raw: Any) -> int:
+    try:
+        return max(1, int(raw or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _effective_sam3_batch_size(raw: Any) -> int:
+    return min(_requested_batch_size(raw), SAM3_MAX_BATCH_FILES)
 
 
 def _infer_job_state_default(*, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
@@ -1274,6 +1289,7 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
 def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
     payload = SmartFilterIn(**payload_dict)
     config = _normalize_smart_filter_payload(payload)
+    job_id = str(payload_dict.get('_job_id') or '').strip()
     preview_token = str(config.get('preview_token') or '').strip()
     if not preview_token:
         raise RuntimeError('preview_token is required; please run preview first')
@@ -1304,6 +1320,14 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
     removed_annotations = 0
     relabeled_annotations = 0
     items: list[dict[str, Any]] = []
+    rollback_run_id = ''
+    if total > 0:
+        rollback_run_id = storage.begin_smart_filter_run(
+            project_id=config['project_id'],
+            job_id=job_id,
+            operation_mode=operation_mode,
+            rule=dict(preview_entry.get('config') or {}),
+        )
 
     if progress_cb:
         progress_cb(
@@ -1316,6 +1340,14 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
         image_id = str(item.get('image_id') or '')
         rel_path = str(item.get('rel_path') or image_id)
         kept_annotations = item.get('kept_annotations', [])
+        original_annotations = storage.load_annotations(config['project_id'], image_id)
+        if rollback_run_id:
+            storage.add_smart_filter_snapshot(
+                run_id=rollback_run_id,
+                project_id=config['project_id'],
+                image_id=image_id,
+                annotations=original_annotations,
+            )
         storage.save_annotations(config['project_id'], image_id, kept_annotations if isinstance(kept_annotations, list) else [])
         remove_count = int(item.get('removed_count') or 0)
         relabel_count = int(item.get('relabel_count') or 0)
@@ -1345,9 +1377,10 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
             SMART_FILTER_PREVIEW_CACHE.pop(config['project_id'], None)
 
     items.sort(key=lambda x: (int(x.get('removed_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
-    return {
+    result = {
         'project_id': config['project_id'],
         'operation_mode': operation_mode,
+        'rollback_run_id': rollback_run_id,
         'changed_images': changed_images,
         'removed_annotations': removed_annotations,
         'relabeled_annotations': relabeled_annotations,
@@ -1368,6 +1401,9 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
             else f'规则过滤已应用：修改 {changed_images} 张图片，删除 {removed_annotations} 个命中标注'
         ),
     }
+    if rollback_run_id:
+        storage.finish_smart_filter_run(run_id=rollback_run_id, summary=result)
+    return result
 
 def _spawn_smart_filter_job(
     *,
@@ -1383,8 +1419,10 @@ def _spawn_smart_filter_job(
             raise HTTPException(status_code=409, detail='another smart filter job is already running for this project')
 
         job_id = new_id('sfjob_')
+        worker_payload = dict(payload_dict)
+        worker_payload['_job_id'] = job_id
         state = _smart_filter_job_state_default(job_id=job_id, project_id=project_id, job_type=job_type)
-        state['payload_dict'] = dict(payload_dict)
+        state['payload_dict'] = dict(worker_payload)
         state['params'] = {
             'mode_label': '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并',
             'scope_label': '全部图片',
@@ -1401,7 +1439,7 @@ def _spawn_smart_filter_job(
                 message='job started',
             )
             try:
-                result = worker(payload_dict, lambda **kw: _update_smart_filter_job_state(job_id, **kw))
+                result = worker(worker_payload, lambda **kw: _update_smart_filter_job_state(job_id, **kw))
                 total = int(state.get('progress_total') or result.get('image_count') or result.get('changed_images') or 0)
                 done = int(state.get('progress_done') or total)
                 _update_smart_filter_job_state(
@@ -3785,6 +3823,7 @@ def _infer_single(
                 boxes=infer_boxes,
             )
         storage.save_annotations(str(project.get('id')), str(image.get('id')), merged)
+        merged = storage.load_annotations(str(project.get('id')), str(image.get('id')))
     else:
         merged = storage.load_annotations(str(project.get('id')), str(image.get('id')))
 
@@ -3922,7 +3961,8 @@ def _run_infer_batch(
     if not target_images:
         raise HTTPException(status_code=400, detail='no target images')
 
-    batch_size = max(1, int(payload.batch_size or 1))
+    requested_batch_size = _requested_batch_size(payload.batch_size)
+    batch_size = _effective_sam3_batch_size(payload.batch_size)
     prior = resume_state if isinstance(resume_state, dict) else {}
     succeeded = max(0, int(prior.get('succeeded') or 0))
     failed = max(0, int(prior.get('failed') or 0))
@@ -3944,6 +3984,8 @@ def _run_infer_batch(
         progress_cb(
             requested=total,
             batch_size=batch_size,
+            requested_batch_size=requested_batch_size,
+            max_remote_batch_size=SAM3_MAX_BATCH_FILES,
             succeeded=succeeded,
             failed=failed,
             skipped=skipped,
@@ -4101,7 +4143,9 @@ def _run_infer_batch(
         'saved_images': succeeded,
         'failed_images': failed,
         'skipped_images': skipped,
+        'requested_batch_size': requested_batch_size,
         'batch_size': batch_size,
+        'max_remote_batch_size': SAM3_MAX_BATCH_FILES,
         'succeeded': succeeded,
         'failed': failed,
         'skipped': skipped,
@@ -4151,7 +4195,8 @@ def _run_infer_batch_example(
     if (not payload.image_ids) and source_id and not any(str(img.get('id') or '') == source_id for img in target_images):
         target_images = [source_image] + target_images
 
-    batch_size = max(1, int(payload.batch_size or 1))
+    requested_batch_size = _requested_batch_size(payload.batch_size)
+    batch_size = _effective_sam3_batch_size(payload.batch_size)
     prior = resume_state if isinstance(resume_state, dict) else {}
     succeeded = max(0, int(prior.get('succeeded') or 0))
     failed = max(0, int(prior.get('failed') or 0))
@@ -4168,6 +4213,8 @@ def _run_infer_batch_example(
             progress_total=total,
             requested=total,
             batch_size=batch_size,
+            requested_batch_size=requested_batch_size,
+            max_remote_batch_size=SAM3_MAX_BATCH_FILES,
             succeeded=succeeded,
             failed=failed,
             new_annotations=total_new,
@@ -4184,6 +4231,8 @@ def _run_infer_batch_example(
                     progress_total=total,
                     requested=total,
                     batch_size=batch_size,
+                    requested_batch_size=requested_batch_size,
+                    max_remote_batch_size=SAM3_MAX_BATCH_FILES,
                     succeeded=succeeded,
                     failed=failed,
                     new_annotations=total_new,
@@ -4221,6 +4270,8 @@ def _run_infer_batch_example(
                         progress_total=total,
                         requested=total,
                         batch_size=batch_size,
+                        requested_batch_size=requested_batch_size,
+                        max_remote_batch_size=SAM3_MAX_BATCH_FILES,
                         succeeded=succeeded,
                         failed=failed,
                         new_annotations=total_new,
@@ -4240,6 +4291,8 @@ def _run_infer_batch_example(
                         progress_total=total,
                         requested=total,
                         batch_size=batch_size,
+                        requested_batch_size=requested_batch_size,
+                        max_remote_batch_size=SAM3_MAX_BATCH_FILES,
                         succeeded=succeeded,
                         failed=failed,
                         new_annotations=total_new,
@@ -4283,6 +4336,8 @@ def _run_infer_batch_example(
                     progress_total=total,
                     requested=total,
                     batch_size=batch_size,
+                    requested_batch_size=requested_batch_size,
+                    max_remote_batch_size=SAM3_MAX_BATCH_FILES,
                     succeeded=succeeded,
                     failed=failed,
                     new_annotations=total_new,
@@ -4301,7 +4356,9 @@ def _run_infer_batch_example(
         'source_image_id': payload.source_image_id,
         'active_class': active_class,
         'requested': total,
+        'requested_batch_size': requested_batch_size,
         'batch_size': batch_size,
+        'max_remote_batch_size': SAM3_MAX_BATCH_FILES,
         'succeeded': succeeded,
         'failed': failed,
         'new_annotations': total_new,
@@ -4457,6 +4514,8 @@ def list_project_images(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=1000),
     image_id: str = Query(default=''),
+    status: str = Query(default=''),
+    class_name: str = Query(default=''),
 ) -> dict[str, Any]:
     try:
         items, total, safe_offset, safe_limit, image_index = storage.get_project_images_page(
@@ -4464,6 +4523,8 @@ def list_project_images(
             offset=offset,
             limit=limit,
             image_id=image_id,
+            status=status,
+            class_name=class_name,
         )
         return {
             'items': items,
@@ -4471,7 +4532,29 @@ def list_project_images(
             'offset': safe_offset,
             'limit': safe_limit,
             'image_index': image_index,
+            'status': status,
+            'class_name': class_name,
         }
+    except ValueError as exc:
+        msg = str(exc)
+        code = 404 if msg == 'project not found' else 400
+        raise HTTPException(status_code=code, detail=msg) from exc
+
+
+@app.get('/api/projects/{project_id}/annotation_dashboard')
+def get_annotation_dashboard(project_id: str) -> dict[str, Any]:
+    try:
+        return {'stats': storage.get_annotation_dashboard(project_id)}
+    except ValueError as exc:
+        msg = str(exc)
+        code = 404 if msg == 'project not found' else 400
+        raise HTTPException(status_code=code, detail=msg) from exc
+
+
+@app.post('/api/projects/{project_id}/annotation_index/rebuild')
+def rebuild_annotation_index(project_id: str) -> dict[str, Any]:
+    try:
+        return {'ok': True, 'result': storage.rebuild_annotation_index(project_id)}
     except ValueError as exc:
         msg = str(exc)
         code = 404 if msg == 'project not found' else 400
@@ -4720,7 +4803,8 @@ def save_annotations(payload: SaveAnnIn) -> dict[str, Any]:
     project = _get_project_or_404(payload.project_id, include_images=False)
     _get_image_or_404(project, payload.image_id)
     storage.save_annotations(payload.project_id, payload.image_id, payload.annotations)
-    return {'ok': True}
+    saved = storage.load_annotations(payload.project_id, payload.image_id)
+    return {'ok': True, 'saved_annotations': saved}
 
 
 @app.post('/api/annotations/append')
@@ -4734,7 +4818,8 @@ def append_annotations(payload: AppendAnnIn) -> dict[str, Any]:
     incoming = _assign_unique_annotation_ids(existing=old, incoming=incoming)
     merged = list(old) + incoming
     storage.save_annotations(payload.project_id, payload.image_id, merged)
-    return {'ok': True, 'saved_annotations': merged, 'added': len(incoming)}
+    saved = storage.load_annotations(payload.project_id, payload.image_id)
+    return {'ok': True, 'saved_annotations': saved, 'added': len(incoming)}
 
 
 @app.post('/api/infer')
@@ -5097,6 +5182,22 @@ def get_active_smart_filter_job(project_id: str = Query(..., min_length=1)) -> d
 @app.get('/api/filter/intelligent/jobs/{job_id}')
 def get_smart_filter_job(job_id: str) -> dict[str, Any]:
     return {'job': _get_smart_filter_job_state_or_404(job_id)}
+
+
+@app.get('/api/filter/intelligent/runs/latest')
+def get_latest_smart_filter_run(project_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _get_project_or_404(project_id, enrich=False, include_images=False)
+    return {'run': storage.get_latest_smart_filter_run(project_id=project_id)}
+
+
+@app.post('/api/filter/intelligent/runs/{run_id}/rollback')
+def rollback_smart_filter_run(run_id: str, project_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _get_project_or_404(project_id, enrich=False, include_images=False)
+    try:
+        result = storage.rollback_smart_filter_run(project_id=project_id, run_id=run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {'result': result}
 
 
 @app.get('/api/ui_state')

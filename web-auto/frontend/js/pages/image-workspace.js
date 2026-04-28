@@ -1,6 +1,5 @@
 import { api } from '../api.js';
 import { CanvasViewer } from '../components/canvas-viewer.js';
-import { FilterUI } from '../components/filter.js';
 import { i18n } from '../i18n.js';
 import { store } from '../store.js';
 
@@ -22,6 +21,10 @@ export const ImageWorkspace = {
   previewSectionCollapsed: false,
   focusedAnnotationId: null,
   unlabeledNavigationEnabled: false,
+  imageFilterClass: '',
+  imageFilterStatus: 'all',
+  imageLoadSeq: 0,
+  imageListLoadSeq: 0,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
   
@@ -46,6 +49,10 @@ export const ImageWorkspace = {
     this.previewSectionCollapsed = false;
     this.focusedAnnotationId = null;
     this.unlabeledNavigationEnabled = false;
+    this.imageFilterClass = '';
+    this.imageFilterStatus = 'all';
+    this.imageLoadSeq = 0;
+    this.imageListLoadSeq = 0;
     this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
     
@@ -90,10 +97,18 @@ export const ImageWorkspace = {
 
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;">
             <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); white-space: nowrap;">${i18n.t('threshold')}</label>
-            <input type="number" id="inp-threshold" class="neu-input" style="width: 64px; height: 32px; font-size: 11px;" step="0.05" min="0" max="1" value="${store.state.config.threshold}" />
+            <div class="neu-box" style="height: 32px; display: flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 10px; box-shadow: var(--neu-inset);">
+              <button id="btn-threshold-dec" class="neu-button" title="Threshold -0.05" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">-</button>
+              <span id="lbl-threshold-value" style="min-width: 42px; text-align: center; font-size: 12px; font-weight: 800; color: var(--neu-text); font-variant-numeric: tabular-nums;">${Number(store.state.config.threshold).toFixed(2)}</span>
+              <button id="btn-threshold-inc" class="neu-button" title="Threshold +0.05" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">+</button>
+            </div>
             
             <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-left: 5px; white-space: nowrap;">${i18n.t('batch_size')}</label>
-            <input type="number" id="inp-batch-size" class="neu-input" style="width: 64px; height: 32px; font-size: 11px;" min="1" max="200" value="${store.state.config.batchSize}" />
+            <div class="neu-box" style="height: 32px; display: flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 10px; box-shadow: var(--neu-inset);">
+              <button id="btn-batch-dec" class="neu-button" title="Batch size -1" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">-</button>
+              <span id="lbl-batch-size-value" style="min-width: 32px; text-align: center; font-size: 12px; font-weight: 800; color: var(--neu-text); font-variant-numeric: tabular-nums;">${store.state.config.batchSize}</span>
+              <button id="btn-batch-inc" class="neu-button" title="Batch size +1" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">+</button>
+            </div>
           </div>
 
           <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
@@ -102,12 +117,12 @@ export const ImageWorkspace = {
             <button id="btn-infer-current" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('infer_current')}</button>
             <button id="btn-batch-infer" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('batch_infer')}</button>
             <button id="btn-example-segment" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('example_segment')}</button>
-            <button id="btn-example-prop" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('example_propagate')}</button>
           </div>
 
           <div style="flex: 1;"></div>
 
           <div style="display: flex; gap: 8px;">
+            <button id="btn-open-data-dashboard" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('data_dashboard')}</button>
             <button id="btn-open-filter" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('smart_filter')}</button>
             <button id="btn-open-export" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('export')}</button>
           </div>
@@ -162,12 +177,26 @@ export const ImageWorkspace = {
                     <span id="ws-img-count-badge" class="neu-box" style="padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; box-shadow: var(--neu-inset);">0</span>
                   </div>
                </div>
+                 <div style="padding: 0 20px 10px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                   <select id="sel-image-filter-class" class="neu-input" style="height: 32px; font-size: 11px;">
+                     <option value="">${i18n.t('filter_all_classes')}</option>
+                   </select>
+                   <select id="sel-image-filter-status" class="neu-input" style="height: 32px; font-size: 11px;">
+                     <option value="all">${i18n.t('filter_all_status')}</option>
+                     <option value="labeled">${i18n.t('labeled')}</option>
+                     <option value="unlabeled">${i18n.t('unlabeled')}</option>
+                   </select>
+                 </div>
                <div id="image-list-container" style="flex: 1; overflow-y: auto; padding: 10px 15px;">
                   <div style="text-align:center; padding: 40px; color: var(--neu-text-light);">${i18n.t('loading_images')}</div>
                </div>
                <div style="padding: 15px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(0,0,0,0.05);">
                   <button class="neu-button" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;" id="btn-img-prev">‹</button>
-                  <span id="ws-page-info" style="font-size: 12px; font-weight: 600;">1 / 1</span>
+                  <div style="display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; font-weight: 700;">
+                    <input id="inp-page-jump" class="neu-input" type="text" inputmode="numeric" pattern="[0-9]*" value="1" aria-label="跳转页码" style="width: 54px; height: 30px; text-align: center; font-size: 12px; font-weight: 800; padding: 0 6px;" />
+                    <span style="color: var(--neu-text-light);">/</span>
+                    <span id="ws-page-total" style="min-width: 22px; text-align: left;">1</span>
+                  </div>
                   <button class="neu-button" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;" id="btn-img-next">›</button>
                </div>
             </div>
@@ -184,13 +213,12 @@ export const ImageWorkspace = {
 
                 <!-- Hovering Toolbar -->
                  <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); background: var(--canvas-toolbar-bg);">
-                    <button class="neu-button" id="btn-tool-pan" title="Pan / Drag Image" style="width: 40px; height: 40px; border-radius: 50%;">✋</button>
-                    <button class="neu-button" id="btn-tool-point" title="Point Prompt" style="width: 40px; height: 40px; border-radius: 50%;">📍</button>
-                    <button class="neu-button" id="btn-tool-box" title="Box Prompt" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                    <button class="neu-button" id="btn-tool-pointer" title="Move / Select" style="width: 40px; height: 40px; border-radius: 50%;">P</button>
+                    <button class="neu-button" id="btn-tool-box" title="${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                    <button class="neu-button" id="btn-vtool-filter" title="${i18n.t('filter_settings')}" style="width: 40px; height: 40px; border-radius: 50%;">🔍</button>
+                    <button class="neu-button" id="btn-tool-fit" title="Fit to Screen" style="width: 40px; height: 40px; border-radius: 50%;">F</button>
                  </div>
              </div>
 
@@ -198,9 +226,6 @@ export const ImageWorkspace = {
              <div class="neu-box" style="height: 40px; border-radius: 0; display: flex; align-items: center; padding: 0 20px; gap: 20px; background: var(--neu-bg); z-index: 40; font-size: 11px; border-top: 1px solid rgba(0,0,0,0.03);">
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                    <input type="checkbox" id="chk-show-masks" checked /> 显示遮罩
-                </label>
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                   <input type="checkbox" id="chk-auto-infer" /> 提示后自动分割
                 </label>
                 <div style="flex: 1;"></div>
                 <div id="ws-image-status" style="font-weight: 700; color: var(--neu-text-light);">--</div>
@@ -258,6 +283,7 @@ export const ImageWorkspace = {
 
       <!-- Modals -->
       <div id="modal-filter-full" class="modal-overlay" style="display: none;"></div>
+      <div id="modal-dashboard-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-export-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-batch-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-batch-result" class="modal-overlay" style="display: none;"></div>
@@ -275,6 +301,7 @@ export const ImageWorkspace = {
     
     await this.loadProjectInfo();
     await this.restoreProjectUIState();
+    this.renderImageFilterControls();
     this.applyLayoutState();
     await this.loadImages();
     await this.restoreSelectedImage();
@@ -284,25 +311,9 @@ export const ImageWorkspace = {
   initializeLayoutControls() {
     const canvasContainer = document.getElementById('canvas-container');
     const centerPanel = document.getElementById('center-panel');
-    const pointBtn = document.getElementById('btn-tool-point');
-    const fitBtn = document.getElementById('btn-vtool-filter');
+    const fitBtn = document.getElementById('btn-tool-fit');
     const leftPanel = document.getElementById('left-panel');
     const rightPanel = document.getElementById('right-panel');
-
-    if (canvasContainer && pointBtn && !document.getElementById('btn-tool-pointer')) {
-      const pointerBtn = document.createElement('button');
-      pointerBtn.className = 'neu-button active';
-      pointerBtn.id = 'btn-tool-pointer';
-      pointerBtn.title = 'Pointer / Pan';
-      pointerBtn.style.cssText = 'width: 40px; height: 40px; border-radius: 50%;';
-      pointerBtn.textContent = '↖';
-      pointBtn.parentNode.insertBefore(pointerBtn, pointBtn);
-    }
-
-    if (fitBtn) {
-      fitBtn.title = 'Fit to Screen';
-      fitBtn.textContent = '⤢';
-    }
 
     const ensureSideToggle = (id, text, styleText) => {
       if (!canvasContainer || document.getElementById(id)) return;
@@ -458,6 +469,58 @@ export const ImageWorkspace = {
     return nextOffset;
   },
 
+  getTotalImagePages() {
+    const total = Math.max(0, Number(this.totalImages || 0));
+    const limit = Math.max(1, Number(this.limit || 50));
+    return Math.ceil(total / limit) || 1;
+  },
+
+  getCurrentImagePage() {
+    const limit = Math.max(1, Number(this.limit || 50));
+    const offset = this.sanitizeOffset(this.offset, this.totalImages);
+    return Math.floor(offset / limit) + 1;
+  },
+
+  syncImagePaginationControls() {
+    const totalPages = this.getTotalImagePages();
+    const currentPage = this.getCurrentImagePage();
+    const pageInput = document.getElementById('inp-page-jump');
+    const pageTotal = document.getElementById('ws-page-total');
+    const btnPrev = document.getElementById('btn-img-prev');
+    const btnNext = document.getElementById('btn-img-next');
+
+    if (pageInput && document.activeElement !== pageInput) {
+      pageInput.value = String(currentPage);
+    }
+    if (pageInput) {
+      pageInput.setAttribute('max', String(totalPages));
+      pageInput.setAttribute('title', `输入页码，按 Enter 跳转。当前 ${currentPage} / ${totalPages}`);
+    }
+    if (pageTotal) pageTotal.innerText = String(totalPages);
+    if (btnPrev) btnPrev.disabled = currentPage <= 1;
+    if (btnNext) btnNext.disabled = currentPage >= totalPages;
+  },
+
+  async goToImagePage(pageValue) {
+    const totalPages = this.getTotalImagePages();
+    const fallbackPage = this.getCurrentImagePage();
+    const requestedPage = Number.parseInt(String(pageValue || ''), 10);
+    const safePage = Math.max(1, Math.min(totalPages, Number.isFinite(requestedPage) ? requestedPage : fallbackPage));
+    const nextOffset = (safePage - 1) * Math.max(1, Number(this.limit || 50));
+
+    if (nextOffset === this.offset) {
+      this.syncImagePaginationControls();
+      return;
+    }
+
+    this.offset = nextOffset;
+    await this.loadImages();
+  },
+
+  hasImageFilter() {
+    return Boolean(this.imageFilterClass || (this.imageFilterStatus && this.imageFilterStatus !== 'all'));
+  },
+
   async restoreProjectUIState() {
     try {
       const res = await api.getUIState(this.projectId);
@@ -468,6 +531,8 @@ export const ImageWorkspace = {
       this.selectedImagePath = state.selectedImagePath || null;
       this.focusedAnnotationId = state.focusedAnnotationId || null;
       this.unlabeledNavigationEnabled = Boolean(state.unlabeledNavigationEnabled);
+      this.imageFilterClass = state.imageFilterClass || '';
+      this.imageFilterStatus = state.imageFilterStatus || 'all';
       this.leftPanelHidden = Boolean(state.leftPanelHidden);
       this.rightPanelHidden = Boolean(state.rightPanelHidden);
       this.classesSectionCollapsed = Boolean(state.classesSectionCollapsed);
@@ -496,6 +561,8 @@ export const ImageWorkspace = {
         selectedImagePath: this.selectedImagePath || '',
         focusedAnnotationId: this.focusedAnnotationId || '',
         unlabeledNavigationEnabled: Boolean(this.unlabeledNavigationEnabled),
+        imageFilterClass: this.imageFilterClass || '',
+        imageFilterStatus: this.imageFilterStatus || 'all',
         leftPanelHidden: Boolean(this.leftPanelHidden),
         rightPanelHidden: Boolean(this.rightPanelHidden),
         classesSectionCollapsed: Boolean(this.classesSectionCollapsed),
@@ -510,6 +577,10 @@ export const ImageWorkspace = {
   async restoreSelectedImage() {
     let targetId = this.selectedImageId;
     let targetPath = this.selectedImagePath;
+    if (this.hasImageFilter() && this.images.length > 0 && !this.images.some((img) => img.id === targetId)) {
+      targetId = this.images[0].id;
+      targetPath = this.images[0].rel_path;
+    }
     if (!targetId && this.images.length > 0) {
       targetId = this.images[0].id;
       targetPath = this.images[0].rel_path;
@@ -551,12 +622,32 @@ export const ImageWorkspace = {
     // Top Operation Bar
     const sam3UrlInp = document.getElementById('inp-sam3-url');
     if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
-    
-    const thresholdInp = document.getElementById('inp-threshold');
-    if (thresholdInp) thresholdInp.onchange = (e) => store.setConfig('threshold', parseFloat(e.target.value));
-    
-    const batchSizeInp = document.getElementById('inp-batch-size');
-    if (batchSizeInp) batchSizeInp.onchange = (e) => store.setConfig('batchSize', parseInt(e.target.value));
+
+    const syncTopConfigControls = () => {
+      const thresholdLabel = document.getElementById('lbl-threshold-value');
+      const batchLabel = document.getElementById('lbl-batch-size-value');
+      if (thresholdLabel) thresholdLabel.innerText = Number(store.state.config.threshold).toFixed(2);
+      if (batchLabel) batchLabel.innerText = String(store.state.config.batchSize);
+    };
+    const adjustThreshold = (delta) => {
+      const next = Number((Number(store.state.config.threshold || 0.5) + delta).toFixed(2));
+      store.setConfig('threshold', next);
+      syncTopConfigControls();
+    };
+    const adjustBatchSize = (delta) => {
+      const next = Number(store.state.config.batchSize || 1) + delta;
+      store.setConfig('batchSize', next);
+      syncTopConfigControls();
+    };
+    const btnThresholdDec = document.getElementById('btn-threshold-dec');
+    const btnThresholdInc = document.getElementById('btn-threshold-inc');
+    const btnBatchDec = document.getElementById('btn-batch-dec');
+    const btnBatchInc = document.getElementById('btn-batch-inc');
+    if (btnThresholdDec) btnThresholdDec.onclick = () => adjustThreshold(-0.05);
+    if (btnThresholdInc) btnThresholdInc.onclick = () => adjustThreshold(0.05);
+    if (btnBatchDec) btnBatchDec.onclick = () => adjustBatchSize(-1);
+    if (btnBatchInc) btnBatchInc.onclick = () => adjustBatchSize(1);
+    syncTopConfigControls();
 
     const btnTest = document.getElementById('btn-test-api');
     if (btnTest) btnTest.onclick = async () => {
@@ -577,17 +668,17 @@ export const ImageWorkspace = {
     if (btnInfer) btnInfer.onclick = () => this.runSingleInfer();
     
     const btnBatch = document.getElementById('btn-batch-infer');
-    if (btnBatch) btnBatch.onclick = () => this.startBatchTask('text');
+    if (btnBatch) btnBatch.onclick = () => this.startBatchTask();
     
     const btnExSeg = document.getElementById('btn-example-segment');
     if (btnExSeg) btnExSeg.onclick = () => this.runExamplePreview();
-    
-    const btnExProp = document.getElementById('btn-example-prop');
-    if (btnExProp) btnExProp.onclick = () => this.startBatchTask('example');
-    
+
+    const btnDashboard = document.getElementById('btn-open-data-dashboard');
+    if (btnDashboard) btnDashboard.onclick = () => this.openDataDashboard();
+
     const btnFilter = document.getElementById('btn-open-filter');
     if (btnFilter) btnFilter.onclick = () => this.openSmartFilter();
-    
+
     const btnExport = document.getElementById('btn-open-export');
     if (btnExport) btnExport.onclick = () => this.openExport();
 
@@ -610,38 +701,55 @@ export const ImageWorkspace = {
     }
 
     const btnPrev = document.getElementById('btn-img-prev');
-    if (btnPrev) btnPrev.onclick = () => {
-      if (this.offset >= this.limit) {
-        this.offset -= this.limit;
-        this.loadImages();
-      }
-    };
+    if (btnPrev) btnPrev.onclick = () => this.goToImagePage(this.getCurrentImagePage() - 1);
     
     const btnNext = document.getElementById('btn-img-next');
-    if (btnNext) btnNext.onclick = () => {
-      if (this.offset + this.limit < this.totalImages) {
-        this.offset += this.limit;
-        this.loadImages();
-      }
-    };
+    if (btnNext) btnNext.onclick = () => this.goToImagePage(this.getCurrentImagePage() + 1);
+
+    const pageJump = document.getElementById('inp-page-jump');
+    if (pageJump) {
+      pageJump.onfocus = () => pageJump.select();
+      pageJump.oninput = () => {
+        pageJump.value = pageJump.value.replace(/[^\d]/g, '');
+      };
+      pageJump.onkeydown = async (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          await this.goToImagePage(pageJump.value);
+          pageJump.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          this.syncImagePaginationControls();
+          pageJump.blur();
+        }
+      };
+      pageJump.onblur = () => this.syncImagePaginationControls();
+    }
 
     const btnFindUnlabeled = document.getElementById('btn-find-unlabeled');
     if (btnFindUnlabeled) btnFindUnlabeled.onclick = () => this.toggleUnlabeledNavigation();
+
+    const classFilter = document.getElementById('sel-image-filter-class');
+    if (classFilter) classFilter.onchange = () => {
+      this.imageFilterClass = classFilter.value || '';
+      this.applyImageFilters();
+    };
+    const statusFilter = document.getElementById('sel-image-filter-status');
+    if (statusFilter) statusFilter.onchange = () => {
+      this.imageFilterStatus = statusFilter.value || 'all';
+      this.applyImageFilters();
+    };
     
     const btnAddCls = document.getElementById('btn-add-class-ws');
     if (btnAddCls) btnAddCls.onclick = () => this.showAddClassModal();
 
-    // Canvas Tools (Pan / Pointer / Point / Box / Clear / Fit)
-    const btnToolPan = document.getElementById('btn-tool-pan');
+    // Canvas Tools (Pointer / Box / Clear / Fit)
     const btnToolPointer = document.getElementById('btn-tool-pointer');
-    const btnToolPoint = document.getElementById('btn-tool-point');
     const btnToolBox = document.getElementById('btn-tool-box');
     const btnToolClear = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
-    const btnToolFit = document.getElementById('btn-vtool-filter');
+    const btnToolFit = document.getElementById('btn-tool-fit');
 
-    if (btnToolPan) btnToolPan.onclick = () => this.setPromptMode('pan');
     if (btnToolPointer) btnToolPointer.onclick = () => this.setPromptMode('pointer');
-    if (btnToolPoint) btnToolPoint.onclick = () => this.setPromptMode('point');
     if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
     if (btnToolClear) btnToolClear.onclick = () => {
       this.currentPrompts = [];
@@ -899,9 +1007,31 @@ export const ImageWorkspace = {
     }
   },
 
+  renderImageFilterControls() {
+    const classFilter = document.getElementById('sel-image-filter-class');
+    const statusFilter = document.getElementById('sel-image-filter-status');
+    if (classFilter) {
+      const classes = this.projectMeta?.classes || [];
+      const current = this.imageFilterClass || '';
+      classFilter.innerHTML = [
+        `<option value="">${i18n.t('filter_all_classes')}</option>`,
+        ...classes.map((cls) => {
+          const escaped = String(cls).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `<option value="${escaped}" ${current === cls ? 'selected' : ''}>${escaped}</option>`;
+        })
+      ].join('');
+      if (current && !classes.includes(current)) {
+        this.imageFilterClass = '';
+        classFilter.value = '';
+      }
+    }
+    if (statusFilter) statusFilter.value = this.imageFilterStatus || 'all';
+  },
+
   renderClasses() {
     const list = document.getElementById('classes-list');
     const classes = this.projectMeta?.classes || [];
+    this.renderImageFilterControls();
     
     if (classes.length === 0) {
       list.innerHTML = `<div style="color:var(--neu-text-light); font-size:12px; text-align:center;">${i18n.t('no_classes')}</div>`;
@@ -1020,7 +1150,21 @@ export const ImageWorkspace = {
     return `hsl(${hue}, 70%, 50%)`;
   },
 
+  escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
+  escapeAttr(value) {
+    return this.escapeHtml(value);
+  },
+
   setPromptMode(mode) {
+    if (mode === 'point') mode = 'pointer';
     this.promptMode = mode;
     document.querySelectorAll('[id^="btn-tool-"]').forEach(btn => btn.classList.remove('active'));
     const btn = document.getElementById(`btn-tool-${mode}`);
@@ -1030,7 +1174,7 @@ export const ImageWorkspace = {
     if (canvasEl) {
       canvasEl.style.cursor = mode === 'pan'
         ? 'grab'
-        : (mode === 'box' ? 'crosshair' : (mode === 'point' ? 'copy' : 'default'));
+        : (mode === 'box' ? 'crosshair' : 'default');
     }
     
     if (this.viewer) {
@@ -1038,55 +1182,15 @@ export const ImageWorkspace = {
     }
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
-      const modeText = mode === 'pointer' ? 'Pointer' : mode === 'point' ? 'Point Prompt' : 'Box Prompt';
+      const modeText = mode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
       imageStatus.innerText = this.selectedImagePath ? `${this.selectedImagePath} | ${modeText}` : modeText;
     }
   },
 
   addPrompt(type, data) {
+    if (type === 'point') return;
     this.currentPrompts.push({type, data, timestamp: new Date().getTime()});
     if (this.viewer) this.viewer.setPrompts(this.currentPrompts);
-    const autoInfer = document.getElementById('chk-auto-infer');
-    if (autoInfer?.checked) {
-      this.runPromptPreview();
-    }
-  },
-
-  async runPromptPreview() {
-    if (!this.selectedImageId) return;
-    const points = this.currentPrompts.filter((p) => p.type === 'point').map((p) => p.data);
-    const boxes = this.currentPrompts.filter((p) => p.type === 'box').map((p) => p.data);
-    let mode = '';
-    if (boxes.length > 0) {
-      mode = 'boxes';
-    } else if (points.length > 0) {
-      mode = 'points';
-    }
-    if (!mode) return;
-
-    try {
-      const res = await api.inferPreview({
-        project_id: this.projectId,
-        image_id: this.selectedImageId,
-        mode,
-        active_class: this.selectedClass || '',
-        points,
-        boxes,
-        threshold: store.state.config.threshold,
-        api_base_url: store.state.config.sam3ApiUrl,
-      });
-      const detections = Array.isArray(res?.detections) ? res.detections : [];
-      this.previews = detections.map((d) => ({
-        ...d,
-        id: d.id || `preview_${Math.random().toString(36).slice(2, 10)}`,
-        class_name: d.class_name || this.selectedClass || 'unknown',
-      }));
-      if (this.viewer) this.viewer.setPreviews(this.previews);
-      this.renderPreviews();
-      this.updateActionBar();
-    } catch (e) {
-      showToast(e.message, 'error');
-    }
   },
 
   renderPreviews() {
@@ -1178,8 +1282,10 @@ export const ImageWorkspace = {
       if (metaTotal) metaTotal.innerText = total;
       if (metaLabeled) metaLabeled.innerText = labeled;
       
-      this.totalImages = total;
-      this.offset = this.sanitizeOffset(this.offset, total);
+      if (!this.hasImageFilter()) {
+        this.totalImages = total;
+        this.offset = this.sanitizeOffset(this.offset, total);
+      }
       this.renderClasses();
       
       // Check for active job
@@ -1194,19 +1300,25 @@ export const ImageWorkspace = {
   
   async loadImages() {
     const listCont = document.getElementById('image-list-container');
+    const requestSeq = ++this.imageListLoadSeq;
     try {
       this.offset = this.sanitizeOffset(this.offset, this.totalImages);
-      const data = await api.getImages(this.projectId, this.offset, this.limit);
-      if (this.isUnmounted) return;
+      const data = await api.getImages(this.projectId, this.offset, this.limit, {
+        status: this.imageFilterStatus,
+        className: this.imageFilterClass,
+        imageId: this.selectedImageId || '',
+      });
+      if (this.isUnmounted || requestSeq !== this.imageListLoadSeq) return;
       
       this.images = data.items || [];
       this.totalImages = data.total || 0;
       this.offset = this.sanitizeOffset(this.offset, this.totalImages);
       
-      const totalPages = Math.ceil(this.totalImages / this.limit) || 1;
-      const currPage = Math.floor(this.offset / this.limit) + 1;
-      document.getElementById('ws-page-info').innerText = `${currPage} / ${totalPages}`;
+      this.syncImagePaginationControls();
       
+      const imageCountBadge = document.getElementById('ws-img-count-badge');
+      if (imageCountBadge) imageCountBadge.innerText = this.totalImages;
+
       if (this.images.length === 0) {
          listCont.innerHTML = `<div style="text-align:center; padding: 20px; color: var(--neu-text-light);">${i18n.t('no_images')}</div>`;
          return;
@@ -1239,43 +1351,67 @@ export const ImageWorkspace = {
       listCont.innerHTML = `<div style="color: #ef4444; padding: 10px; font-size: 12px;">${e.message}</div>`;
     }
   },
+
+  async applyImageFilters() {
+    this.offset = 0;
+    await this.loadImages();
+    const selectedVisible = this.images.some((img) => String(img.id) === String(this.selectedImageId || ''));
+    if (!selectedVisible && this.images.length > 0) {
+      await this.selectImage(this.images[0].id, this.images[0].rel_path);
+    } else {
+      this.updateSelectedImageListState();
+    }
+    this.scheduleProjectUIStateSave();
+  },
+
+  updateSelectedImageListState() {
+    document.querySelectorAll('.image-item').forEach((el) => {
+      const selected = String(el.dataset.id || '') === String(this.selectedImageId || '');
+      el.style.background = selected ? 'var(--neu-bg)' : 'transparent';
+      el.style.boxShadow = selected ? 'var(--neu-inset)' : 'none';
+      el.style.fontWeight = selected ? '700' : '500';
+    });
+  },
+
   async selectImage(id, relPath, options = {}) {
+    const requestSeq = ++this.imageLoadSeq;
     this.selectedImageId = id;
     this.selectedImagePath = relPath;
     this.currentPrompts = [];
     this.previews = [];
+    this.annotations = [];
     this.focusedAnnotationId = null;
     
     if (this.viewer) {
       this.viewer.setPrompts([]);
       this.viewer.setPreviews([]);
+      this.viewer.setAnnotations([]);
       this.viewer.setFocusedAnnotation(null);
     }
     
     this.renderPreviews();
     this.updateActionBar();
-    await this.loadImages();
+    this.updateSelectedImageListState();
     this.renderAnnotations();
     
     const placeholder = document.getElementById('canvas-placeholder');
     if (placeholder) placeholder.style.display = 'none';
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
-      const modeText = this.promptMode === 'pointer' ? 'Pointer' : this.promptMode === 'point' ? 'Point Prompt' : 'Box Prompt';
+      const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
       imageStatus.innerText = `${relPath || id} | ${modeText}`;
     }
     
     try {
       const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
-      await this.viewer.loadImage(imgUrl);
-      
-      const annsRes = await api.getAnnotations(this.projectId, id);
+      const [_, annsRes] = await Promise.all([
+        this.viewer.loadImage(imgUrl),
+        api.getAnnotations(this.projectId, id),
+      ]);
+      if (this.isUnmounted || requestSeq !== this.imageLoadSeq || String(this.selectedImageId) !== String(id)) return;
       this.annotations = annsRes.annotations || [];
       this.viewer.setAnnotations(this.annotations);
       this.viewer.setFocusedAnnotation(null);
-      requestAnimationFrame(() => {
-        if (this.viewer) this.viewer.fitToScreen();
-      });
       this.renderClasses();
       this.renderAnnotations();
       this.scheduleProjectUIStateSave();
@@ -1315,19 +1451,21 @@ export const ImageWorkspace = {
   },
 
   async runExamplePreview() {
-    if (!this.selectedImageId) return showToast("Select an image first", "error");
-    if (!this.selectedClass) return showToast("Select a class first", "error");
+    if (!this.selectedImageId) return showToast(i18n.t('select_image_first'), "error");
     
     const boxes = this.currentPrompts
       .filter(p => p.type === 'box')
       .map(p => p.data);
-      
-    if (boxes.length === 0) return showToast("Draw at least one box as an example", "error");
-
     const btn = document.getElementById('btn-example-segment');
+    if (boxes.length === 0) {
+      this.setPromptMode('box');
+      return showToast(i18n.t('box_exemplar_mode_hint'), "info");
+    }
+    if (!this.selectedClass) return showToast(i18n.t('select_class_first'), "error");
+
     try {
       btn.disabled = true;
-      btn.innerText = 'Segmenting...';
+      btn.innerText = i18n.t('finding_similar');
       
       const payload = {
         project_id: this.projectId,
@@ -1350,7 +1488,7 @@ export const ImageWorkspace = {
       this.viewer.setPreviews(this.previews);
       this.renderPreviews(); // Although this panel is hidden, we use it for keeping
       this.updateActionBar();
-      showToast(`Found ${this.previews.length} matches`, "info");
+      showToast(i18n.t('found_matches', { count: this.previews.length }), "info");
     } catch(e) {
       showToast(e.message, "error");
     } finally {
@@ -1359,41 +1497,28 @@ export const ImageWorkspace = {
     }
   },
 
-  async startBatchTask(type) {
+  async startBatchTask() {
     const classes = this.getSelectedClassesForInference();
-    if (type === 'text' && classes.length === 0) return showToast("Select at least one class for text inference", "error");
+    if (classes.length === 0) return showToast("Select at least one class for text inference", "error");
 
-    let payload = {
+    const payload = {
       project_id: this.projectId,
       threshold: store.state.config.threshold,
       batch_size: store.state.config.batchSize,
       api_base_url: store.state.config.sam3ApiUrl
     };
 
-    if (type === 'text') {
-      const batchConfig = await this.openBatchConfigModal(classes);
-      if (!batchConfig) return;
-      payload.classes = classes;
-      payload.scope_mode = batchConfig.scope_mode;
-      payload.related_classes = batchConfig.related_classes || [];
-      payload.image_ids = batchConfig.image_ids || [];
-      payload.retry_image_ids = batchConfig.retry_image_ids || [];
-      payload.all_images = batchConfig.scope_mode === 'all' && payload.image_ids.length === 0 && payload.retry_image_ids.length === 0;
-    } else {
-      if (!this.selectedImageId) return showToast("Select a source image first", "error");
-      const boxes = this.currentPrompts.filter(p => p.type === 'box').map(p => p.data);
-      if (boxes.length === 0) return showToast("Draw an example box first", "error");
-      if (!this.selectedClass) return showToast("Select a target class", "error");
-      payload.source_image_id = this.selectedImageId;
-      payload.active_class = this.selectedClass;
-      payload.boxes = boxes;
-      payload.pure_visual = false;
-    }
+    const batchConfig = await this.openBatchConfigModal(classes);
+    if (!batchConfig) return;
+    payload.classes = classes;
+    payload.scope_mode = batchConfig.scope_mode;
+    payload.related_classes = batchConfig.related_classes || [];
+    payload.image_ids = batchConfig.image_ids || [];
+    payload.retry_image_ids = batchConfig.retry_image_ids || [];
+    payload.all_images = batchConfig.scope_mode === 'all' && payload.image_ids.length === 0 && payload.retry_image_ids.length === 0;
 
     try {
-      const res = type === 'text' 
-        ? await api.startBatchInfer(payload)
-        : await api.startBatchExample(payload);
+      const res = await api.startBatchInfer(payload);
         
       this.activeJobId = res?.job?.job_id || '';
       if (!this.activeJobId) throw new Error('batch task did not return job_id');
@@ -1546,16 +1671,22 @@ export const ImageWorkspace = {
       </div>
     */
 
-    list.innerHTML = `${anns.map(ann => `
-      <div class="neu-box ann-item-focus" data-ann-id="${ann.id}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${this.focusedAnnotationId === ann.id ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${this.focusedAnnotationId === ann.id ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
+    list.innerHTML = `${anns.map(ann => {
+      const annId = String(ann.id || '');
+      const className = String(ann.class_name || '');
+      const annIdAttr = this.escapeAttr(annId);
+      const classNameHtml = this.escapeHtml(className);
+      const isFocused = String(this.focusedAnnotationId || '') === annId;
+      return `
+      <div class="neu-box ann-item-focus" data-ann-id="${annIdAttr}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.getClassColor(ann.class_name)};"></span>
-            <span style="font-size: 13px; font-weight: 700;">${ann.class_name}</span>
+            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.getClassColor(className)};"></span>
+            <span style="font-size: 13px; font-weight: 700;">${classNameHtml}</span>
           </div>
           <div style="display: flex; gap: 5px;">
-            <button class="neu-button" style="width: 24px; height: 24px; padding: 0; font-size: 10px;" onclick="window.currentWorkspace.locateAnnotation('${ann.id}')">🎯</button>
-            <button class="neu-button" style="width: 24px; height: 24px; padding: 0; font-size: 12px; color: #ef4444;" onclick="window.currentWorkspace.deleteAnnotation('${ann.id}')">×</button>
+            <button class="neu-button ann-edit-class-btn" data-ann-id="${annIdAttr}" title="修改该标注类别" style="width: 28px; height: 24px; padding: 0; font-size: 11px; font-weight: 800; color: var(--neu-text-active);">改</button>
+            <button class="neu-button ann-delete-btn" data-ann-id="${annIdAttr}" title="删除该标注" style="width: 24px; height: 24px; padding: 0; font-size: 12px; color: #ef4444;">×</button>
           </div>
         </div>
         <div style="font-size: 11px; color: var(--neu-text-light); display: flex; justify-content: space-between;">
@@ -1563,23 +1694,26 @@ export const ImageWorkspace = {
           <span>${ann.polygon ? 'Polygon' : 'BBox'}</span>
         </div>
       </div>
-    `).join('')}`;
+      `;
+    }).join('')}`;
+    list.querySelectorAll('.ann-edit-class-btn').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        this.editAnnotationClass(btn.dataset.annId || '');
+      };
+    });
+    list.querySelectorAll('.ann-delete-btn').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteAnnotation(btn.dataset.annId || '');
+      };
+    });
     list.querySelectorAll('.ann-item-focus').forEach((item) => {
       item.onclick = (e) => {
         if (e.target.closest('button')) return;
         this.toggleAnnotationFocus(item.dataset.annId || '');
       };
     });
-  },
-
-  locateAnnotation(annId) {
-    const ann = this.annotations.find(a => a.id === annId);
-    if (ann && this.viewer) {
-      this.focusedAnnotationId = annId;
-      this.viewer.setFocusedAnnotation(annId);
-      this.viewer.centerOn(ann.bbox);
-      this.renderAnnotations();
-    }
   },
 
   openBatchConfigModal(defaultClasses = []) {
@@ -1787,15 +1921,261 @@ export const ImageWorkspace = {
     } catch(e) { showToast(e.message, "error"); }
   },
 
+  editAnnotationClass(annId) {
+    const ann = (this.annotations || []).find((item) => String(item?.id || '') === String(annId || ''));
+    if (!ann) return showToast('未找到该标注', 'error');
+
+    const existing = document.getElementById('modal-edit-ann-class');
+    if (existing) existing.remove();
+
+    const currentClass = String(ann.class_name || '').trim();
+    const classes = Array.from(new Set([
+      currentClass,
+      ...(this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()),
+    ].filter(Boolean)));
+    const options = classes.map((cls) => `
+      <option value="${this.escapeAttr(cls)}" ${cls === currentClass ? 'selected' : ''}>${this.escapeHtml(cls)}</option>
+    `).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'modal-edit-ann-class';
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 9999; background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);';
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 420px; max-width: calc(100vw - 40px); padding: 28px; border-radius: 20px; position: relative;">
+        <button class="neu-button" id="btn-close-edit-ann-class" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;">&times;</button>
+        <h3 style="margin: 0 0 8px 0; font-size: 16px;">修改标注类别</h3>
+        <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.7; margin-bottom: 18px;">
+          当前类别：<b style="color: var(--neu-text);">${this.escapeHtml(currentClass || '--')}</b>
+        </div>
+        <label style="display: block; font-size: 12px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 8px;">选择已有类别</label>
+        <select id="sel-edit-ann-class" class="neu-input" style="width: 100%; height: 38px; font-size: 13px; margin-bottom: 14px;">
+          ${options}
+        </select>
+        <label style="display: block; font-size: 12px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 8px;">或输入新类别</label>
+        <input id="inp-edit-ann-class" class="neu-input" type="text" placeholder="留空则使用上面的已有类别" style="width: 100%; height: 38px; font-size: 13px;" />
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+          <button class="neu-button" style="padding: 10px 20px;" id="btn-cancel-edit-ann-class">取消</button>
+          <button class="neu-button" style="padding: 10px 20px; color: var(--neu-text-active); font-weight: 700;" id="btn-confirm-edit-ann-class">保存</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const closeModal = () => modal.remove();
+    const classSelect = document.getElementById('sel-edit-ann-class');
+    const classInput = document.getElementById('inp-edit-ann-class');
+    const confirmBtn = document.getElementById('btn-confirm-edit-ann-class');
+    const confirmChange = async () => {
+      const nextClass = String(classInput?.value || '').trim() || String(classSelect?.value || '').trim();
+      if (!nextClass) return showToast('请选择或输入类别名称', 'error');
+      try {
+        if (confirmBtn) {
+          confirmBtn.disabled = true;
+          confirmBtn.innerText = '保存中...';
+        }
+        const updated = await this.updateAnnotationClass(annId, nextClass);
+        if (updated) closeModal();
+      } finally {
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.innerText = '保存';
+        }
+      }
+    };
+
+    document.getElementById('btn-close-edit-ann-class').onclick = closeModal;
+    document.getElementById('btn-cancel-edit-ann-class').onclick = closeModal;
+    if (confirmBtn) confirmBtn.onclick = confirmChange;
+    if (classInput) {
+      classInput.focus();
+      classInput.onkeydown = (e) => {
+        if (e.key === 'Enter') confirmChange();
+        if (e.key === 'Escape') closeModal();
+      };
+    }
+    if (classSelect) {
+      classSelect.onkeydown = (e) => {
+        if (e.key === 'Enter') confirmChange();
+        if (e.key === 'Escape') closeModal();
+      };
+    }
+  },
+
+  async updateAnnotationClass(annId, nextClass) {
+    if (!this.selectedImageId) return false;
+    const cleanClass = String(nextClass || '').trim();
+    if (!cleanClass) {
+      showToast('类别名称不能为空', 'error');
+      return false;
+    }
+
+    const annIndex = (this.annotations || []).findIndex((item) => String(item?.id || '') === String(annId || ''));
+    if (annIndex < 0) {
+      showToast('未找到该标注', 'error');
+      return false;
+    }
+
+    const currentClass = String(this.annotations[annIndex]?.class_name || '').trim();
+    if (currentClass === cleanClass) {
+      showToast('类别未变化', 'info');
+      return true;
+    }
+
+    try {
+      const existingClasses = new Set((this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()));
+      if (!existingClasses.has(cleanClass)) {
+        await api.addClass(this.projectId, cleanClass);
+      }
+
+      const newAnns = this.annotations.map((ann) => {
+        if (String(ann?.id || '') !== String(annId || '')) return ann;
+        const updated = { ...ann, class_name: cleanClass, label: cleanClass };
+        delete updated.color;
+        return updated;
+      });
+      await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
+
+      this.annotations = newAnns;
+      this.selectedClass = cleanClass;
+      if (this.viewer) {
+        this.viewer.setAnnotations(this.annotations);
+        this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
+      }
+      this.renderAnnotations();
+      await this.loadProjectInfo();
+      await this.loadImages();
+      showToast(`已将标注类别改为 "${cleanClass}"`, 'success');
+      return true;
+    } catch(e) {
+      showToast(e.message, 'error');
+      return false;
+    }
+  },
+
+  async openDataDashboard() {
+    const modal = document.getElementById('modal-dashboard-full');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 920px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
+        <button class="neu-button" style="position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-dashboard-full').style.display='none'">&times;</button>
+        <h2 style="margin: 0 0 8px 0;">${i18n.t('data_dashboard')}</h2>
+        <div id="dashboard-body" style="font-size: 12px; color: var(--neu-text-light); padding: 30px 0;">${i18n.t('loading_images')}</div>
+      </div>
+    `;
+    const body = document.getElementById('dashboard-body');
+    const fmt = (value) => Number(value || 0).toLocaleString();
+    const pct = (part, total) => total > 0 ? `${((Number(part || 0) / Number(total || 1)) * 100).toFixed(1)}%` : '0.0%';
+    const renderBar = (label, value, maxValue, sub = '') => {
+      const width = maxValue > 0 ? Math.max(2, Math.min(100, (Number(value || 0) / maxValue) * 100)) : 0;
+      return `
+        <div style="display: grid; grid-template-columns: minmax(110px, 180px) 1fr auto; gap: 10px; align-items: center;">
+          <div style="font-weight: 700; color: var(--neu-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${label}">${label}</div>
+          <div style="height: 10px; border-radius: 999px; background: rgba(0,0,0,0.06); overflow: hidden;">
+            <div style="width: ${width}%; height: 100%; border-radius: 999px; background: var(--neu-text-active);"></div>
+          </div>
+          <div style="font-variant-numeric: tabular-nums; color: var(--neu-text-light); text-align: right;">${fmt(value)}${sub}</div>
+        </div>
+      `;
+    };
+
+    try {
+      const res = await api.getAnnotationDashboard(this.projectId);
+      const stats = res?.stats || {};
+      const classes = Array.isArray(stats.classes) ? stats.classes : [];
+      const density = Array.isArray(stats.annotation_density) ? stats.annotation_density : [];
+      const maxClassInstances = Math.max(1, ...classes.map((row) => Number(row.instance_count || 0)));
+      const maxDensity = Math.max(1, ...density.map((row) => Number(row.image_count || 0)));
+      const topClasses = classes.slice(0, 30);
+      const rebuildHint = stats.needs_rebuild
+        ? `<div class="neu-box" style="padding: 12px; border-radius: 12px; background: rgba(245, 158, 11, 0.12); color: var(--neu-text); line-height: 1.7;">${i18n.t('dashboard_rebuild_hint')}</div>`
+        : '';
+
+      body.innerHTML = `
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          ${rebuildHint}
+          <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
+            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">总图片</div><b style="font-size: 22px;">${fmt(stats.total_images)}</b></div>
+            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">已标注</div><b style="font-size: 22px; color: #10b981;">${fmt(stats.labeled_images)}</b><div>${pct(stats.labeled_images, stats.total_images)}</div></div>
+            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">实例数</div><b style="font-size: 22px;">${fmt(stats.annotation_count)}</b></div>
+            <div class="neu-box" style="padding: 14px; border-radius: 14px;"><div style="color: var(--neu-text-light);">索引图片</div><b style="font-size: 22px;">${fmt(stats.indexed_images)}</b><div>${pct(stats.indexed_images, stats.total_images)}</div></div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px;">
+            <div class="neu-box" style="padding: 16px; border-radius: 14px; display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                <b style="font-size: 14px;">类别实例分布</b>
+                <span style="color: var(--neu-text-light);">${topClasses.length}/${classes.length}</span>
+              </div>
+              ${topClasses.length ? topClasses.map((row) => renderBar(row.class_name, row.instance_count, maxClassInstances, ` / ${fmt(row.image_count)}图`)).join('') : `<div style="color: var(--neu-text-light); padding: 20px 0;">暂无类别索引数据</div>`}
+            </div>
+            <div class="neu-box" style="padding: 16px; border-radius: 14px; display: flex; flex-direction: column; gap: 10px;">
+              <b style="font-size: 14px;">每图实例数分布</b>
+              ${density.map((row) => renderBar(row.bucket, row.image_count, maxDensity)).join('')}
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button id="btn-dashboard-rebuild-index" class="neu-button" style="padding: 10px 18px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('rebuild_annotation_index')}</button>
+          </div>
+        </div>
+      `;
+
+      const rebuildBtn = document.getElementById('btn-dashboard-rebuild-index');
+      if (rebuildBtn) rebuildBtn.onclick = async () => {
+        if (!confirm(i18n.t('confirm_rebuild_annotation_index'))) return;
+        try {
+          rebuildBtn.disabled = true;
+          rebuildBtn.innerText = i18n.t('rebuilding_index');
+          const rebuildRes = await api.rebuildAnnotationIndex(this.projectId);
+          const result = rebuildRes?.result || {};
+          showToast(`索引重建完成：${fmt(result.indexed_images)} 张图片`, 'success');
+          await this.loadProjectInfo();
+          await this.loadImages();
+          await this.openDataDashboard();
+        } catch (e) {
+          showToast(e.message, 'error');
+        } finally {
+          rebuildBtn.disabled = false;
+          rebuildBtn.innerText = i18n.t('rebuild_annotation_index');
+        }
+      };
+    } catch (e) {
+      body.innerHTML = `<div style="color: #ef4444;">${e.message}</div>`;
+    }
+  },
+
   openSmartFilter() {
     const modal = document.getElementById('modal-filter-full');
+    if (!modal) return showToast('智能过滤弹窗初始化失败', 'error');
     const classes = this.projectMeta?.classes || [];
 
     modal.innerHTML = `
-      <div class="neu-card" style="width: 760px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
+      <div class="neu-card" style="width: 860px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
         <button class="neu-button" style="position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-filter-full').style.display='none'">&times;</button>
-        <h2 style="margin-top: 0; margin-bottom: 18px;">\u667A\u80FD\u8FC7\u6EE4</h2>
+        <h2 style="margin-top: 0; margin-bottom: 8px;">智能过滤工作台</h2>
+        <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.7; margin-bottom: 18px;">
+          先生成候选预览，再确认应用；应用时会为受影响图片写入 SQLite 回滚快照。
+        </div>
         <div style="display: flex; flex-direction: column; gap: 18px;">
+          <div id="filter-rollback-panel" class="neu-box" style="display: none; padding: 14px; border-radius: 12px; background: var(--neu-bg-light);"></div>
+
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;">
+            <button class="neu-button filter-recipe-card" data-filter-preset="dedupe" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
+              <b style="font-size: 13px;">同类去重</b>
+              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">同一类别高覆盖/重叠时保留更大实例，适合清理批推重复框。</span>
+            </button>
+            <button class="neu-button filter-recipe-card" data-filter-preset="canonical" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
+              <b style="font-size: 13px;">类别合并</b>
+              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">把来源类别并入目标类别，例如 face/head 合并到 human face。</span>
+            </button>
+            <button class="neu-button filter-recipe-card" data-filter-preset="cleanup" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
+              <b style="font-size: 13px;">小目标/低置信度</b>
+              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">按类别范围删除小面积噪声或低分实例，必须预览后才能执行。</span>
+            </button>
+          </div>
+
           <div class="neu-box" style="padding: 8px; border-radius: 14px; display: flex; gap: 8px;">
             <button id="btn-filter-op-merge" class="neu-button" style="flex: 1; font-weight: 700;">\u5408\u5E76\u8FC7\u6EE4</button>
             <button id="btn-filter-op-rule" class="neu-button" style="flex: 1; font-weight: 700;">\u89C4\u5219\u8FC7\u6EE4</button>
@@ -1939,11 +2319,13 @@ export const ImageWorkspace = {
     const progressFillEl = document.getElementById('filter-job-progress-fill');
     const progressTextEl = document.getElementById('filter-job-progress-text');
     const summaryEl = document.getElementById('filter-preview-summary');
+    const rollbackPanel = document.getElementById('filter-rollback-panel');
     const previewBtn = document.getElementById('btn-start-filter-preview');
     const applyBtn = document.getElementById('btn-apply-filter');
     const cov = document.getElementById('filter-cov');
+    const recipeButtons = Array.from(document.querySelectorAll('.filter-recipe-card'));
     const filterInputs = [
-      'filter-mode-sel', 'filter-spatial-sel', 'filter-area-sel', 'filter-target-cls', 'filter-small-enabled', 'filter-small-ratio',
+      'filter-spatial-sel', 'filter-area-sel', 'filter-target-cls', 'filter-small-enabled', 'filter-small-ratio',
       'filter-count-enabled', 'filter-min-count', 'filter-max-count', 'filter-pos-enabled', 'filter-center-x',
       'filter-center-y', 'filter-conf-enabled', 'filter-conf-min', 'filter-conf-max'
     ].map(id => document.getElementById(id)).filter(Boolean);
@@ -1969,34 +2351,149 @@ export const ImageWorkspace = {
       this.updateFilterRuleText(operationMode);
     };
 
-    mergeBtn.onclick = () => {
-      operationMode = 'merge';
+    const resetPreviewState = () => {
       applyBtn.style.display = 'none';
       summaryEl.innerHTML = '';
       this.currentFilterToken = '';
+      progressFillEl.style.width = '0%';
+      progressFillEl.style.background = 'var(--neu-text-active)';
+      progressTextEl.innerText = '空闲';
+      statusEl.innerText = '先执行预览以查看命中结果。';
+    };
+
+    const setActivePreset = (preset) => {
+      recipeButtons.forEach((btn) => {
+        const active = btn.dataset.filterPreset === preset;
+        btn.style.boxShadow = active ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+        btn.style.color = active ? 'var(--neu-text-active)' : 'var(--neu-text)';
+      });
+    };
+
+    const renderRollbackPanel = (run) => {
+      if (!rollbackPanel) return;
+      if (!run?.run_id) {
+        rollbackPanel.style.display = 'none';
+        rollbackPanel.innerHTML = '';
+        return;
+      }
+      const summary = run.summary || {};
+      const changed = summary.changed_images || run.snapshot_count || 0;
+      const removed = summary.removed_annotations || 0;
+      const relabeled = summary.relabeled_annotations || 0;
+      rollbackPanel.style.display = 'block';
+      rollbackPanel.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div style="font-size: 12px; line-height: 1.7;">
+            <b>最近一次过滤可回滚</b>
+            <div style="color: var(--neu-text-light);">影响 ${changed} 张，删除 ${removed} 个，改类 ${relabeled} 个。回滚会把这些图片恢复到过滤前的标注快照。</div>
+          </div>
+          <button id="btn-filter-rollback-run" class="neu-button" style="padding: 8px 14px; font-size: 12px; color: #ef4444; font-weight: 700;">回滚本次过滤</button>
+        </div>
+      `;
+      const rollbackBtn = document.getElementById('btn-filter-rollback-run');
+      if (!rollbackBtn) return;
+      rollbackBtn.onclick = async () => {
+        if (!confirm('确认回滚最近一次智能过滤吗？受影响图片会恢复到过滤前的标注快照。')) return;
+        try {
+          rollbackBtn.disabled = true;
+          rollbackBtn.innerText = '回滚中...';
+          const res = await api.rollbackFilterRun(this.projectId, run.run_id);
+          const result = res?.result || {};
+          showToast(`已回滚 ${result.restored_images || 0} 张图片`, 'success');
+          await this.loadProjectInfo();
+          if (this.selectedImageId && this.selectedImagePath) {
+            await this.selectImage(this.selectedImageId, this.selectedImagePath);
+          }
+          renderRollbackPanel(null);
+        } catch (e) {
+          showToast(e.message, 'error');
+        } finally {
+          rollbackBtn.disabled = false;
+          rollbackBtn.innerText = '回滚本次过滤';
+        }
+      };
+    };
+
+    const refreshLatestRollback = async () => {
+      try {
+        const res = await api.getLatestFilterRun(this.projectId);
+        renderRollbackPanel(res?.run || null);
+      } catch (e) {
+        console.warn('load latest smart filter run failed', e);
+      }
+    };
+
+    const applyPreset = (preset) => {
+      resetPreviewState();
+      setActivePreset(preset);
+      document.getElementById('filter-small-enabled').checked = false;
+      document.getElementById('filter-count-enabled').checked = false;
+      document.getElementById('filter-pos-enabled').checked = false;
+      document.getElementById('filter-conf-enabled').checked = false;
+      document.getElementById('filter-conf-min').value = '0.00';
+      document.getElementById('filter-conf-max').value = '1.00';
+      document.getElementById('filter-small-ratio').value = '0.02';
+      if (preset === 'cleanup') {
+        operationMode = 'rule';
+        document.getElementById('filter-small-enabled').checked = true;
+        document.getElementById('filter-conf-enabled').checked = true;
+        document.getElementById('filter-conf-max').value = '0.35';
+        document.querySelectorAll('.rule-cls-chk').forEach((el) => { el.checked = true; });
+      } else {
+        operationMode = 'merge';
+        modeSel.value = preset === 'canonical' ? 'canonical_class' : 'same_class';
+        document.getElementById('filter-spatial-sel').value = 'instance_cover';
+        document.getElementById('filter-area-sel').value = 'instance';
+        cov.value = preset === 'canonical' ? '0.95' : '0.98';
+        document.getElementById('filter-cov-val').innerText = Number(cov.value).toFixed(2);
+      }
+      updateUI();
+    };
+
+    mergeBtn.onclick = () => {
+      operationMode = 'merge';
+      resetPreviewState();
+      setActivePreset('');
       updateUI();
     };
     ruleBtn.onclick = () => {
       operationMode = 'rule';
-      applyBtn.style.display = 'none';
-      summaryEl.innerHTML = '';
-      this.currentFilterToken = '';
+      resetPreviewState();
+      setActivePreset('');
       updateUI();
     };
 
     cov.oninput = () => {
+      resetPreviewState();
       document.getElementById('filter-cov-val').innerText = Number(cov.value).toFixed(2);
       this.updateFilterRuleText(operationMode);
     };
-    modeSel.onchange = updateUI;
+    modeSel.onchange = () => {
+      resetPreviewState();
+      updateUI();
+    };
+    recipeButtons.forEach((btn) => {
+      btn.onclick = () => applyPreset(btn.dataset.filterPreset || 'dedupe');
+    });
     Array.from(document.querySelectorAll('.source-cls-chk, .rule-cls-chk')).forEach(el => {
-      el.onchange = () => this.updateFilterRuleText(operationMode);
+      el.onchange = () => {
+        resetPreviewState();
+        this.updateFilterRuleText(operationMode);
+      };
     });
     filterInputs.forEach(el => {
-      el.onchange = () => this.updateFilterRuleText(operationMode);
-      el.oninput = () => this.updateFilterRuleText(operationMode);
+      el.onchange = () => {
+        resetPreviewState();
+        this.updateFilterRuleText(operationMode);
+      };
+      el.oninput = () => {
+        resetPreviewState();
+        this.updateFilterRuleText(operationMode);
+      };
     });
     updateUI();
+    setActivePreset('dedupe');
+    refreshLatestRollback();
 
     const collectPayload = () => {
       const mode = modeSel.value;
@@ -2045,11 +2542,21 @@ export const ImageWorkspace = {
     const renderFilterSummary = (result, kind) => {
       const items = Array.isArray(result?.items) ? result.items : [];
       const op = String(result?.operation_mode || operationMode || 'merge');
+      const imageCount = kind === 'preview' ? (result?.image_count || 0) : (result?.changed_images || 0);
+      const candidateCount = kind === 'preview' ? (result?.candidate_count || 0) : (result?.removed_annotations || 0);
+      const relabelCount = kind === 'preview' ? (result?.relabel_count || 0) : (result?.relabeled_annotations || 0);
+      const header = `
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+          <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${imageCount}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '命中图片' : '修改图片'}</div></div>
+          <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${candidateCount}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '待删除' : '已删除'}</div></div>
+          <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${relabelCount}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '待改类' : '已改类'}</div></div>
+        </div>
+      `;
       if (items.length === 0) {
-        summaryEl.innerHTML = `<div style="font-size: 12px; color: var(--neu-text-light);">${op === 'merge' ? '\u5F53\u524D\u5408\u5E76\u89C4\u5219\u4E0B\u6CA1\u6709\u5019\u9009\u56FE\u7247\u3002' : '\u5F53\u524D\u89C4\u5219\u4E0B\u6CA1\u6709\u547D\u4E2D\u6807\u6CE8\u3002'}</div>`;
+        summaryEl.innerHTML = `${header}<div style="font-size: 12px; color: var(--neu-text-light);">${op === 'merge' ? '\u5F53\u524D\u5408\u5E76\u89C4\u5219\u4E0B\u6CA1\u6709\u5019\u9009\u56FE\u7247\u3002' : '\u5F53\u524D\u89C4\u5219\u4E0B\u6CA1\u6709\u547D\u4E2D\u6807\u6CE8\u3002'}</div>`;
         return;
       }
-      summaryEl.innerHTML = items.slice(0, 30).map((item) => {
+      summaryEl.innerHTML = header + items.slice(0, 30).map((item) => {
         const primaryCount = kind === 'preview'
           ? (op === 'merge' ? `\u9884\u89C8\u5220\u9664 ${item.candidate_count || 0}` : `\u547D\u4E2D\u5F85\u5220 ${item.candidate_count || 0}`)
           : (op === 'merge' ? `\u5DF2\u5220\u9664 ${item.removed_count || 0}` : `\u5DF2\u5220\u9664 ${item.removed_count || 0}`);
@@ -2094,6 +2601,14 @@ export const ImageWorkspace = {
           } else {
             renderFilterSummary(result, 'apply');
             applyBtn.style.display = 'none';
+            this.currentFilterToken = '';
+            if (result.rollback_run_id) {
+              renderRollbackPanel({
+                run_id: result.rollback_run_id,
+                summary: result,
+                snapshot_count: result.changed_images || 0,
+              });
+            }
             await this.loadProjectInfo();
             if (this.selectedImageId && this.selectedImagePath) {
               await this.selectImage(this.selectedImageId, this.selectedImagePath);

@@ -31,7 +31,17 @@ export const api = {
   createProject(data) { return this.request('POST', '/projects/open', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   
-  getImages(projectId, offset=0, limit=200) { return this.request('GET', `/projects/${projectId}/images?offset=${offset}&limit=${limit}`); },
+  getImages(projectId, offset=0, limit=200, filters = {}) {
+    const params = new URLSearchParams();
+    params.set('offset', String(offset));
+    params.set('limit', String(limit));
+    if (filters.imageId) params.set('image_id', filters.imageId);
+    if (filters.status && filters.status !== 'all') params.set('status', filters.status);
+    if (filters.className) params.set('class_name', filters.className);
+    return this.request('GET', `/projects/${projectId}/images?${params.toString()}`);
+  },
+  getAnnotationDashboard(projectId) { return this.request('GET', `/projects/${projectId}/annotation_dashboard`); },
+  rebuildAnnotationIndex(projectId) { return this.request('POST', `/projects/${projectId}/annotation_index/rebuild`); },
   getUnlabeledImage(projectId, afterImageId='', direction='next') {
     const params = new URLSearchParams();
     if (afterImageId) params.set('after_image_id', afterImageId);
@@ -59,12 +69,10 @@ export const api = {
   testSam3(apiUrl) { return this.request('POST', '/sam3/health', { api_base_url: apiUrl }); },
   
   infer(data) { return this.request('POST', '/infer', data); },
-  inferPreview(data) { return this.request('POST', '/infer/preview', data); },
   inferExample(data) { return this.request('POST', '/infer/example_preview', data); },
   
   // Batch Jobs
   startBatchInfer(data) { return this.request('POST', '/infer/jobs/start_batch', data); },
-  startBatchExample(data) { return this.request('POST', '/infer/jobs/start_batch_example', data); },
   getInferActiveJob(projectId) { return this.request('GET', `/infer/jobs/active?project_id=${projectId}`); },
   getInferJob(jobId) { return this.request('GET', `/infer/jobs/${jobId}`); },
   stopInferJob(projectId) { return this.request('POST', '/infer/jobs/stop', {project_id: projectId}); },
@@ -74,6 +82,8 @@ export const api = {
   smartFilterApply(data) { return this.request('POST', '/filter/intelligent/jobs/start_apply', data); },
   getFilterActiveJob(projectId) { return this.request('GET', `/filter/intelligent/jobs/active?project_id=${projectId}`); },
   getFilterJob(jobId) { return this.request('GET', `/filter/intelligent/jobs/${jobId}`); },
+  getLatestFilterRun(projectId) { return this.request('GET', `/filter/intelligent/runs/latest?project_id=${encodeURIComponent(projectId)}`); },
+  rollbackFilterRun(projectId, runId) { return this.request('POST', `/filter/intelligent/runs/${encodeURIComponent(runId)}/rollback?project_id=${encodeURIComponent(projectId)}`); },
 
   exportProject(data) { return this.request('POST', '/export', data); },
   

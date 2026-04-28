@@ -1,11 +1,21 @@
+function clampThreshold(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.5;
+}
+
+function clampBatchSize(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : 10;
+}
+
 export const store = {
   state: {
     config: {
       sam3ApiUrl: localStorage.getItem('sam3ApiUrl') || 'http://127.0.0.1:8001',
       theme: localStorage.getItem('theme') || 'light',
       language: localStorage.getItem('language') || 'zh',
-      threshold: parseFloat(localStorage.getItem('threshold')) || 0.5,
-      batchSize: parseInt(localStorage.getItem('batchSize')) || 10
+      threshold: clampThreshold(localStorage.getItem('threshold')),
+      batchSize: clampBatchSize(localStorage.getItem('batchSize'))
     }
   },
   listeners: [],
@@ -18,6 +28,11 @@ export const store = {
   },
   
   setConfig(key, value) {
+    if (key === 'threshold') {
+      value = clampThreshold(value);
+    } else if (key === 'batchSize') {
+      value = clampBatchSize(value);
+    }
     this.state.config[key] = value;
     if (key === 'sam3ApiUrl') {
       localStorage.setItem('sam3ApiUrl', value);

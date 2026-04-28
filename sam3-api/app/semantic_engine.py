@@ -130,6 +130,27 @@ class Sam3SemanticEngine:
             return prompt_norm, prompt_norm, [prompt_norm]
         return "", "visual", None
 
+    def _add_language_features(self, backbone_out: dict[str, Any], texts: list[str] | None) -> dict[str, Any]:
+        """Ensure cached image features also include SAM3 text features."""
+        assert self._predictor is not None
+        text_batch = [str(item).strip() for item in (texts or []) if str(item).strip()]
+        if not text_batch:
+            text_batch = ["visual"]
+
+        model = self._predictor.model
+        if hasattr(model, "set_classes"):
+            model.set_classes(text=text_batch)
+        if not hasattr(model, "backbone") or not hasattr(model.backbone, "forward_text"):
+            raise RuntimeError("SAM3 semantic model does not expose backbone.forward_text")
+
+        text_outputs = model.backbone.forward_text(text_batch, device=self._predictor.device)
+        if "language_features" not in text_outputs or "language_mask" not in text_outputs:
+            raise RuntimeError("SAM3 text encoder did not return language_features/language_mask")
+        backbone_out.update(text_outputs)
+        if isinstance(self._predictor.features, dict):
+            self._predictor.features.update(text_outputs)
+        return backbone_out
+
     @staticmethod
     def _image_hw_from_dataset(predictor: SAM3SemanticPredictor) -> tuple[int, int]:
         batch = next(iter(predictor.dataset))
@@ -213,6 +234,9 @@ class Sam3SemanticEngine:
             self._predictor.set_image(self._image_to_bgr(image))
             src_shape = self._image_hw_from_dataset(self._predictor)
             backbone_out = self._clone_tree(self._predictor.features)
+            backbone_out = self._add_language_features(backbone_out, text_batch)
+            if "language_features" not in backbone_out or "language_mask" not in backbone_out:
+                raise RuntimeError("SAM3 semantic features missing language_features/language_mask")
             pred_masks, pred_boxes = self._predictor.inference_features(
                 features=backbone_out,
                 src_shape=src_shape,
@@ -263,6 +287,7 @@ class Sam3SemanticEngine:
             geometric_prompt.append_boxes(bboxes[[idx]], labels[[idx]])
 
         source_backbone = self._clone_tree(self._predictor.features)
+        source_backbone = self._add_language_features(source_backbone, ["visual"])
         _, img_feats, img_pos_embeds, vis_feat_sizes = SAM2Model._prepare_backbone_features(
             self._predictor.model, source_backbone, batch=1
         )
@@ -303,12 +328,18 @@ class Sam3SemanticEngine:
             self._predictor.set_image(self._image_to_bgr(image))
             src_shape = self._image_hw_from_dataset(self._predictor)
             backbone_out = self._clone_tree(self._predictor.features)
+            backbone_out = self._add_language_features(backbone_out, text_batch)
+            language_features = backbone_out.get("language_features")
+            language_mask = backbone_out.get("language_mask")
+            if not isinstance(language_features, torch.Tensor) or not isinstance(language_mask, torch.Tensor):
+                raise RuntimeError("SAM3 semantic features missing language_features/language_mask")
 
-            self._predictor.model.set_classes(text=[result_prompt] if text_batch is None else text_batch)
             backbone_out, img_feats, img_pos_embeds, vis_feat_sizes = SAM2Model._prepare_backbone_features(
                 self._predictor.model, backbone_out, batch=1
             )
-            backbone_out.update({k: v for k, v in self._predictor.model.text_embeddings.items()})
+            if isinstance(backbone_out, dict):
+                backbone_out.setdefault("language_features", language_features)
+                backbone_out.setdefault("language_mask", language_mask)
 
             prompt_embed, prompt_mask = self._predictor.model._encode_prompt(
                 img_feats,
@@ -319,8 +350,8 @@ class Sam3SemanticEngine:
                 visual_prompt_mask=visual_prompt_mask.to(device=self._predictor.device),
             )
             text_ids = torch.arange(1, device=self._predictor.device, dtype=torch.long)
-            txt_feats = backbone_out["language_features"][:, text_ids]
-            txt_masks = backbone_out["language_mask"][text_ids]
+            txt_feats = language_features[:, text_ids]
+            txt_masks = language_mask[text_ids]
             prompt_embed = torch.cat([txt_feats, prompt_embed], dim=0)
             prompt_mask = torch.cat([txt_masks, prompt_mask], dim=1)
 
