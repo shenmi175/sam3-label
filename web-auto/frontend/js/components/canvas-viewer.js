@@ -17,6 +17,10 @@ export class CanvasViewer {
     this.previews = []; // Temporary SAM results
     this.transform = { x: 0, y: 0, scale: 1 };
     this.focusedAnnotationId = null;
+    this.imageLoadToken = 0;
+    this.fitMode = true;
+    this.fitFrame = null;
+    this.fitRetryCount = 0;
     
     // Interaction state
     this.isPanning = false;
@@ -48,6 +52,10 @@ export class CanvasViewer {
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+    this.resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => this.onResize())
+      : null;
+    if (this.resizeObserver) this.resizeObserver.observe(this.container);
     
     this.onResize();
   }
@@ -60,6 +68,8 @@ export class CanvasViewer {
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
     this.canvas.remove();
   }
 
@@ -78,27 +88,36 @@ export class CanvasViewer {
     }
   }
   
-  onResize() {
+  getContainerSize() {
+    const rect = this.container.getBoundingClientRect();
+    const width = Math.round(rect.width || this.container.clientWidth || 0);
+    const height = Math.round(rect.height || this.container.clientHeight || 0);
+    return { width, height };
+  }
+
+  syncCanvasSize() {
     const oldWidth = this.canvas.width;
     const oldHeight = this.canvas.height;
-    
-    const width = this.container.clientWidth;
-    const height = this.container.clientHeight;
-    
+    const { width, height } = this.getContainerSize();
+
+    if (width <= 0 || height <= 0) return false;
     if (this.canvas.width === width && this.canvas.height === height) return;
-    
+
     this.canvas.width = width;
     this.canvas.height = height;
-    
+
     if (this.image && oldWidth > 0 && oldHeight > 0) {
-      // If the image was centered, keep it centered in the new dimensions
-      // Otherwise maintain its relative position if possible
+      if (this.fitMode) {
+        this.fitToScreen();
+        return true;
+      }
+
       const centerX = (oldWidth - this.image.width * this.transform.scale) / 2;
       const centerY = (oldHeight - this.image.height * this.transform.scale) / 2;
-      
+
       const isWasCenteredX = Math.abs(this.transform.x - centerX) < 2;
       const isWasCenteredY = Math.abs(this.transform.y - centerY) < 2;
-      
+
       if (isWasCenteredX) {
         this.transform.x = (this.canvas.width - this.image.width * this.transform.scale) / 2;
       }
@@ -106,20 +125,42 @@ export class CanvasViewer {
         this.transform.y = (this.canvas.height - this.image.height * this.transform.scale) / 2;
       }
     }
-    
+
+    return true;
+  }
+
+  onResize() {
+    this.syncCanvasSize();
     this.draw();
   }
   
   async loadImage(src) {
+    const token = ++this.imageLoadToken;
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
+        if (token !== this.imageLoadToken) {
+          resolve(false);
+          return;
+        }
         this.image = img;
+        this.isPanning = false;
+        this.isDrawingBox = false;
+        this.boxStart = null;
+        this.boxEnd = null;
+        this.fitMode = true;
+        this.syncCanvasSize();
         this.fitToScreen();
-        requestAnimationFrame(() => this.fitToScreen());
-        resolve();
+        this.scheduleFitToScreen();
+        resolve(true);
       };
-      img.onerror = reject;
+      img.onerror = (error) => {
+        if (token !== this.imageLoadToken) {
+          resolve(false);
+          return;
+        }
+        reject(error);
+      };
       img.src = src;
     });
   }
@@ -188,13 +229,34 @@ export class CanvasViewer {
   
   fitToScreen() {
     if(!this.image) return;
-    const padding = 60;
-    const wr = (this.canvas.width - padding) / this.image.width;
-    const hr = (this.canvas.height - padding) / this.image.height;
-    this.transform.scale = Math.min(wr, hr, 1.0);
+    if (this.syncCanvasSize() === false) {
+      this.scheduleFitToScreen();
+      return;
+    }
+    this.fitRetryCount = 0;
+
+    const padding = Math.min(60, Math.max(0, Math.min(this.canvas.width, this.canvas.height) * 0.16));
+    const availableWidth = Math.max(1, this.canvas.width - padding);
+    const availableHeight = Math.max(1, this.canvas.height - padding);
+    const wr = availableWidth / this.image.width;
+    const hr = availableHeight / this.image.height;
+    this.transform.scale = Math.max(0.01, Math.min(wr, hr, 1.0));
     this.transform.x = (this.canvas.width - this.image.width * this.transform.scale) / 2;
     this.transform.y = (this.canvas.height - this.image.height * this.transform.scale) / 2;
+    this.fitMode = true;
     this.draw();
+  }
+
+  scheduleFitToScreen() {
+    if (this.fitRetryCount > 20) return;
+    this.fitRetryCount += 1;
+    if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
+    this.fitFrame = requestAnimationFrame(() => {
+      this.fitFrame = requestAnimationFrame(() => {
+        this.fitFrame = null;
+        this.fitToScreen();
+      });
+    });
   }
   
   onWheel(e) {
@@ -214,6 +276,7 @@ export class CanvasViewer {
     this.transform.x = mx - (mx - this.transform.x) * scaleChange;
     this.transform.y = my - (my - this.transform.y) * scaleChange;
     this.transform.scale = newScale;
+    this.fitMode = false;
     
     this.draw();
   }
@@ -267,6 +330,7 @@ export class CanvasViewer {
       this.transform.y += dy;
       this.lastX = e.clientX;
       this.lastY = e.clientY;
+      this.fitMode = false;
       this.draw();
     } else if (this.isDrawingBox) {
       const rect = this.canvas.getBoundingClientRect();
@@ -432,6 +496,7 @@ export class CanvasViewer {
     const cy = (y1 + y2) / 2;
     this.transform.x = (this.canvas.width / 2) - (cx * this.transform.scale);
     this.transform.y = (this.canvas.height / 2) - (cy * this.transform.scale);
+    this.fitMode = false;
     this.draw();
   }
 }
