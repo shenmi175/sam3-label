@@ -5,16 +5,18 @@
 ## 目录准备
 
 ```bash
-cp .env.example .env
-mkdir -p sam3_checkpoints web-auto/data sam3-api/data
-openssl rand -hex 32
+./deploy.sh install
 ```
 
-把生成的随机字符串写入 `.env`：
+脚本会自动：
 
-```text
-SAM3_API_TOKEN=生成的随机字符串
-```
+- 复制 `.env.example` 到 `.env`。
+- 生成并写入 `SAM3_API_TOKEN`。
+- 引导选择 GPU/CPU 模式。
+- 设置 `WEB_AUTO_HOST_DATA_ROOT`。
+- 创建持久化目录。
+- 预拉取基础镜像、构建并启动服务。
+- 如果 Docker Hub 拉取超时，提示输入 registry mirror 并自动写入 `/etc/docker/daemon.json`。
 
 如果不从 Hugging Face 自动下载模型，把 `sam3.pt` 放到：
 
@@ -35,13 +37,19 @@ WEB_AUTO_HOST_DATA_ROOT=/path/to/your/data/root
 ## GPU 运行
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+./deploy.sh install --gpu
 ```
 
 CPU 可用于功能验证，不建议用于大规模 SAM3 推理：
 
 ```bash
-SAM3_API_DEVICE=cpu docker compose up -d --build
+./deploy.sh install --cpu
+```
+
+如果你已有可用的 Docker Hub 镜像站：
+
+```bash
+./deploy.sh install --mirror https://你的镜像站地址
 ```
 
 ## 首次配置
@@ -92,19 +100,19 @@ http://sam3-api:8001
 默认只删除容器和 compose 网络，保留项目数据、模型和缓存：
 
 ```bash
-./scripts/uninstall.sh
+./deploy.sh uninstall
 ```
 
 删除容器、网络和 Docker volumes，并删除默认的 `web-auto/data`、`sam3-api/data`：
 
 ```bash
-./scripts/uninstall.sh --purge
+./deploy.sh uninstall --purge
 ```
 
 同时删除本地构建镜像：
 
 ```bash
-./scripts/uninstall.sh --purge --with-images
+./deploy.sh uninstall --purge --with-images
 ```
 
 卸载脚本不会删除 `WEB_AUTO_HOST_DATA_ROOT` 指向的原始图片/视频数据集。
@@ -112,12 +120,13 @@ http://sam3-api:8001
 ## 常用命令
 
 ```bash
-docker compose ps
-docker compose logs -f nginx-proxy-manager
-docker compose logs -f web-auto
-docker compose logs -f sam3-api
-docker compose restart sam3-api
-docker compose down
+./deploy.sh status
+./deploy.sh logs nginx-proxy-manager
+./deploy.sh logs web-auto
+./deploy.sh logs sam3-api
+./deploy.sh restart sam3-api
+./deploy.sh update
+./deploy.sh stop
 ```
 
 `restart: unless-stopped` 已启用。机器重启后 Docker daemon 启动时会自动恢复容器，除非你手动执行过 `docker compose stop`。
