@@ -469,15 +469,22 @@ def request(method, path, payload=None, token=None):
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"NPM API HTTP {exc.code}: {detail[:240]}") from exc
 
-def proxy_host_request(method, path, payload, token=None):
+def proxy_host_request(method, path, payload, token=None, retry_meta_schema=True):
     try:
         return request(method, path, payload, token=token)
     except Exception as exc:
-        if "data/meta must NOT have additional properties" not in str(exc):
+        if not retry_meta_schema or "data/meta must NOT have additional properties" not in str(exc):
             raise
         retry_payload = dict(payload)
         retry_payload["meta"] = {}
         return request(method, path, retry_payload, token=token)
+
+def letsencrypt_meta(email):
+    return {
+        "letsencrypt_email": email,
+        "letsencrypt_agree": True,
+        "dns_challenge": False,
+    }
 
 last_error = None
 for _ in range(45):
@@ -538,19 +545,36 @@ if use_ssl:
             "provider": "letsencrypt",
             "nice_name": ",".join(domains),
             "domain_names": domains,
-            "meta": {
-                "letsencrypt_email": ssl_email,
-                "letsencrypt_agree": True,
-                "dns_challenge": False,
-            },
+            "meta": letsencrypt_meta(ssl_email),
         }
-        cert = request("POST", "/api/nginx/certificates", cert_body, token=token)
-        cert_id = cert["id"]
-    body["certificate_id"] = cert_id
-    body["ssl_forced"] = bool(force_ssl)
-    body["http2_support"] = True
-    body["meta"] = {}
-    proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
+        try:
+            cert = request("POST", "/api/nginx/certificates", cert_body, token=token)
+            cert_id = cert["id"]
+        except Exception as cert_exc:
+            ssl_body = dict(body)
+            ssl_body["certificate_id"] = "new"
+            ssl_body["ssl_forced"] = bool(force_ssl)
+            ssl_body["http2_support"] = True
+            ssl_body["meta"] = letsencrypt_meta(ssl_email)
+            try:
+                updated = proxy_host_request(
+                    "PUT",
+                    f"/api/nginx/proxy-hosts/{host_id}",
+                    ssl_body,
+                    token=token,
+                    retry_meta_schema=False,
+                )
+            except Exception as proxy_exc:
+                raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_exc}; proxy-host API: {proxy_exc}") from proxy_exc
+            host_id = updated.get("id") or host_id
+            cert_id = updated.get("certificate_id") or 0
+            body = ssl_body
+    if cert_id:
+        body["certificate_id"] = cert_id
+        body["ssl_forced"] = bool(force_ssl)
+        body["http2_support"] = True
+        body["meta"] = {}
+        proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
 
 print(f"configured proxy host id={host_id} domains={','.join(domains)} ssl={'yes' if use_ssl else 'no'}")
 PY

@@ -440,18 +440,32 @@ def _json_request(method: str, url: str, payload: dict[str, Any] | None = None, 
         raise RuntimeError(f'NPM API HTTP {exc.code}: {detail[:240]}') from exc
 
 
-def _npm_proxy_host_request(method: str, url: str, payload: dict[str, Any], token: str) -> Any:
+def _npm_proxy_host_request(
+    method: str,
+    url: str,
+    payload: dict[str, Any],
+    token: str,
+    timeout: float = 30.0,
+    retry_meta_schema: bool = True,
+) -> Any:
     try:
-        return _json_request(method, url, payload, token=token)
+        return _json_request(method, url, payload, token=token, timeout=timeout)
     except RuntimeError as exc:
-        # NPM 2.12+ validates proxy-host meta strictly. Older configs often
-        # carried Let's Encrypt fields here, but certificate options belong on
-        # /api/nginx/certificates instead.
-        if 'data/meta must NOT have additional properties' not in str(exc):
+        # Some NPM builds validate proxy-host meta strictly unless a new
+        # certificate is being requested in the same proxy-host operation.
+        if not retry_meta_schema or 'data/meta must NOT have additional properties' not in str(exc):
             raise
         retry_payload = dict(payload)
         retry_payload['meta'] = {}
-        return _json_request(method, url, retry_payload, token=token)
+        return _json_request(method, url, retry_payload, token=token, timeout=timeout)
+
+
+def _npm_letsencrypt_meta(email: str) -> dict[str, Any]:
+    return {
+        'letsencrypt_email': email,
+        'letsencrypt_agree': True,
+        'dns_challenge': False,
+    }
 
 
 def _npm_base_url() -> str:
@@ -559,19 +573,41 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                 'provider': 'letsencrypt',
                 'nice_name': ','.join(domains),
                 'domain_names': domains,
-                'meta': {
-                    'letsencrypt_email': ssl_email,
-                    'letsencrypt_agree': True,
-                    'dns_challenge': False,
-                },
+                'meta': _npm_letsencrypt_meta(ssl_email),
             }
-            cert = _json_request('POST', f'{base_url}/api/nginx/certificates', cert_payload, token=token, timeout=90.0)
-            certificate_id = int(cert['id'])
-        body['certificate_id'] = certificate_id
-        body['ssl_forced'] = bool(payload.force_ssl)
-        body['http2_support'] = True
-        body['meta'] = {}
-        _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
+            try:
+                cert = _json_request('POST', f'{base_url}/api/nginx/certificates', cert_payload, token=token, timeout=90.0)
+                certificate_id = int(cert['id'])
+            except RuntimeError as cert_exc:
+                ssl_body = dict(body)
+                ssl_body['certificate_id'] = 'new'
+                ssl_body['ssl_forced'] = bool(payload.force_ssl)
+                ssl_body['http2_support'] = True
+                ssl_body['meta'] = _npm_letsencrypt_meta(ssl_email)
+                try:
+                    updated = _npm_proxy_host_request(
+                        'PUT',
+                        f'{base_url}/api/nginx/proxy-hosts/{host_id}',
+                        ssl_body,
+                        token=token,
+                        timeout=120.0,
+                        retry_meta_schema=False,
+                    )
+                except RuntimeError as proxy_exc:
+                    raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_exc}; proxy-host API: {proxy_exc}') from proxy_exc
+                if isinstance(updated, dict):
+                    host_id = int(updated.get('id') or host_id)
+                    try:
+                        certificate_id = int(updated.get('certificate_id') or 0)
+                    except (TypeError, ValueError):
+                        certificate_id = 0
+                body = ssl_body
+        if certificate_id:
+            body['certificate_id'] = certificate_id
+            body['ssl_forced'] = bool(payload.force_ssl)
+            body['http2_support'] = True
+            body['meta'] = {}
+            _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token, timeout=90.0)
 
     result = {
         'ok': True,
