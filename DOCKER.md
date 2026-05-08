@@ -14,6 +14,7 @@
 - 生成并写入 `SAM3_API_TOKEN`。
 - 生成并写入 `WEB_AUTO_ADMIN_PASSWORD`，`web-auto` 默认账号为 `admin`。
 - 默认使用 `jc21/nginx-proxy-manager:2.14.0`，避免 `latest` 后续变更导致 API 不兼容。
+- 强制要求输入真实 `NPM_ADMIN_EMAIL`，该邮箱用于 NPM 管理员账号和 Let’s Encrypt 证书申请，不能使用 `admin@example.com` 这类占位邮箱。
 - 交互选择 GPU/CPU 模式，默认 GPU。
 - 交互设置 `WEB_AUTO_HOST_DATA_ROOT`、NPM 端口和 `web-auto` 初始端口，直接回车使用默认值。
 - GPU 模式下检查 Docker NVIDIA runtime；缺失时提示是否自动安装 NVIDIA Container Toolkit，默认安装。
@@ -113,7 +114,6 @@ http://服务器IP:8000
 
 ```text
 域名: label.example.com
-证书邮箱: admin@example.com
 申请 HTTPS 证书: 开启
 强制 HTTPS: 开启
 ```

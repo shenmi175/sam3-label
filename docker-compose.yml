@@ -11,6 +11,8 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       DISABLE_IPV6: ${NPM_DISABLE_IPV6:-true}
+      INITIAL_ADMIN_EMAIL: ${NPM_ADMIN_EMAIL:?Set NPM_ADMIN_EMAIL in .env to a real email address}
+      INITIAL_ADMIN_PASSWORD: ${NPM_ADMIN_PASSWORD:?Set NPM_ADMIN_PASSWORD in .env}
     volumes:
       - npm_data:/data
       - npm_letsencrypt:/etc/letsencrypt
@@ -75,8 +77,8 @@ services:
       WEB_AUTO_ADMIN_USERNAME: ${WEB_AUTO_ADMIN_USERNAME:-admin}
       WEB_AUTO_ADMIN_PASSWORD: ${WEB_AUTO_ADMIN_PASSWORD:?Set WEB_AUTO_ADMIN_PASSWORD in .env}
       NPM_INTERNAL_URL: http://nginx-proxy-manager:81
-      NPM_ADMIN_EMAIL: ${NPM_ADMIN_EMAIL:-admin@example.com}
-      NPM_ADMIN_PASSWORD: ${NPM_ADMIN_PASSWORD:-changeme}
+      NPM_ADMIN_EMAIL: ${NPM_ADMIN_EMAIL:?Set NPM_ADMIN_EMAIL in .env to a real email address}
+      NPM_ADMIN_PASSWORD: ${NPM_ADMIN_PASSWORD:?Set NPM_ADMIN_PASSWORD in .env}
       WEB_AUTO_SAM3_MAX_BATCH_FILES: ${WEB_AUTO_SAM3_MAX_BATCH_FILES:-32}
     expose:
       - "8000"

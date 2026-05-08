@@ -460,12 +460,33 @@ def _npm_proxy_host_request(
         return _json_request(method, url, retry_payload, token=token, timeout=timeout)
 
 
-def _npm_letsencrypt_meta(email: str = '', legacy: bool = False) -> dict[str, Any]:
-    meta: dict[str, Any] = {'dns_challenge': False}
-    if legacy and email:
-        meta['letsencrypt_email'] = email
-        meta['letsencrypt_agree'] = True
-    return meta
+def _npm_certificate_meta() -> dict[str, Any]:
+    return {'dns_challenge': False}
+
+
+def _looks_like_real_email(email: str) -> bool:
+    email = str(email or '').strip().lower()
+    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email):
+        return False
+    domain = email.rsplit('@', 1)[-1]
+    return domain not in {'example.com', 'example.org', 'example.net', 'localhost'}
+
+
+def _validate_npm_acme_email() -> str:
+    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
+    if not _looks_like_real_email(email):
+        raise ValueError('NPM 管理员邮箱不是可用于 Let’s Encrypt 的真实邮箱。请把 .env 里的 NPM_ADMIN_EMAIL 改成真实邮箱；如果 NPM 已经初始化过，还需要同步修改 NPM 管理员账号邮箱或重置 NPM 数据卷。')
+    return email
+
+
+def _npm_admin_email_status() -> dict[str, Any]:
+    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
+    ready = _looks_like_real_email(email)
+    return {
+        'email': email,
+        'ready': ready,
+        'message': 'NPM 管理员邮箱可用于申请证书' if ready else 'NPM 管理员邮箱仍是占位值，申请 HTTPS 证书前请改成真实邮箱',
+    }
 
 
 def _npm_base_url() -> str:
@@ -473,8 +494,10 @@ def _npm_base_url() -> str:
 
 
 def _npm_login() -> str:
-    email = os.getenv('NPM_ADMIN_EMAIL', 'admin@example.com').strip() or 'admin@example.com'
-    password = os.getenv('NPM_ADMIN_PASSWORD', 'changeme').strip() or 'changeme'
+    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
+    password = os.getenv('NPM_ADMIN_PASSWORD', '').strip()
+    if not email or not password:
+        raise RuntimeError('NPM_ADMIN_EMAIL and NPM_ADMIN_PASSWORD must be configured')
     payload = _json_request('POST', f'{_npm_base_url()}/api/tokens', {'identity': email, 'secret': password})
     token = payload.get('token') if isinstance(payload, dict) else ''
     if not token:
@@ -519,7 +542,6 @@ def _load_proxy_config() -> dict[str, Any]:
 
 def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
     domains = _normalize_domain_names(payload.domain_names)
-    ssl_email = str(payload.letsencrypt_email or '').strip()
 
     token = _npm_login()
     base_url = _npm_base_url()
@@ -560,6 +582,7 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
 
     certificate_id = 0
     if payload.request_ssl:
+        npm_admin_email = _validate_npm_acme_email()
         certs = _json_request('GET', f'{base_url}/api/nginx/certificates', token=token)
         if isinstance(certs, list):
             for cert in certs:
@@ -571,7 +594,7 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                 'provider': 'letsencrypt',
                 'nice_name': ','.join(domains),
                 'domain_names': domains,
-                'meta': _npm_letsencrypt_meta(),
+                'meta': _npm_certificate_meta(),
             }
             cert_error: RuntimeError | None = None
             try:
@@ -579,22 +602,12 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                 certificate_id = int(cert['id'])
             except RuntimeError as cert_exc:
                 cert_error = cert_exc
-                if ssl_email:
-                    legacy_cert_payload = dict(cert_payload)
-                    legacy_cert_payload['meta'] = _npm_letsencrypt_meta(ssl_email, legacy=True)
-                    try:
-                        cert = _json_request('POST', f'{base_url}/api/nginx/certificates', legacy_cert_payload, token=token, timeout=90.0)
-                        certificate_id = int(cert['id'])
-                        cert_error = None
-                    except RuntimeError as legacy_cert_exc:
-                        cert_error = RuntimeError(f'new schema: {cert_exc}; legacy schema: {legacy_cert_exc}')
             if not certificate_id:
                 ssl_body = dict(body)
                 ssl_body['certificate_id'] = 'new'
                 ssl_body['ssl_forced'] = bool(payload.force_ssl)
                 ssl_body['http2_support'] = True
-                ssl_body['meta'] = _npm_letsencrypt_meta()
-                proxy_error: RuntimeError | None = None
+                ssl_body['meta'] = _npm_certificate_meta()
                 try:
                     updated = _npm_proxy_host_request(
                         'PUT',
@@ -605,25 +618,7 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                         retry_meta_schema=False,
                     )
                 except RuntimeError as proxy_exc:
-                    proxy_error = proxy_exc
-                    if ssl_email:
-                        legacy_ssl_body = dict(ssl_body)
-                        legacy_ssl_body['meta'] = _npm_letsencrypt_meta(ssl_email, legacy=True)
-                        try:
-                            updated = _npm_proxy_host_request(
-                                'PUT',
-                                f'{base_url}/api/nginx/proxy-hosts/{host_id}',
-                                legacy_ssl_body,
-                                token=token,
-                                timeout=120.0,
-                                retry_meta_schema=False,
-                            )
-                            ssl_body = legacy_ssl_body
-                            proxy_error = None
-                        except RuntimeError as legacy_proxy_exc:
-                            proxy_error = RuntimeError(f'new schema: {proxy_exc}; legacy schema: {legacy_proxy_exc}')
-                    if proxy_error is not None:
-                        raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_error}') from proxy_error
+                    raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_exc}') from proxy_exc
                 if isinstance(updated, dict):
                     host_id = int(updated.get('id') or host_id)
                     try:
@@ -644,7 +639,7 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
         'domain_names': domains,
         'request_ssl': bool(payload.request_ssl),
         'force_ssl': bool(payload.force_ssl),
-        'letsencrypt_email': ssl_email,
+        'npm_admin_email': _validate_npm_acme_email() if payload.request_ssl else os.getenv('NPM_ADMIN_EMAIL', '').strip(),
         'certificate_id': certificate_id,
         'url': ('https' if payload.request_ssl and payload.force_ssl else 'http') + f'://{domains[0]}',
         'updated_at': now_ts(),
@@ -890,7 +885,6 @@ class AuthPasswordChangeIn(BaseModel):
 
 class ReverseProxyConfigIn(BaseModel):
     domain_names: str
-    letsencrypt_email: str = ''
     request_ssl: bool = True
     force_ssl: bool = True
 
@@ -5104,6 +5098,7 @@ def get_reverse_proxy_config() -> dict[str, Any]:
     return {
         'config': _load_proxy_config(),
         'npm_available': bool(os.getenv('NPM_INTERNAL_URL', '').strip() or 'http://nginx-proxy-manager:81'),
+        'npm_admin_email': _npm_admin_email_status(),
     }
 
 

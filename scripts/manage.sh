@@ -8,7 +8,6 @@ FORCE_PROFILE_PROMPT=0
 FORCE_CONFIG_PROMPT=0
 NPM_PROXY_DOMAINS=""
 NPM_PROXY_USE_SSL=0
-NPM_PROXY_SSL_EMAIL=""
 NPM_PROXY_FORCE_SSL=1
 
 info() {
@@ -77,6 +76,22 @@ prompt_value() {
     read -r -p "$prompt [$default_value]: " value
   fi
   printf '%s' "${value:-$default_value}"
+}
+
+prompt_required_value() {
+  local prompt="$1"
+  local value=""
+  is_interactive || die "$prompt is required."
+  while true; do
+    read -r -p "$prompt: " value
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return
+    fi
+    warn "This value is required; Enter cannot use an empty/default value."
+  done
 }
 
 prompt_yes_no() {
@@ -235,13 +250,47 @@ project_path() {
   fi
 }
 
+is_real_email() {
+  local email="${1,,}"
+  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || return 1
+  local domain="${email##*@}"
+  case "$domain" in
+    example.com|example.org|example.net|localhost) return 1 ;;
+  esac
+  return 0
+}
+
+prompt_required_email() {
+  local prompt="$1"
+  local current_value="${2:-}"
+  local value=""
+  is_interactive || die "$prompt is required."
+  while true; do
+    if is_real_email "$current_value"; then
+      read -r -p "$prompt [$current_value]: " value
+      value="${value:-$current_value}"
+    else
+      read -r -p "$prompt: " value
+    fi
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if is_real_email "$value"; then
+      printf '%s' "$value"
+      return
+    fi
+    warn "Enter a real email address. Placeholder domains such as example.com are not allowed."
+  done
+}
+
 ensure_env() {
   local profile_override="${1:-}"
   cd "$ROOT_DIR"
 
+  local env_created=0
   if [[ ! -f "$ENV_FILE" ]]; then
     info "Creating .env from .env.example"
     cp .env.example .env
+    env_created=1
   fi
 
   local token
@@ -312,6 +361,26 @@ ensure_env() {
     set_env_var WEB_AUTO_BOOTSTRAP_PORT "${bootstrap_port:-8000}"
   fi
 
+  local npm_admin_email npm_admin_password
+  npm_admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
+  npm_admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
+  if ! is_real_email "$npm_admin_email"; then
+    if is_interactive; then
+      npm_admin_email="$(prompt_required_email "NPM admin email used by Let's Encrypt" "$npm_admin_email")"
+    else
+      die "NPM_ADMIN_EMAIL must be set to a real email address in .env. Placeholder values such as admin@example.com are not allowed."
+    fi
+    set_env_var NPM_ADMIN_EMAIL "$npm_admin_email"
+  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    npm_admin_email="$(prompt_required_email "NPM admin email used by Let's Encrypt" "$npm_admin_email")"
+    set_env_var NPM_ADMIN_EMAIL "$npm_admin_email"
+  fi
+  if [[ -z "${npm_admin_password//[[:space:]]/}" ]]; then
+    npm_admin_password="$(generate_password)"
+    set_env_var NPM_ADMIN_PASSWORD "$npm_admin_password"
+    info "Generated NPM_ADMIN_PASSWORD in .env"
+  fi
+
   local web_data sam_data ckpt_dir
   web_data="$(get_env_var WEB_AUTO_DATA_DIR || true)"
   sam_data="$(get_env_var SAM3_API_DATA_DIR || true)"
@@ -341,6 +410,77 @@ compose() {
     args+=("$item")
   done < <(compose_args)
   (cd "$ROOT_DIR" && "${DOCKER_CMD[@]}" compose "${args[@]}" "$@")
+}
+
+npm_login_check() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  local admin_port admin_email admin_password
+  admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
+  admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
+  admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
+  admin_port="${admin_port:-81}"
+  is_real_email "$admin_email" || return 1
+  [[ -n "${admin_password//[[:space:]]/}" ]] || return 1
+
+  NPM_URL="http://127.0.0.1:${admin_port}" \
+    NPM_EMAIL="$admin_email" \
+    NPM_PASSWORD="$admin_password" \
+    python3 - <<'PY'
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+base_url = os.environ["NPM_URL"].rstrip("/")
+email = os.environ["NPM_EMAIL"]
+password = os.environ["NPM_PASSWORD"]
+payload = json.dumps({"identity": email, "secret": password}).encode("utf-8")
+last_error = None
+for _ in range(45):
+    req = urllib.request.Request(
+        base_url + "/api/tokens",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+            raise SystemExit(0 if data.get("token") else 1)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        last_error = f"HTTP {exc.code}: {detail[:160]}"
+        if exc.code in {400, 401, 403}:
+            break
+    except Exception as exc:
+        last_error = str(exc)
+    time.sleep(2)
+print(last_error or "NPM login failed", flush=True)
+raise SystemExit(1)
+PY
+}
+
+ensure_npm_login_or_offer_reset() {
+  info "Checking NPM admin login with configured .env credentials"
+  if npm_login_check; then
+    return 0
+  fi
+
+  warn "NPM login failed with NPM_ADMIN_EMAIL/NPM_ADMIN_PASSWORD from .env."
+  if is_interactive && prompt_yes_no "Reset NPM data volumes to apply the configured admin email/password? This clears NPM proxy hosts and certificates only" "n"; then
+    local project_name
+    project_name="$(get_env_var COMPOSE_PROJECT_NAME || true)"
+    project_name="${project_name:-sam3-auto-label}"
+    warn "Resetting NPM volumes: ${project_name}_npm_data ${project_name}_npm_letsencrypt"
+    compose down --remove-orphans
+    "${DOCKER_CMD[@]}" volume rm "${project_name}_npm_data" "${project_name}_npm_letsencrypt" >/dev/null 2>&1 || true
+    compose up -d --build
+    npm_login_check || die "NPM login still failed after resetting NPM volumes. Check NPM_ADMIN_EMAIL and NPM_ADMIN_PASSWORD in .env."
+    return 0
+  fi
+
+  die "NPM login failed. If this stack was initialized with old admin@example.com credentials, rerun and approve the NPM volume reset prompt."
 }
 
 configure_mirror() {
@@ -391,24 +531,17 @@ PY
 prompt_proxy_config() {
   NPM_PROXY_DOMAINS=""
   NPM_PROXY_USE_SSL=0
-  NPM_PROXY_SSL_EMAIL=""
   NPM_PROXY_FORCE_SSL=1
   is_interactive || return 0
   if ! prompt_yes_no "Configure Nginx Proxy Manager Proxy Host now" "n"; then
     return 0
   fi
-  NPM_PROXY_DOMAINS="$(prompt_value "Domain name(s), comma-separated" "")"
-  if [[ -z "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
-    warn "No domain entered; skipping NPM proxy configuration."
-    NPM_PROXY_DOMAINS=""
-    return 0
-  fi
+  NPM_PROXY_DOMAINS="$(prompt_required_value "Domain name(s), comma-separated")"
   if prompt_yes_no "Request Let's Encrypt certificate" "y"; then
     NPM_PROXY_USE_SSL=1
-    local first_domain default_email
-    first_domain="$(printf '%s' "$NPM_PROXY_DOMAINS" | cut -d',' -f1 | tr -d '[:space:]')"
-    default_email="admin@${first_domain}"
-    NPM_PROXY_SSL_EMAIL="$(prompt_value "Let's Encrypt email" "$default_email")"
+    local npm_admin_email
+    npm_admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
+    is_real_email "$npm_admin_email" || die "NPM_ADMIN_EMAIL must be a real email before requesting a Let's Encrypt certificate. Edit .env and rerun."
     if prompt_yes_no "Force HTTPS" "y"; then
       NPM_PROXY_FORCE_SSL=1
     else
@@ -429,8 +562,8 @@ configure_npm_proxy_host() {
   admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
   admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
   admin_port="${admin_port:-81}"
-  admin_email="${admin_email:-admin@example.com}"
-  admin_password="${admin_password:-changeme}"
+  is_real_email "$admin_email" || die "NPM_ADMIN_EMAIL must be a real email before configuring NPM proxy."
+  [[ -n "${admin_password//[[:space:]]/}" ]] || die "NPM_ADMIN_PASSWORD is required before configuring NPM proxy."
 
   info "Configuring NPM Proxy Host for: $NPM_PROXY_DOMAINS"
   if ! NPM_URL="http://127.0.0.1:${admin_port}" \
@@ -438,7 +571,6 @@ configure_npm_proxy_host() {
     NPM_PASSWORD="$admin_password" \
     NPM_PROXY_DOMAINS="$NPM_PROXY_DOMAINS" \
     NPM_PROXY_USE_SSL="$NPM_PROXY_USE_SSL" \
-    NPM_PROXY_SSL_EMAIL="$NPM_PROXY_SSL_EMAIL" \
     NPM_PROXY_FORCE_SSL="$NPM_PROXY_FORCE_SSL" \
     python3 - <<'PY'
 import json
@@ -452,7 +584,6 @@ email = os.environ["NPM_EMAIL"]
 password = os.environ["NPM_PASSWORD"]
 domains = [item.strip() for item in os.environ["NPM_PROXY_DOMAINS"].split(",") if item.strip()]
 use_ssl = os.environ.get("NPM_PROXY_USE_SSL") == "1"
-ssl_email = os.environ.get("NPM_PROXY_SSL_EMAIL", "").strip()
 force_ssl = os.environ.get("NPM_PROXY_FORCE_SSL", "1") == "1"
 
 def request(method, path, payload=None, token=None):
@@ -478,13 +609,6 @@ def proxy_host_request(method, path, payload, token=None, retry_meta_schema=True
         retry_payload = dict(payload)
         retry_payload["meta"] = {}
         return request(method, path, retry_payload, token=token)
-
-def letsencrypt_meta(email="", legacy=False):
-    meta = {"dns_challenge": False}
-    if legacy and email:
-        meta["letsencrypt_email"] = email
-        meta["letsencrypt_agree"] = True
-    return meta
 
 last_error = None
 for _ in range(45):
@@ -545,7 +669,7 @@ if use_ssl:
             "provider": "letsencrypt",
             "nice_name": ",".join(domains),
             "domain_names": domains,
-            "meta": letsencrypt_meta(),
+            "meta": {"dns_challenge": False},
         }
         cert_error = None
         try:
@@ -553,22 +677,12 @@ if use_ssl:
             cert_id = cert["id"]
         except Exception as cert_exc:
             cert_error = cert_exc
-            if ssl_email:
-                legacy_cert_body = dict(cert_body)
-                legacy_cert_body["meta"] = letsencrypt_meta(ssl_email, legacy=True)
-                try:
-                    cert = request("POST", "/api/nginx/certificates", legacy_cert_body, token=token)
-                    cert_id = cert["id"]
-                    cert_error = None
-                except Exception as legacy_cert_exc:
-                    cert_error = RuntimeError(f"new schema: {cert_exc}; legacy schema: {legacy_cert_exc}")
         if not cert_id:
             ssl_body = dict(body)
             ssl_body["certificate_id"] = "new"
             ssl_body["ssl_forced"] = bool(force_ssl)
             ssl_body["http2_support"] = True
-            ssl_body["meta"] = letsencrypt_meta()
-            proxy_error = None
+            ssl_body["meta"] = {"dns_challenge": False}
             try:
                 updated = proxy_host_request(
                     "PUT",
@@ -578,24 +692,7 @@ if use_ssl:
                     retry_meta_schema=False,
                 )
             except Exception as proxy_exc:
-                proxy_error = proxy_exc
-                if ssl_email:
-                    legacy_ssl_body = dict(ssl_body)
-                    legacy_ssl_body["meta"] = letsencrypt_meta(ssl_email, legacy=True)
-                    try:
-                        updated = proxy_host_request(
-                            "PUT",
-                            f"/api/nginx/proxy-hosts/{host_id}",
-                            legacy_ssl_body,
-                            token=token,
-                            retry_meta_schema=False,
-                        )
-                        ssl_body = legacy_ssl_body
-                        proxy_error = None
-                    except Exception as legacy_proxy_exc:
-                        proxy_error = RuntimeError(f"new schema: {proxy_exc}; legacy schema: {legacy_proxy_exc}")
-                if proxy_error is not None:
-                    raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_error}") from proxy_error
+                raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_exc}") from proxy_exc
             host_id = updated.get("id") or host_id
             cert_id = updated.get("certificate_id") or 0
             body = ssl_body
@@ -753,12 +850,12 @@ web-auto login:
 
 Configure domain:
   Open web-auto -> Global Settings -> Reverse Proxy.
-  Fill domain name and certificate email, then click Configure Proxy.
+  Fill domain name, then click Configure Proxy.
 
 Nginx Proxy Manager admin is only for troubleshooting:
   http://127.0.0.1:${admin_port:-81}
-  Email: ${npm_email:-admin@example.com}
-  Password: ${npm_password:-changeme}
+  Email: ${npm_email:-see .env NPM_ADMIN_EMAIL}
+  Password: ${npm_password:-see .env NPM_ADMIN_PASSWORD}
 EOF
   if [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
     local first_domain scheme
@@ -848,6 +945,7 @@ cmd_install() {
 
   info "Building and starting stack"
   compose up -d --build
+  ensure_npm_login_or_offer_reset
   configure_npm_proxy_host
   compose ps
   print_next_steps
@@ -872,6 +970,7 @@ cmd_update() {
 
   info "Rebuilding and restarting stack"
   compose up -d --build
+  ensure_npm_login_or_offer_reset
   compose ps
 }
 
@@ -882,6 +981,7 @@ cmd_start() {
   select_docker
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
   compose up -d
+  ensure_npm_login_or_offer_reset
   compose ps
 }
 

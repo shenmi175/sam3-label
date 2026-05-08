@@ -64,10 +64,7 @@ export const SettingsPage = {
               <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_domains')}</label>
               <input type="text" id="inp-proxy-domains" class="neu-input" placeholder="label.example.com" />
             </div>
-            <div style="margin-bottom: 18px;">
-              <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_email')}</label>
-              <input type="email" id="inp-proxy-email" class="neu-input" placeholder="admin@example.com" />
-            </div>
+            <div id="npm-admin-email-status" style="font-size: 12px; color: var(--neu-text-light); margin-bottom: 18px;"></div>
             <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 12px; font-weight: 600; font-size: 13px;">
               <input type="checkbox" id="inp-proxy-ssl" checked />
               ${i18n.t('proxy_request_ssl')}
@@ -165,7 +162,6 @@ export const SettingsPage = {
       const status = document.getElementById('proxy-status');
       const payload = {
         domain_names: document.getElementById('inp-proxy-domains').value,
-        letsencrypt_email: document.getElementById('inp-proxy-email').value,
         request_ssl: document.getElementById('inp-proxy-ssl').checked,
         force_ssl: document.getElementById('inp-proxy-force-ssl').checked,
       };
@@ -213,10 +209,15 @@ export const SettingsPage = {
       const res = await api.getProxyConfig();
       const cfg = res?.config || {};
       if (Array.isArray(cfg.domain_names)) document.getElementById('inp-proxy-domains').value = cfg.domain_names.join(', ');
-      if (cfg.letsencrypt_email) document.getElementById('inp-proxy-email').value = cfg.letsencrypt_email;
       if (typeof cfg.request_ssl === 'boolean') document.getElementById('inp-proxy-ssl').checked = cfg.request_ssl;
       if (typeof cfg.force_ssl === 'boolean') document.getElementById('inp-proxy-force-ssl').checked = cfg.force_ssl;
       if (cfg.url) document.getElementById('proxy-status').textContent = i18n.t('proxy_configured', {url: cfg.url});
+      const npmEmail = res?.npm_admin_email;
+      const emailStatus = document.getElementById('npm-admin-email-status');
+      if (npmEmail && emailStatus) {
+        emailStatus.textContent = `${npmEmail.message}: ${npmEmail.email}`;
+        emailStatus.style.color = npmEmail.ready ? 'var(--neu-text-light)' : '#ef4444';
+      }
     } catch(e) {}
   },
 };
