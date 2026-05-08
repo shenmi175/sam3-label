@@ -65,7 +65,7 @@ EOF
 }
 
 is_interactive() {
-  [[ -t 0 && -t 1 ]]
+  [[ -t 0 ]]
 }
 
 prompt_value() {
