@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
+import json
 import logging
 import math
 import mimetypes
 import os
+import secrets
 import shutil
 import subprocess
 import threading
@@ -17,7 +21,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -71,6 +75,337 @@ SMART_FILTER_PROJECT_ACTIVE: dict[str, str] = {}
 SMART_FILTER_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 CONFIG_LOCK = threading.Lock()
 
+
+AUTH_FILE = DATA_DIR / 'auth.json'
+SESSION_COOKIE_NAME = os.getenv('WEB_AUTO_SESSION_COOKIE_NAME', 'web_auto_session').strip() or 'web_auto_session'
+SESSION_TTL_SECONDS = _parse_positive_int_env('WEB_AUTO_SESSION_TTL_SECONDS', 12 * 60 * 60)
+AUTH_ENABLED = os.getenv('WEB_AUTO_AUTH_ENABLED', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+
+
+class AuthStore:
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.sessions: dict[str, dict[str, Any]] = {}
+
+    def _load_locked(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {}
+        with self.path.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+
+    def _save_locked(self, data: dict[str, Any]) -> None:
+        ensure_dir(self.path.parent)
+        tmp = self.path.with_suffix(self.path.suffix + '.tmp')
+        with tmp.open('w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write('\n')
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, self.path)
+
+    @staticmethod
+    def _validate_username(username: str) -> str:
+        clean = str(username or '').strip()
+        if len(clean) < 3 or len(clean) > 64:
+            raise ValueError('username must be 3-64 characters')
+        if not re.fullmatch(r'[A-Za-z0-9_.@-]+', clean):
+            raise ValueError('username may only contain letters, numbers, dot, underscore, at sign, and dash')
+        return clean
+
+    @staticmethod
+    def _validate_password(password: str) -> str:
+        text = str(password or '')
+        if len(text) < 8:
+            raise ValueError('password must be at least 8 characters')
+        if len(text) > 256:
+            raise ValueError('password is too long')
+        return text
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        salt = secrets.token_hex(16)
+        iterations = 260000
+        digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('ascii'), iterations)
+        return f'pbkdf2_sha256${iterations}${salt}${digest.hex()}'
+
+    @staticmethod
+    def _verify_password(password: str, stored: str) -> bool:
+        try:
+            algorithm, iterations_raw, salt, digest_hex = str(stored or '').split('$', 3)
+            if algorithm != 'pbkdf2_sha256':
+                return False
+            iterations = int(iterations_raw)
+            expected = bytes.fromhex(digest_hex)
+            actual = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('ascii'), iterations)
+            return hmac.compare_digest(actual, expected)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _session_key(token: str) -> str:
+        return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+    def has_admin(self) -> bool:
+        with self.lock:
+            data = self._load_locked()
+            admin = data.get('admin')
+            return isinstance(admin, dict) and bool(str(admin.get('username') or '').strip()) and bool(admin.get('password_hash'))
+
+    def setup_admin(self, username: str, password: str) -> str:
+        clean_username = self._validate_username(username)
+        clean_password = self._validate_password(password)
+        with self.lock:
+            data = self._load_locked()
+            if isinstance(data.get('admin'), dict) and data['admin'].get('password_hash'):
+                raise ValueError('admin user is already initialized')
+            data = {
+                'version': 1,
+                'admin': {
+                    'username': clean_username,
+                    'password_hash': self._hash_password(clean_password),
+                    'created_at': now_ts(),
+                    'password_changed_at': now_ts(),
+                },
+            }
+            self._save_locked(data)
+            self.sessions.clear()
+        return clean_username
+
+    def verify_login(self, username: str, password: str) -> str:
+        clean_username = str(username or '').strip()
+        with self.lock:
+            data = self._load_locked()
+            admin = data.get('admin') if isinstance(data.get('admin'), dict) else {}
+            stored_username = str(admin.get('username') or '').strip()
+            stored_hash = str(admin.get('password_hash') or '')
+            if not stored_username or not stored_hash:
+                raise ValueError('admin user is not initialized')
+            if clean_username != stored_username or not self._verify_password(str(password or ''), stored_hash):
+                raise ValueError('invalid username or password')
+            return stored_username
+
+    def create_session(self, username: str) -> str:
+        token = secrets.token_urlsafe(48)
+        with self.lock:
+            self.sessions[self._session_key(token)] = {
+                'username': str(username),
+                'expires_at': time.time() + SESSION_TTL_SECONDS,
+            }
+        return token
+
+    def validate_session(self, token: str) -> str | None:
+        if not token:
+            return None
+        key = self._session_key(token)
+        with self.lock:
+            item = self.sessions.get(key)
+            if not isinstance(item, dict):
+                return None
+            if float(item.get('expires_at') or 0.0) <= time.time():
+                self.sessions.pop(key, None)
+                return None
+            item['expires_at'] = time.time() + SESSION_TTL_SECONDS
+            return str(item.get('username') or '').strip() or None
+
+    def destroy_session(self, token: str) -> None:
+        if not token:
+            return
+        with self.lock:
+            self.sessions.pop(self._session_key(token), None)
+
+    def change_password(self, username: str, current_password: str, new_password: str) -> None:
+        clean_password = self._validate_password(new_password)
+        with self.lock:
+            data = self._load_locked()
+            admin = data.get('admin') if isinstance(data.get('admin'), dict) else {}
+            stored_username = str(admin.get('username') or '').strip()
+            stored_hash = str(admin.get('password_hash') or '')
+            if username != stored_username or not stored_hash:
+                raise ValueError('admin user is not initialized')
+            if not self._verify_password(str(current_password or ''), stored_hash):
+                raise ValueError('current password is incorrect')
+            admin['password_hash'] = self._hash_password(clean_password)
+            admin['password_changed_at'] = now_ts()
+            data['admin'] = admin
+            self._save_locked(data)
+            self.sessions.clear()
+
+
+AUTH_STORE = AuthStore(AUTH_FILE)
+
+
+def _secure_cookie_for_request(request: Request) -> bool:
+    raw = os.getenv('WEB_AUTO_SESSION_COOKIE_SECURE', 'auto').strip().lower()
+    if raw in {'1', 'true', 'yes', 'on'}:
+        return True
+    if raw in {'0', 'false', 'no', 'off'}:
+        return False
+    proto = str(request.headers.get('x-forwarded-proto') or request.url.scheme or '').split(',')[0].strip().lower()
+    return proto == 'https'
+
+
+def _set_session_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_secure_cookie_for_request(request),
+        samesite='lax',
+        path='/',
+    )
+
+
+def _clear_session_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path='/',
+        secure=_secure_cookie_for_request(request),
+        httponly=True,
+        samesite='lax',
+    )
+
+
+def _request_username(request: Request) -> str | None:
+    if not AUTH_ENABLED:
+        return 'auth-disabled'
+    return AUTH_STORE.validate_session(str(request.cookies.get(SESSION_COOKIE_NAME) or ''))
+
+
+def _auth_public_path(path: str) -> bool:
+    if path in {'/login', '/setup', '/logout', '/api/health'}:
+        return True
+    return path.startswith('/api/auth/')
+
+
+def _auth_page_html(mode: str) -> str:
+    is_setup = mode == 'setup'
+    title = 'Initialize web-auto admin' if is_setup else 'Sign in to web-auto'
+    button = 'Create administrator' if is_setup else 'Sign in'
+    endpoint = '/api/auth/setup' if is_setup else '/api/auth/login'
+    extra = '' if is_setup else '<a class="link" href="/setup">Setup</a>'
+    username_autocomplete = 'username'
+    password_autocomplete = 'new-password' if is_setup else 'current-password'
+    html = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__TITLE__</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #eef2f6;
+      color: #243042;
+    }
+    main {
+      width: min(420px, calc(100vw - 32px));
+      background: #fff;
+      border: 1px solid #d8e0ea;
+      border-radius: 8px;
+      box-shadow: 0 18px 50px rgba(23, 37, 54, 0.16);
+      padding: 28px;
+    }
+    h1 { margin: 0 0 6px; font-size: 24px; }
+    p { margin: 0 0 24px; color: #657287; font-size: 14px; line-height: 1.5; }
+    label { display: block; margin: 14px 0 7px; font-weight: 650; font-size: 13px; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 11px 12px;
+      font-size: 15px;
+      outline: none;
+    }
+    input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14); }
+    button {
+      margin-top: 22px;
+      width: 100%;
+      border: 0;
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-weight: 700;
+      font-size: 15px;
+      color: #fff;
+      background: #2563eb;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.7; cursor: wait; }
+    .error { display: none; margin-top: 14px; color: #b91c1c; font-size: 13px; line-height: 1.4; }
+    .link { display: inline-block; margin-top: 16px; color: #2563eb; font-size: 13px; text-decoration: none; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; color: #e5e7eb; }
+      main { background: #1f2937; border-color: #374151; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35); }
+      p { color: #a7b0c0; }
+      input { background: #111827; color: #e5e7eb; border-color: #4b5563; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>__TITLE__</h1>
+    <p>Use this account to access the web-auto workspace and API.</p>
+    <form id="auth-form">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="__USERNAME_AUTOCOMPLETE__" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="__PASSWORD_AUTOCOMPLETE__" required>
+      <button id="submit" type="submit">__BUTTON__</button>
+      <div id="error" class="error"></div>
+      __EXTRA__
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById('auth-form');
+    const errorBox = document.getElementById('error');
+    const submit = document.getElementById('submit');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.style.display = 'none';
+      submit.disabled = true;
+      try {
+        const response = await fetch('__ENDPOINT__', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value
+          })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || response.statusText);
+        window.location.href = '/';
+      } catch (err) {
+        errorBox.textContent = err.message || String(err);
+        errorBox.style.display = 'block';
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+    return (
+        html.replace('__TITLE__', title)
+        .replace('__BUTTON__', button)
+        .replace('__ENDPOINT__', endpoint)
+        .replace('__EXTRA__', extra)
+        .replace('__USERNAME_AUTOCOMPLETE__', username_autocomplete)
+        .replace('__PASSWORD_AUTOCOMPLETE__', password_autocomplete)
+    )
+
+
 def _parse_allowed_origins(raw: str) -> list[str]:
     text = str(raw or '').strip()
     if not text:
@@ -93,6 +428,25 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+
+@app.middleware('http')
+async def require_web_auto_session(request: Request, call_next):
+    if not AUTH_ENABLED or request.method.upper() == 'OPTIONS' or _auth_public_path(request.url.path):
+        return await call_next(request)
+
+    setup_required = not AUTH_STORE.has_admin()
+    if setup_required:
+        if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
+            return JSONResponse(status_code=403, content={'detail': 'admin setup required', 'code': 'setup_required'})
+        return RedirectResponse('/setup', status_code=303)
+
+    if not _request_username(request):
+        if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
+            return JSONResponse(status_code=401, content={'detail': 'login required', 'code': 'login_required'})
+        return RedirectResponse('/login', status_code=303)
+
+    return await call_next(request)
 
 
 class OpenProjectIn(BaseModel):
@@ -270,6 +624,21 @@ class VideoJobResumeIn(BaseModel):
     prompt_frame_index: Optional[int] = None
     active_class: Optional[str] = None
     boxes: Optional[list[list[float | int]]] = None
+
+
+class AuthSetupIn(BaseModel):
+    username: str
+    password: str
+
+
+class AuthLoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class AuthPasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class InferJobPaused(RuntimeError):
@@ -4395,6 +4764,98 @@ def _run_infer_batch_example(
 def on_startup() -> None:
     _recover_video_states_on_startup()
     return None
+
+
+@app.get('/setup', response_class=HTMLResponse)
+def setup_page(request: Request) -> Response:
+    if not AUTH_ENABLED:
+        return RedirectResponse('/', status_code=303)
+    if AUTH_STORE.has_admin():
+        return RedirectResponse('/' if _request_username(request) else '/login', status_code=303)
+    return HTMLResponse(_auth_page_html('setup'))
+
+
+@app.get('/login', response_class=HTMLResponse)
+def login_page(request: Request) -> Response:
+    if not AUTH_ENABLED:
+        return RedirectResponse('/', status_code=303)
+    if not AUTH_STORE.has_admin():
+        return RedirectResponse('/setup', status_code=303)
+    if _request_username(request):
+        return RedirectResponse('/', status_code=303)
+    return HTMLResponse(_auth_page_html('login'))
+
+
+@app.get('/logout')
+def logout_page(request: Request) -> Response:
+    token = str(request.cookies.get(SESSION_COOKIE_NAME) or '')
+    AUTH_STORE.destroy_session(token)
+    response = RedirectResponse('/login', status_code=303)
+    _clear_session_cookie(response, request)
+    return response
+
+
+@app.get('/api/auth/status')
+def auth_status(request: Request) -> dict[str, Any]:
+    username = _request_username(request)
+    return {
+        'enabled': AUTH_ENABLED,
+        'setup_required': AUTH_ENABLED and not AUTH_STORE.has_admin(),
+        'authenticated': bool(username),
+        'username': username or '',
+        'session_ttl_seconds': SESSION_TTL_SECONDS,
+    }
+
+
+@app.post('/api/auth/setup')
+def auth_setup(payload: AuthSetupIn, request: Request) -> Response:
+    if not AUTH_ENABLED:
+        return JSONResponse({'ok': True, 'enabled': False})
+    try:
+        username = AUTH_STORE.setup_admin(payload.username, payload.password)
+        token = AUTH_STORE.create_session(username)
+        response = JSONResponse({'ok': True, 'username': username})
+        _set_session_cookie(response, request, token)
+        return response
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post('/api/auth/login')
+def auth_login(payload: AuthLoginIn, request: Request) -> Response:
+    if not AUTH_ENABLED:
+        return JSONResponse({'ok': True, 'enabled': False})
+    try:
+        username = AUTH_STORE.verify_login(payload.username, payload.password)
+        token = AUTH_STORE.create_session(username)
+        response = JSONResponse({'ok': True, 'username': username})
+        _set_session_cookie(response, request, token)
+        return response
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@app.post('/api/auth/logout')
+def auth_logout(request: Request) -> Response:
+    token = str(request.cookies.get(SESSION_COOKIE_NAME) or '')
+    AUTH_STORE.destroy_session(token)
+    response = JSONResponse({'ok': True})
+    _clear_session_cookie(response, request)
+    return response
+
+
+@app.post('/api/auth/password')
+def auth_change_password(payload: AuthPasswordChangeIn, request: Request) -> Response:
+    username = _request_username(request)
+    if not username:
+        raise HTTPException(status_code=401, detail='login required')
+    try:
+        AUTH_STORE.change_password(username, payload.current_password, payload.new_password)
+        response = JSONResponse({'ok': True})
+        _clear_session_cookie(response, request)
+        return response
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get('/api/info')

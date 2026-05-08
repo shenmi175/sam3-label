@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ class Sam3Client:
         self.timeout_sec = timeout_sec
 
     @staticmethod
-    def _api_root(base_url: str) -> str:
+    def _normalize_api_root(base_url: str) -> str:
         url = str(base_url or '').strip()
         if not url:
             raise ValueError('api_base_url is required')
@@ -28,6 +29,30 @@ class Sam3Client:
         if url.lower().endswith('/health'):
             return url[:-len('/health')]
         return url
+
+    @staticmethod
+    def _api_root(base_url: str) -> str:
+        root = Sam3Client._normalize_api_root(base_url)
+        raw_allowed = os.getenv(
+            'WEB_AUTO_ALLOWED_SAM3_API_BASE_URLS',
+            os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001'),
+        )
+        allowed_roots = {
+            Sam3Client._normalize_api_root(item)
+            for item in str(raw_allowed or '').split(',')
+            if str(item or '').strip()
+        }
+        if allowed_roots and root not in allowed_roots:
+            allowed_text = ', '.join(sorted(allowed_roots))
+            raise ValueError(f'api_base_url is not allowed: {root}; allowed: {allowed_text}')
+        return root
+
+    @staticmethod
+    def _auth_headers() -> dict[str, str]:
+        token = os.getenv('WEB_AUTO_SAM3_API_TOKEN', '').strip()
+        if not token:
+            return {}
+        return {'Authorization': f'Bearer {token}'}
 
     @staticmethod
     def _infer_url(base_url: str) -> str:
@@ -77,7 +102,7 @@ class Sam3Client:
         return Sam3Client._api_root(base_url) + '/v1/video/session/reset'
 
     def _get_json(self, url: str, timeout: float | None = None) -> dict[str, Any]:
-        resp = requests.get(url, timeout=timeout or max(self.timeout_sec, 1.0))
+        resp = requests.get(url, headers=self._auth_headers(), timeout=timeout or max(self.timeout_sec, 1.0))
         try:
             data = resp.json()
         except Exception:
@@ -88,7 +113,12 @@ class Sam3Client:
         return data if isinstance(data, dict) else {}
 
     def _post_json(self, url: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        resp = requests.post(url, json=payload, timeout=timeout or max(self.timeout_sec, 1.0))
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=self._auth_headers(),
+            timeout=timeout or max(self.timeout_sec, 1.0),
+        )
         try:
             data = resp.json()
         except Exception:
@@ -139,7 +169,13 @@ class Sam3Client:
 
         with image_file.open('rb') as f:
             files = {'file': (image_file.name, f, 'application/octet-stream')}
-            resp = requests.post(infer_url, data=payload, files=files, timeout=max(self.timeout_sec, 1.0))
+            resp = requests.post(
+                infer_url,
+                data=payload,
+                files=files,
+                headers=self._auth_headers(),
+                timeout=max(self.timeout_sec, 1.0),
+            )
 
         try:
             data = resp.json()
@@ -178,7 +214,13 @@ class Sam3Client:
 
         with image_file.open('rb') as f:
             files = {'file': (image_file.name, f, 'application/octet-stream')}
-            resp = requests.post(infer_url, data=payload, files=files, timeout=max(self.timeout_sec, 1.0))
+            resp = requests.post(
+                infer_url,
+                data=payload,
+                files=files,
+                headers=self._auth_headers(),
+                timeout=max(self.timeout_sec, 1.0),
+            )
 
         try:
             data = resp.json()
@@ -234,7 +276,13 @@ class Sam3Client:
             for item in clean_paths:
                 handles.append(item.open('rb'))
                 files.append(('files', (item.name, handles[-1], 'application/octet-stream')))
-            resp = requests.post(infer_url, data=payload, files=files, timeout=max(self.timeout_sec * 4.0, 120.0))
+            resp = requests.post(
+                infer_url,
+                data=payload,
+                files=files,
+                headers=self._auth_headers(),
+                timeout=max(self.timeout_sec * 4.0, 120.0),
+            )
         finally:
             for handle in handles:
                 try:
@@ -294,7 +342,13 @@ class Sam3Client:
                 handles.append(item.open('rb'))
                 files.append(('files', (item.name, handles[-1], 'application/octet-stream')))
 
-            resp = requests.post(infer_url, data=payload, files=files, timeout=max(self.timeout_sec * 4.0, 120.0))
+            resp = requests.post(
+                infer_url,
+                data=payload,
+                files=files,
+                headers=self._auth_headers(),
+                timeout=max(self.timeout_sec * 4.0, 120.0),
+            )
         finally:
             for handle in handles:
                 try:
@@ -397,6 +451,7 @@ class Sam3Client:
                 self._video_start_upload_url(api_base_url),
                 data=data,
                 files=files,
+                headers=self._auth_headers(),
                 timeout=max(self.timeout_sec * 10.0, 120.0),
             )
         try:

@@ -47,6 +47,14 @@ export const i18n = {
     sam_api_url: 'sam3-api 地址 (Local)',
     cache_dir: '服务器缓存目录 (Server)',
     language: '语言 (Language)',
+    account: '登录管理',
+    current_password: '当前密码',
+    new_password: '新密码',
+    confirm_password: '确认新密码',
+    change_password: '修改密码',
+    password_changed_login_again: '密码已修改，请重新登录',
+    password_confirm_mismatch: '两次输入的新密码不一致',
+    logout: '退出登录',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API 地址',
@@ -197,6 +205,14 @@ export const i18n = {
     sam_api_url: 'sam3-api URL (Local)',
     cache_dir: 'Server Cache Directory',
     language: 'Language',
+    account: 'Account',
+    current_password: 'Current Password',
+    new_password: 'New Password',
+    confirm_password: 'Confirm New Password',
+    change_password: 'Change Password',
+    password_changed_login_again: 'Password changed. Please sign in again.',
+    password_confirm_mismatch: 'New passwords do not match',
+    logout: 'Sign Out',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API URL',

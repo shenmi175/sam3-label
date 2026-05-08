@@ -16,10 +16,20 @@ export const api = {
     const response = await fetch(`${API_BASE}${endpoint}`, options);
     if (!response.ok) {
       let errorMsg = response.statusText;
+      let errorCode = '';
       try {
         const d = await response.json();
+        if (d && d.code) errorCode = String(d.code);
         if (d && d.detail) errorMsg = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail);
       } catch(e) {}
+      if (response.status === 401 || errorCode === 'login_required') {
+        window.location.href = '/login';
+        throw new Error('Login required');
+      }
+      if (response.status === 403 && errorCode === 'setup_required') {
+        window.location.href = '/setup';
+        throw new Error('Setup required');
+      }
       throw new Error(`API Error ${response.status}: ${errorMsg}`);
     }
     return response.json();
@@ -28,6 +38,14 @@ export const api = {
   getProjects() { return this.request('GET', '/projects'); },
   getProject(id, includeImages=false) { return this.request('GET', `/projects/${id}?include_images=${includeImages}`); },
   getHealth() { return this.request('GET', '/health'); },
+  getAuthStatus() { return this.request('GET', '/auth/status'); },
+  logout() { return this.request('POST', '/auth/logout'); },
+  changePassword(currentPassword, newPassword) {
+    return this.request('POST', '/auth/password', {
+      current_password: currentPassword,
+      new_password: newPassword
+    });
+  },
   createProject(data) { return this.request('POST', '/projects/open', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   

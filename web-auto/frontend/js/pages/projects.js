@@ -27,6 +27,7 @@ export const ProjectsPage = {
                  <span id="theme-icon">🌓</span>
               </button>
               <button id="btn-settings" class="neu-button" style="padding: 8px 16px;">${i18n.t('global_settings')}</button>
+              <button id="btn-logout" class="neu-button" style="padding: 8px 16px;">${i18n.t('logout')}</button>
            </div>
         </div>
 
@@ -98,7 +99,7 @@ export const ProjectsPage = {
 
       <!-- Modal for Settings -->
       <div id="modal-settings" class="modal-overlay" style="display: none;">
-        <div class="neu-card modal-content" style="width: 400px; padding: 30px; position: relative;">
+        <div class="neu-card modal-content" style="width: 460px; padding: 30px; position: relative;">
           <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-settings').style.display='none'">×</button>
           <h2 style="margin-top:0;">${i18n.t('global_settings')}</h2>
           <div style="margin-bottom: 16px;">
@@ -115,6 +116,23 @@ export const ProjectsPage = {
                <option value="zh">简体中文</option>
                <option value="en">English</option>
             </select>
+          </div>
+          <div style="height: 1px; background: rgba(0,0,0,0.08); margin: 22px 0;"></div>
+          <h3 style="margin: 0 0 14px; font-size: 16px;">${i18n.t('account')}</h3>
+          <div style="margin-bottom: 14px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('current_password')}</label>
+            <input type="password" id="inp-current-password" class="neu-input" autocomplete="current-password" />
+          </div>
+          <div style="margin-bottom: 14px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('new_password')}</label>
+            <input type="password" id="inp-new-password" class="neu-input" autocomplete="new-password" />
+          </div>
+          <div style="margin-bottom: 18px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('confirm_password')}</label>
+            <input type="password" id="inp-confirm-password" class="neu-input" autocomplete="new-password" />
+          </div>
+          <div style="display: flex; justify-content: flex-end; margin-bottom: 22px;">
+            <button id="btn-change-password" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('change_password')}</button>
           </div>
           <div style="display: flex; justify-content: flex-end; gap: 12px;">
             <button id="btn-save-settings" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('save')}</button>
@@ -163,6 +181,7 @@ export const ProjectsPage = {
   bindEvents() {
     const btnSet = document.getElementById('btn-settings');
     const btnTheme = document.getElementById('btn-toggle-theme');
+    const btnLogout = document.getElementById('btn-logout');
     const modalSet = document.getElementById('modal-settings');
     const btnSubmitNew = document.getElementById('btn-submit-new');
     const btnCloseSet = document.getElementById('btn-close-settings');
@@ -183,6 +202,13 @@ export const ProjectsPage = {
       store.setConfig('theme', next);
       updateThemeIcon();
       showToast(`Switched to ${next} mode`);
+    };
+
+    btnLogout.onclick = async () => {
+      try {
+        await api.logout();
+      } catch(e) {}
+      window.location.href = '/login';
     };
 
     typeSelect.onchange = (e) => {
@@ -253,6 +279,23 @@ export const ProjectsPage = {
       if (langChanged) {
         showToast(i18n.t('switch_lang'));
         this.render(this.container); // Hard refresh UI
+      }
+    };
+
+    document.getElementById('btn-change-password').onclick = async () => {
+      const currentPassword = document.getElementById('inp-current-password').value;
+      const newPassword = document.getElementById('inp-new-password').value;
+      const confirmPassword = document.getElementById('inp-confirm-password').value;
+      if (newPassword !== confirmPassword) {
+        showToast(i18n.t('password_confirm_mismatch'), 'error');
+        return;
+      }
+      try {
+        await api.changePassword(currentPassword, newPassword);
+        showToast(i18n.t('password_changed_login_again'), 'success');
+        setTimeout(() => { window.location.href = '/login'; }, 800);
+      } catch(e) {
+        showToast(e.message, 'error');
       }
     };
 

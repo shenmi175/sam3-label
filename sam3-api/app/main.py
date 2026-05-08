@@ -1,11 +1,14 @@
 import json
 import logging
+import hmac
+import os
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.engine import Sam3InferenceEngine
@@ -25,6 +28,21 @@ from app.schemas import (
 from app.utils import load_image_from_bytes
 
 logger = logging.getLogger("sam3_api")
+
+
+def _configured_api_token() -> str:
+    return os.getenv("SAM3_API_TOKEN", "").strip()
+
+
+def _request_api_token(request: Request) -> str:
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return str(request.headers.get("x-sam3-api-key") or "").strip()
+
+
+def _token_auth_exempt(path: str) -> bool:
+    return path == "/health"
 
 
 def _parse_bool_label(raw: object, default: bool = True) -> bool:
@@ -187,6 +205,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_internal_api_token(request: Request, call_next):
+        token = _configured_api_token()
+        if token and request.method.upper() != "OPTIONS" and not _token_auth_exempt(request.url.path):
+            provided = _request_api_token(request)
+            if not provided or not hmac.compare_digest(provided, token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "missing or invalid sam3-api token"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
     app.state.settings = settings
     app.state.engine = engine
