@@ -1,4 +1,5 @@
 import { ProjectsPage } from './pages/projects.js';
+import { SettingsPage } from './pages/settings.js';
 import { ImageWorkspace } from './pages/image-workspace.js';
 import { VideoWorkspace } from './pages/video-workspace.js';
 import { router } from './router.js';
@@ -31,6 +32,7 @@ export async function bootstrap() {
   };
 
   router.addRoute('/', ProjectsPage);
+  router.addRoute('/settings', SettingsPage);
   router.addRoute('/project/image/:id', ImageWorkspace);
   router.addRoute('/project/video/:id', VideoWorkspace);
   router.init();

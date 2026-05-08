@@ -461,9 +461,23 @@ def request(method, path, payload=None, token=None):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"NPM API HTTP {exc.code}: {detail[:240]}") from exc
+
+def proxy_host_request(method, path, payload, token=None):
+    try:
+        return request(method, path, payload, token=token)
+    except Exception as exc:
+        if "data/meta must NOT have additional properties" not in str(exc):
+            raise
+        retry_payload = dict(payload)
+        retry_payload["meta"] = {}
+        return request(method, path, retry_payload, token=token)
 
 last_error = None
 for _ in range(45):
@@ -496,7 +510,7 @@ body = {
     "caching_enabled": False,
     "block_exploits": True,
     "advanced_config": "",
-    "meta": {"letsencrypt_agree": False, "dns_challenge": False},
+    "meta": {},
     "allow_websocket_upgrade": True,
     "http2_support": False,
     "hsts_enabled": False,
@@ -507,9 +521,9 @@ body = {
 
 if target:
     host_id = target["id"]
-    request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
+    proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
 else:
-    created = request("POST", "/api/nginx/proxy-hosts", body, token=token)
+    created = proxy_host_request("POST", "/api/nginx/proxy-hosts", body, token=token)
     host_id = created["id"]
 
 if use_ssl:
@@ -535,8 +549,8 @@ if use_ssl:
     body["certificate_id"] = cert_id
     body["ssl_forced"] = bool(force_ssl)
     body["http2_support"] = True
-    body["meta"] = {"letsencrypt_agree": True, "dns_challenge": False}
-    request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
+    body["meta"] = {}
+    proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
 
 print(f"configured proxy host id={host_id} domains={','.join(domains)} ssl={'yes' if use_ssl else 'no'}")
 PY

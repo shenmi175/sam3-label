@@ -1,6 +1,6 @@
 # Docker + Nginx Proxy Manager 部署
 
-该部署方式只对公网暴露 Nginx Proxy Manager 的 `80/443/81` 端口。`web-auto` 和 `sam3-api` 不再发布宿主机端口，只能在 Docker 内部网络访问。
+该部署方式长期只需要对公网暴露 Nginx Proxy Manager 的 `80/443` 端口。`sam3-api` 不发布宿主机端口；`web-auto` 默认临时暴露 `8000` 作为首次登录和配置入口，配置好域名反代后可以在 `.env` 里把 `WEB_AUTO_BOOTSTRAP_BIND` 改为 `127.0.0.1`。
 
 ## 目录准备
 
@@ -132,7 +132,7 @@ http://sam3-api:8001
 ## 安全边界
 
 - 服务器安全组只需要长期开放 `80/443`。
-- `81` 是 NPM 管理端口，建议仅首次配置时开放，或限制为你的固定 IP。
+- `81` 是 NPM 管理端口，默认只绑定 `127.0.0.1`，日常域名反代配置在 `web-auto` 的设置页完成。
 - 不要给 `sam3-api` 创建公网 Proxy Host。
 - `.env` 里的 `SAM3_API_TOKEN` 同时用于 `sam3-api` 校验和 `web-auto` 内部调用。
 - `web-auto/data/auth.json` 保存管理员密码哈希，不保存明文密码。

@@ -97,71 +97,6 @@ export const ProjectsPage = {
         </div>
       </div>
 
-      <!-- Modal for Settings -->
-      <div id="modal-settings" class="modal-overlay" style="display: none;">
-        <div class="neu-card modal-content" style="width: 460px; padding: 30px; position: relative;">
-          <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-settings').style.display='none'">×</button>
-          <h2 style="margin-top:0;">${i18n.t('global_settings')}</h2>
-          <div style="margin-bottom: 16px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('sam_api_url')}</label>
-            <input type="text" id="inp-set-samurl" class="neu-input" />
-          </div>
-          <div style="margin-bottom: 16px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('cache_dir')}</label>
-            <input type="text" id="inp-set-cachedir" class="neu-input" placeholder="/absolute/path/to/data" />
-          </div>
-          <div style="margin-bottom: 24px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('language')}</label>
-            <select id="inp-set-lang" class="neu-input">
-               <option value="zh">简体中文</option>
-               <option value="en">English</option>
-            </select>
-          </div>
-          <div style="height: 1px; background: rgba(0,0,0,0.08); margin: 22px 0;"></div>
-          <h3 style="margin: 0 0 14px; font-size: 16px;">${i18n.t('reverse_proxy')}</h3>
-          <div style="margin-bottom: 14px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_domains')}</label>
-            <input type="text" id="inp-proxy-domains" class="neu-input" placeholder="label.example.com" />
-          </div>
-          <div style="margin-bottom: 14px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_email')}</label>
-            <input type="email" id="inp-proxy-email" class="neu-input" placeholder="admin@example.com" />
-          </div>
-          <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 10px; font-weight: 600; font-size: 13px;">
-            <input type="checkbox" id="inp-proxy-ssl" checked />
-            ${i18n.t('proxy_request_ssl')}
-          </label>
-          <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 14px; font-weight: 600; font-size: 13px;">
-            <input type="checkbox" id="inp-proxy-force-ssl" checked />
-            ${i18n.t('proxy_force_ssl')}
-          </label>
-          <div id="proxy-status" style="font-size: 12px; color: var(--neu-text-light); margin-bottom: 14px;"></div>
-          <div style="display: flex; justify-content: flex-end; margin-bottom: 22px;">
-            <button id="btn-save-proxy" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('proxy_save')}</button>
-          </div>
-          <div style="height: 1px; background: rgba(0,0,0,0.08); margin: 22px 0;"></div>
-          <h3 style="margin: 0 0 14px; font-size: 16px;">${i18n.t('account')}</h3>
-          <div style="margin-bottom: 14px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('current_password')}</label>
-            <input type="password" id="inp-current-password" class="neu-input" autocomplete="current-password" />
-          </div>
-          <div style="margin-bottom: 14px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('new_password')}</label>
-            <input type="password" id="inp-new-password" class="neu-input" autocomplete="new-password" />
-          </div>
-          <div style="margin-bottom: 18px;">
-            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('confirm_password')}</label>
-            <input type="password" id="inp-confirm-password" class="neu-input" autocomplete="new-password" />
-          </div>
-          <div style="display: flex; justify-content: flex-end; margin-bottom: 22px;">
-            <button id="btn-change-password" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('change_password')}</button>
-          </div>
-          <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button id="btn-save-settings" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('save')}</button>
-            <button id="btn-close-settings" class="neu-button">${i18n.t('close')}</button>
-          </div>
-        </div>
-      </div>
     `;
 
     this.bindEvents();
@@ -204,10 +139,7 @@ export const ProjectsPage = {
     const btnSet = document.getElementById('btn-settings');
     const btnTheme = document.getElementById('btn-toggle-theme');
     const btnLogout = document.getElementById('btn-logout');
-    const modalSet = document.getElementById('modal-settings');
     const btnSubmitNew = document.getElementById('btn-submit-new');
-    const btnCloseSet = document.getElementById('btn-close-settings');
-    const inpSamUrl = document.getElementById('inp-set-samurl');
     const typeSelect = document.getElementById('inp-pj-type');
     const imgWrapper = document.getElementById('dir-image-wrapper');
     const vidWrapper = document.getElementById('dir-video-wrapper');
@@ -275,84 +207,7 @@ export const ProjectsPage = {
       }
     };
 
-    btnSet.onclick = async () => {
-      inpSamUrl.value = store.state.config.sam3ApiUrl;
-      document.getElementById('inp-set-lang').value = store.state.config.language;
-      modalSet.style.display = 'flex';
-      try {
-        const res = await api.getCacheDir();
-        if (res && res.cache_dir) document.getElementById('inp-set-cachedir').value = res.cache_dir;
-      } catch(e) {}
-      try {
-        const res = await api.getProxyConfig();
-        const cfg = res?.config || {};
-        if (Array.isArray(cfg.domain_names)) document.getElementById('inp-proxy-domains').value = cfg.domain_names.join(', ');
-        if (cfg.letsencrypt_email) document.getElementById('inp-proxy-email').value = cfg.letsencrypt_email;
-        if (typeof cfg.request_ssl === 'boolean') document.getElementById('inp-proxy-ssl').checked = cfg.request_ssl;
-        if (typeof cfg.force_ssl === 'boolean') document.getElementById('inp-proxy-force-ssl').checked = cfg.force_ssl;
-        if (cfg.url) document.getElementById('proxy-status').textContent = i18n.t('proxy_configured', {url: cfg.url});
-      } catch(e) {}
-    };
-    
-    document.getElementById('btn-save-settings').onclick = async () => {
-      const newLang = document.getElementById('inp-set-lang').value;
-      const langChanged = newLang !== store.state.config.language;
-      
-      store.setConfig('sam3ApiUrl', inpSamUrl.value);
-      store.setConfig('language', newLang);
-      
-      const newCacheDir = document.getElementById('inp-set-cachedir').value;
-      if (newCacheDir) {
-        try { await api.setCacheDir(newCacheDir); } catch(e) { showToast(e.message, 'error'); }
-      }
-      modalSet.style.display = 'none';
-      
-      if (langChanged) {
-        showToast(i18n.t('switch_lang'));
-        this.render(this.container); // Hard refresh UI
-      }
-    };
-
-    document.getElementById('btn-change-password').onclick = async () => {
-      const currentPassword = document.getElementById('inp-current-password').value;
-      const newPassword = document.getElementById('inp-new-password').value;
-      const confirmPassword = document.getElementById('inp-confirm-password').value;
-      if (newPassword !== confirmPassword) {
-        showToast(i18n.t('password_confirm_mismatch'), 'error');
-        return;
-      }
-      try {
-        await api.changePassword(currentPassword, newPassword);
-        showToast(i18n.t('password_changed_login_again'), 'success');
-        setTimeout(() => { window.location.href = '/login'; }, 800);
-      } catch(e) {
-        showToast(e.message, 'error');
-      }
-    };
-
-    document.getElementById('btn-save-proxy').onclick = async () => {
-      const btn = document.getElementById('btn-save-proxy');
-      const status = document.getElementById('proxy-status');
-      const payload = {
-        domain_names: document.getElementById('inp-proxy-domains').value,
-        letsencrypt_email: document.getElementById('inp-proxy-email').value,
-        request_ssl: document.getElementById('inp-proxy-ssl').checked,
-        force_ssl: document.getElementById('inp-proxy-force-ssl').checked,
-      };
-      try {
-        btn.disabled = true;
-        const res = await api.setProxyConfig(payload);
-        const cfg = res?.config || {};
-        status.textContent = i18n.t('proxy_configured', {url: cfg.url || payload.domain_names});
-        showToast(status.textContent, 'success');
-      } catch(e) {
-        showToast(e.message, 'error');
-      } finally {
-        btn.disabled = false;
-      }
-    };
-
-    btnCloseSet.onclick = () => modalSet.style.display = 'none';
+    btnSet.onclick = () => router.navigate('/settings');
 
     // Upload / Add Data Modal
     const modalUpload = document.getElementById('modal-upload');

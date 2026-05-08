@@ -440,6 +440,20 @@ def _json_request(method: str, url: str, payload: dict[str, Any] | None = None, 
         raise RuntimeError(f'NPM API HTTP {exc.code}: {detail[:240]}') from exc
 
 
+def _npm_proxy_host_request(method: str, url: str, payload: dict[str, Any], token: str) -> Any:
+    try:
+        return _json_request(method, url, payload, token=token)
+    except RuntimeError as exc:
+        # NPM 2.12+ validates proxy-host meta strictly. Older configs often
+        # carried Let's Encrypt fields here, but certificate options belong on
+        # /api/nginx/certificates instead.
+        if 'data/meta must NOT have additional properties' not in str(exc):
+            raise
+        retry_payload = dict(payload)
+        retry_payload['meta'] = {}
+        return _json_request(method, url, retry_payload, token=token)
+
+
 def _npm_base_url() -> str:
     return os.getenv('NPM_INTERNAL_URL', 'http://nginx-proxy-manager:81').strip().rstrip('/')
 
@@ -516,7 +530,7 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
         'caching_enabled': False,
         'block_exploits': True,
         'advanced_config': '',
-        'meta': {'letsencrypt_agree': False, 'dns_challenge': False},
+        'meta': {},
         'allow_websocket_upgrade': True,
         'http2_support': False,
         'hsts_enabled': False,
@@ -527,9 +541,9 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
 
     if target:
         host_id = int(target['id'])
-        _json_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
+        _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
     else:
-        created = _json_request('POST', f'{base_url}/api/nginx/proxy-hosts', body, token=token)
+        created = _npm_proxy_host_request('POST', f'{base_url}/api/nginx/proxy-hosts', body, token=token)
         host_id = int(created['id'])
 
     certificate_id = 0
@@ -556,8 +570,8 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
         body['certificate_id'] = certificate_id
         body['ssl_forced'] = bool(payload.force_ssl)
         body['http2_support'] = True
-        body['meta'] = {'letsencrypt_agree': True, 'dns_challenge': False}
-        _json_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
+        body['meta'] = {}
+        _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
 
     result = {
         'ok': True,
