@@ -4,6 +4,8 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
 DOCKER_CMD=()
+FORCE_PROFILE_PROMPT=0
+FORCE_CONFIG_PROMPT=0
 
 info() {
   printf '\033[1;34m==>\033[0m %s\n' "$*"
@@ -20,7 +22,9 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: ./deploy.sh <command> [options]
+Usage: ./deploy.sh [command] [options]
+
+Running ./deploy.sh without a command starts the interactive install wizard.
 
 Commands:
   install            Guided first-time setup, image pull, build, and start.
@@ -31,6 +35,8 @@ Commands:
   status             Show container status.
   logs [service]     Follow logs for all services or one service.
   mirror [url]       Configure a Docker Hub registry mirror.
+  gpu-check          Check host NVIDIA driver and Docker GPU runtime.
+  gpu-install        Install/configure NVIDIA Container Toolkit for Docker.
   config             Render the effective Docker Compose config.
   uninstall          Run scripts/uninstall.sh.
   help               Show this help.
@@ -40,12 +46,16 @@ Options for install/update/start:
   --cpu              Use CPU profile for functional testing.
   --mirror URL       Configure Docker Hub mirror before pulling images.
   --skip-pull        Skip pre-pulling base images.
+  --skip-gpu-check   Skip Docker GPU runtime preflight.
   --skip-git         update only: skip git pull.
 
 Examples:
+  ./deploy.sh
   ./deploy.sh install
   ./deploy.sh install --mirror https://your-mirror.example
   ./deploy.sh update
+  ./deploy.sh gpu-check
+  ./deploy.sh gpu-install
   ./deploy.sh restart web-auto
   ./deploy.sh logs sam3-api
 EOF
@@ -76,6 +86,28 @@ prompt_yes_no() {
   fi
   answer="${answer:-$default_value}"
   [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+prompt_choice() {
+  local prompt="$1"
+  local default_value="$2"
+  local choices="$3"
+  local answer=""
+  if ! is_interactive; then
+    printf '%s' "$default_value"
+    return
+  fi
+  while true; do
+    read -r -p "$prompt ($choices) [$default_value]: " answer
+    answer="${answer:-$default_value}"
+    for choice in $choices; do
+      if [[ "$answer" == "$choice" ]]; then
+        printf '%s' "$answer"
+        return
+      fi
+    done
+    warn "Invalid choice: $answer"
+  done
 }
 
 require_command() {
@@ -206,13 +238,10 @@ ensure_env() {
   if [[ -n "$profile_override" ]]; then
     profile="$profile_override"
   fi
-  if [[ -z "$profile" ]]; then
+  if [[ "$FORCE_PROFILE_PROMPT" -eq 1 && -z "$profile_override" && is_interactive ]]; then
+    profile="$(prompt_choice "Deployment mode" "${profile:-gpu}" "gpu cpu")"
+  elif [[ -z "$profile" ]]; then
     profile="gpu"
-    if is_interactive; then
-      if prompt_yes_no "Use CPU mode instead of GPU mode" "n"; then
-        profile="cpu"
-      fi
-    fi
   fi
   case "$profile" in
     gpu)
@@ -230,9 +259,22 @@ ensure_env() {
 
   local host_root
   host_root="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
-  if [[ -z "$host_root" || ( "$host_root" == "/home/zmb" && ! -d /home/zmb ) ]]; then
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    host_root="$(prompt_value "Host data root mounted into web-auto" "${host_root:-${HOME:-$ROOT_DIR}}")"
+    set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
+  elif [[ -z "$host_root" || ( "$host_root" == "/home/zmb" && ! -d /home/zmb ) ]]; then
     host_root="$(prompt_value "Host data root mounted into web-auto" "${HOME:-$ROOT_DIR}")"
     set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
+  fi
+
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    local http_port https_port admin_port
+    http_port="$(prompt_value "Nginx Proxy Manager HTTP port" "$(get_env_var NPM_HTTP_PORT || true)")"
+    https_port="$(prompt_value "Nginx Proxy Manager HTTPS port" "$(get_env_var NPM_HTTPS_PORT || true)")"
+    admin_port="$(prompt_value "Nginx Proxy Manager admin port" "$(get_env_var NPM_ADMIN_PORT || true)")"
+    set_env_var NPM_HTTP_PORT "${http_port:-80}"
+    set_env_var NPM_HTTPS_PORT "${https_port:-443}"
+    set_env_var NPM_ADMIN_PORT "${admin_port:-81}"
   fi
 
   local web_data sam_data ckpt_dir
@@ -320,6 +362,101 @@ required_images() {
   printf '%s\n' "${base_image:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}"
 }
 
+docker_has_nvidia_runtime() {
+  "${DOCKER_CMD[@]}" info 2>/dev/null | awk '
+    BEGIN { in_runtimes = 0 }
+    /^ Runtimes:/ { in_runtimes = 1; if ($0 ~ /(^|[[:space:]])nvidia([[:space:]]|$)/) found = 1; next }
+    in_runtimes && /^[^[:space:]]/ { in_runtimes = 0 }
+    in_runtimes && /(^|[[:space:]])nvidia([[:space:]]|$)/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+gpu_preflight() {
+  [[ "$(effective_profile)" == "gpu" ]] || return 0
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    if is_interactive && prompt_yes_no "nvidia-smi was not found. Switch this deployment to CPU mode" "y"; then
+      set_env_var SAM3_DEPLOY_PROFILE "cpu"
+      set_env_var SAM3_API_DEVICE "cpu"
+      return 0
+    fi
+    die "GPU mode selected but nvidia-smi is not available on the host. Install the NVIDIA driver or run './deploy.sh install --cpu'."
+  fi
+  if ! docker_has_nvidia_runtime; then
+    if is_interactive; then
+      warn "Docker NVIDIA runtime is missing."
+      if prompt_yes_no "Install/configure NVIDIA Container Toolkit now" "y"; then
+        install_nvidia_container_toolkit
+        return 0
+      fi
+      if prompt_yes_no "Switch this deployment to CPU mode for now" "n"; then
+        set_env_var SAM3_DEPLOY_PROFILE "cpu"
+        set_env_var SAM3_API_DEVICE "cpu"
+        return 0
+      fi
+    fi
+    cat >&2 <<'EOF'
+Docker cannot allocate GPUs because the NVIDIA Container Toolkit runtime is not configured.
+
+Fix:
+  ./deploy.sh gpu-install
+  ./deploy.sh start --gpu
+
+Temporary CPU mode:
+  ./deploy.sh start --cpu
+EOF
+    exit 1
+  fi
+}
+
+gpu_status_report() {
+  select_docker
+  echo "Host NVIDIA driver:"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=index,name,driver_version,memory.total --format=csv,noheader || nvidia-smi
+  else
+    echo "  nvidia-smi: not found"
+  fi
+  echo
+  echo "Docker runtimes:"
+  "${DOCKER_CMD[@]}" info | sed -n '/Runtimes:/,/Default Runtime:/p'
+  echo
+  if docker_has_nvidia_runtime; then
+    echo "Docker NVIDIA runtime: configured"
+  else
+    echo "Docker NVIDIA runtime: missing"
+    echo "Run: ./deploy.sh gpu-install"
+  fi
+}
+
+install_nvidia_container_toolkit() {
+  command -v sudo >/dev/null 2>&1 || die "sudo is required to install NVIDIA Container Toolkit."
+  command -v curl >/dev/null 2>&1 || die "curl is required. Install curl first or configure your package source."
+  command -v gpg >/dev/null 2>&1 || die "gpg is required. Install gnupg first."
+
+  info "Installing NVIDIA Container Toolkit for Docker"
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg2
+  sudo rm -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y nvidia-container-toolkit
+  sudo nvidia-ctk runtime configure --runtime=docker
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl restart docker
+  else
+    sudo service docker restart
+  fi
+  DOCKER_CMD=()
+  select_docker
+  docker_has_nvidia_runtime || die "nvidia-container-toolkit installed, but Docker still does not list the nvidia runtime."
+  info "NVIDIA Container Toolkit is configured."
+}
+
 pull_required_images() {
   local failed=0
   while IFS= read -r image; do
@@ -361,6 +498,7 @@ parse_common_options() {
   MIRROR_URL=""
   SKIP_PULL=0
   SKIP_GIT=0
+  SKIP_GPU_CHECK=0
   POSITIONAL=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -381,6 +519,10 @@ parse_common_options() {
         SKIP_PULL=1
         shift
         ;;
+      --skip-gpu-check)
+        SKIP_GPU_CHECK=1
+        shift
+        ;;
       --skip-git)
         SKIP_GIT=1
         shift
@@ -396,9 +538,20 @@ parse_common_options() {
 cmd_install() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown install option: ${POSITIONAL[*]}"
+  if is_interactive; then
+    info "Starting interactive SAM3 deployment wizard. Press Enter to accept defaults."
+    [[ -z "$PROFILE_OVERRIDE" ]] && FORCE_PROFILE_PROMPT=1
+    FORCE_CONFIG_PROMPT=1
+  fi
   ensure_env "$PROFILE_OVERRIDE"
   select_docker
+  if [[ -z "$MIRROR_URL" && is_interactive ]]; then
+    if prompt_yes_no "Configure a Docker Hub registry mirror now" "n"; then
+      MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
+    fi
+  fi
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
+  [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
 
   if [[ "$SKIP_PULL" -eq 0 ]]; then
     if ! pull_required_images; then
@@ -424,6 +577,7 @@ cmd_update() {
   ensure_env "$PROFILE_OVERRIDE"
   select_docker
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
+  [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
 
   if [[ "$SKIP_GIT" -eq 0 && -d "$ROOT_DIR/.git" ]]; then
     info "Pulling latest git changes"
@@ -444,6 +598,7 @@ cmd_start() {
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
   select_docker
+  [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
   compose up -d
   compose ps
 }
@@ -485,13 +640,32 @@ cmd_mirror() {
   "${DOCKER_CMD[@]}" info | sed -n '/Registry Mirrors/,+8p'
 }
 
+cmd_gpu_check() {
+  gpu_status_report
+}
+
+cmd_gpu_install() {
+  install_nvidia_container_toolkit
+  gpu_status_report
+}
+
 cmd_uninstall() {
   "$ROOT_DIR/scripts/uninstall.sh" "$@"
 }
 
 main() {
-  local command="${1:-help}"
-  [[ $# -gt 0 ]] && shift || true
+  local command="install"
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      --*)
+        command="install"
+        ;;
+      *)
+        command="$1"
+        shift
+        ;;
+    esac
+  fi
   case "$command" in
     install) cmd_install "$@" ;;
     update) cmd_update "$@" ;;
@@ -501,6 +675,8 @@ main() {
     status|ps) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     mirror) cmd_mirror "$@" ;;
+    gpu-check) cmd_gpu_check "$@" ;;
+    gpu-install) cmd_gpu_install "$@" ;;
     config) cmd_config "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
     help|-h|--help) usage ;;

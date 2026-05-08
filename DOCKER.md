@@ -5,15 +5,16 @@
 ## 目录准备
 
 ```bash
-./deploy.sh install
+./deploy.sh
 ```
 
 脚本会自动：
 
 - 复制 `.env.example` 到 `.env`。
 - 生成并写入 `SAM3_API_TOKEN`。
-- 引导选择 GPU/CPU 模式。
-- 设置 `WEB_AUTO_HOST_DATA_ROOT`。
+- 交互选择 GPU/CPU 模式，默认 GPU。
+- 交互设置 `WEB_AUTO_HOST_DATA_ROOT` 和 NPM 端口，直接回车使用默认值。
+- GPU 模式下检查 Docker NVIDIA runtime；缺失时提示是否自动安装 NVIDIA Container Toolkit，默认安装。
 - 创建持久化目录。
 - 预拉取基础镜像、构建并启动服务。
 - 如果 Docker Hub 拉取超时，提示输入 registry mirror 并自动写入 `/etc/docker/daemon.json`。
@@ -40,6 +41,12 @@ WEB_AUTO_HOST_DATA_ROOT=/path/to/your/data/root
 ./deploy.sh install --gpu
 ```
 
+也可以直接：
+
+```bash
+./deploy.sh
+```
+
 CPU 可用于功能验证，不建议用于大规模 SAM3 推理：
 
 ```bash
@@ -50,6 +57,34 @@ CPU 可用于功能验证，不建议用于大规模 SAM3 推理：
 
 ```bash
 ./deploy.sh install --mirror https://你的镜像站地址
+```
+
+如果宿主机 `nvidia-smi` 正常，但 Docker 报错：
+
+```text
+could not select device driver "" with capabilities: [[gpu]]
+```
+
+说明 Docker 还没有配置 NVIDIA Container Toolkit。运行：
+
+```bash
+./deploy.sh gpu-install
+./deploy.sh start --gpu
+```
+
+脚本内置的安装流程来自 NVIDIA 官方 Container Toolkit 文档：
+https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
+只检查 GPU/Docker runtime 状态：
+
+```bash
+./deploy.sh gpu-check
+```
+
+如果暂时只想先跑通面板和 CPU 功能：
+
+```bash
+./deploy.sh start --cpu
 ```
 
 ## 首次配置
