@@ -50,6 +50,8 @@ export const api = {
       new_password: newPassword
     });
   },
+  getProxyConfig() { return this.request('GET', '/proxy/config'); },
+  setProxyConfig(data) { return this.request('POST', '/proxy/config', data); },
   createProject(data) { return this.request('POST', '/projects/open', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   

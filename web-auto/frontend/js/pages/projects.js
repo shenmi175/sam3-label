@@ -118,6 +118,28 @@ export const ProjectsPage = {
             </select>
           </div>
           <div style="height: 1px; background: rgba(0,0,0,0.08); margin: 22px 0;"></div>
+          <h3 style="margin: 0 0 14px; font-size: 16px;">${i18n.t('reverse_proxy')}</h3>
+          <div style="margin-bottom: 14px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_domains')}</label>
+            <input type="text" id="inp-proxy-domains" class="neu-input" placeholder="label.example.com" />
+          </div>
+          <div style="margin-bottom: 14px;">
+            <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_email')}</label>
+            <input type="email" id="inp-proxy-email" class="neu-input" placeholder="admin@example.com" />
+          </div>
+          <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 10px; font-weight: 600; font-size: 13px;">
+            <input type="checkbox" id="inp-proxy-ssl" checked />
+            ${i18n.t('proxy_request_ssl')}
+          </label>
+          <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 14px; font-weight: 600; font-size: 13px;">
+            <input type="checkbox" id="inp-proxy-force-ssl" checked />
+            ${i18n.t('proxy_force_ssl')}
+          </label>
+          <div id="proxy-status" style="font-size: 12px; color: var(--neu-text-light); margin-bottom: 14px;"></div>
+          <div style="display: flex; justify-content: flex-end; margin-bottom: 22px;">
+            <button id="btn-save-proxy" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('proxy_save')}</button>
+          </div>
+          <div style="height: 1px; background: rgba(0,0,0,0.08); margin: 22px 0;"></div>
           <h3 style="margin: 0 0 14px; font-size: 16px;">${i18n.t('account')}</h3>
           <div style="margin-bottom: 14px;">
             <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('current_password')}</label>
@@ -261,6 +283,15 @@ export const ProjectsPage = {
         const res = await api.getCacheDir();
         if (res && res.cache_dir) document.getElementById('inp-set-cachedir').value = res.cache_dir;
       } catch(e) {}
+      try {
+        const res = await api.getProxyConfig();
+        const cfg = res?.config || {};
+        if (Array.isArray(cfg.domain_names)) document.getElementById('inp-proxy-domains').value = cfg.domain_names.join(', ');
+        if (cfg.letsencrypt_email) document.getElementById('inp-proxy-email').value = cfg.letsencrypt_email;
+        if (typeof cfg.request_ssl === 'boolean') document.getElementById('inp-proxy-ssl').checked = cfg.request_ssl;
+        if (typeof cfg.force_ssl === 'boolean') document.getElementById('inp-proxy-force-ssl').checked = cfg.force_ssl;
+        if (cfg.url) document.getElementById('proxy-status').textContent = i18n.t('proxy_configured', {url: cfg.url});
+      } catch(e) {}
     };
     
     document.getElementById('btn-save-settings').onclick = async () => {
@@ -296,6 +327,28 @@ export const ProjectsPage = {
         setTimeout(() => { window.location.href = '/login'; }, 800);
       } catch(e) {
         showToast(e.message, 'error');
+      }
+    };
+
+    document.getElementById('btn-save-proxy').onclick = async () => {
+      const btn = document.getElementById('btn-save-proxy');
+      const status = document.getElementById('proxy-status');
+      const payload = {
+        domain_names: document.getElementById('inp-proxy-domains').value,
+        letsencrypt_email: document.getElementById('inp-proxy-email').value,
+        request_ssl: document.getElementById('inp-proxy-ssl').checked,
+        force_ssl: document.getElementById('inp-proxy-force-ssl').checked,
+      };
+      try {
+        btn.disabled = true;
+        const res = await api.setProxyConfig(payload);
+        const cfg = res?.config || {};
+        status.textContent = i18n.t('proxy_configured', {url: cfg.url || payload.domain_names});
+        showToast(status.textContent, 'success');
+      } catch(e) {
+        showToast(e.message, 'error');
+      } finally {
+        btn.disabled = false;
       }
     };
 

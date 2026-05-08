@@ -299,13 +299,17 @@ ensure_env() {
   fi
 
   if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    local http_port https_port admin_port
+    local http_port https_port admin_port bootstrap_port bootstrap_bind
     http_port="$(prompt_value "Nginx Proxy Manager HTTP port" "$(get_env_var NPM_HTTP_PORT || true)")"
     https_port="$(prompt_value "Nginx Proxy Manager HTTPS port" "$(get_env_var NPM_HTTPS_PORT || true)")"
     admin_port="$(prompt_value "Nginx Proxy Manager admin port" "$(get_env_var NPM_ADMIN_PORT || true)")"
+    bootstrap_bind="$(prompt_value "web-auto bootstrap bind address" "$(get_env_var WEB_AUTO_BOOTSTRAP_BIND || true)")"
+    bootstrap_port="$(prompt_value "web-auto bootstrap port" "$(get_env_var WEB_AUTO_BOOTSTRAP_PORT || true)")"
     set_env_var NPM_HTTP_PORT "${http_port:-80}"
     set_env_var NPM_HTTPS_PORT "${https_port:-443}"
     set_env_var NPM_ADMIN_PORT "${admin_port:-81}"
+    set_env_var WEB_AUTO_BOOTSTRAP_BIND "${bootstrap_bind:-0.0.0.0}"
+    set_env_var WEB_AUTO_BOOTSTRAP_PORT "${bootstrap_port:-8000}"
   fi
 
   local web_data sam_data ckpt_dir
@@ -659,8 +663,9 @@ pull_required_images() {
 }
 
 print_next_steps() {
-  local admin_port host_ip web_user web_password npm_email npm_password
+  local admin_port bootstrap_port host_ip web_user web_password npm_email npm_password
   admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
+  bootstrap_port="$(get_env_var WEB_AUTO_BOOTSTRAP_PORT || true)"
   host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   host_ip="${host_ip:-SERVER_IP}"
   web_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
@@ -671,27 +676,21 @@ print_next_steps() {
 
 Deployment is running.
 
-Nginx Proxy Manager admin:
-  http://${host_ip}:${admin_port:-81}
-
-Nginx Proxy Manager default login:
-  Email: ${npm_email:-admin@example.com}
-  Password: ${npm_password:-changeme}
+Initial web-auto address:
+  http://${host_ip}:${bootstrap_port:-8000}
 
 web-auto login:
   Username: ${web_user:-admin}
   Password: ${web_password:-see .env WEB_AUTO_ADMIN_PASSWORD}
 
-Create a Proxy Host in NPM:
-  Domain Names: your domain
-  Scheme: http
-  Forward Hostname / IP: web-auto
-  Forward Port: 8000
-  Websockets Support: on
-  SSL: Request a new SSL Certificate
-  Force SSL: on
+Configure domain:
+  Open web-auto -> Global Settings -> Reverse Proxy.
+  Fill domain name and certificate email, then click Configure Proxy.
 
-Then open your domain and sign in to web-auto with the credentials above.
+Nginx Proxy Manager admin is only for troubleshooting:
+  http://127.0.0.1:${admin_port:-81}
+  Email: ${npm_email:-admin@example.com}
+  Password: ${npm_password:-changeme}
 EOF
   if [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
     local first_domain scheme

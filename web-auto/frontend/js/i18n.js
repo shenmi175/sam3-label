@@ -55,6 +55,13 @@ export const i18n = {
     password_changed_login_again: '密码已修改，请重新登录',
     password_confirm_mismatch: '两次输入的新密码不一致',
     logout: '退出登录',
+    reverse_proxy: '反代域名',
+    proxy_domains: '域名',
+    proxy_email: '证书邮箱',
+    proxy_request_ssl: '申请 HTTPS 证书',
+    proxy_force_ssl: '强制 HTTPS',
+    proxy_save: '配置反代',
+    proxy_configured: '反代已配置：{url}',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API 地址',
@@ -213,6 +220,13 @@ export const i18n = {
     password_changed_login_again: 'Password changed. Please sign in again.',
     password_confirm_mismatch: 'New passwords do not match',
     logout: 'Sign Out',
+    reverse_proxy: 'Reverse Proxy',
+    proxy_domains: 'Domain Names',
+    proxy_email: 'Certificate Email',
+    proxy_request_ssl: 'Request HTTPS Certificate',
+    proxy_force_ssl: 'Force HTTPS',
+    proxy_save: 'Configure Proxy',
+    proxy_configured: 'Proxy configured: {url}',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API URL',
