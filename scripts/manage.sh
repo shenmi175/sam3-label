@@ -468,7 +468,7 @@ ensure_npm_login_or_offer_reset() {
   fi
 
   warn "NPM login failed with NPM_ADMIN_EMAIL/NPM_ADMIN_PASSWORD from .env."
-  if is_interactive && prompt_yes_no "Reset NPM data volumes to apply the configured admin email/password? This clears NPM proxy hosts and certificates only" "n"; then
+  if is_interactive && prompt_yes_no "Reset NPM data volumes to apply the configured admin email/password? Recommended for first-time setup with stale NPM data; clears NPM proxy hosts and certificates only, not web-auto data" "y"; then
     local project_name
     project_name="$(get_env_var COMPOSE_PROJECT_NAME || true)"
     project_name="${project_name:-sam3-auto-label}"
@@ -480,7 +480,7 @@ ensure_npm_login_or_offer_reset() {
     return 0
   fi
 
-  die "NPM login failed. If this stack was initialized with old admin@example.com credentials, rerun and approve the NPM volume reset prompt."
+  die "NPM login failed. Set NPM_ADMIN_EMAIL/NPM_ADMIN_PASSWORD to the existing NPM admin account, or rerun and approve the NPM volume reset prompt."
 }
 
 configure_mirror() {
