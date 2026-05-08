@@ -30,6 +30,10 @@ export const api = {
         window.location.href = '/setup';
         throw new Error('Setup required');
       }
+      if (response.status === 503 && errorCode === 'admin_not_configured') {
+        window.location.href = '/login';
+        throw new Error('Admin credentials are not configured');
+      }
       throw new Error(`API Error ${response.status}: ${errorMsg}`);
     }
     return response.json();

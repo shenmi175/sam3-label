@@ -6,6 +6,10 @@ ENV_FILE="$ROOT_DIR/.env"
 DOCKER_CMD=()
 FORCE_PROFILE_PROMPT=0
 FORCE_CONFIG_PROMPT=0
+NPM_PROXY_DOMAINS=""
+NPM_PROXY_USE_SSL=0
+NPM_PROXY_SSL_EMAIL=""
+NPM_PROXY_FORCE_SSL=1
 
 info() {
   printf '\033[1;34m==>\033[0m %s\n' "$*"
@@ -207,6 +211,21 @@ PY
   fi
 }
 
+generate_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 24 | tr -d '\n' | tr '/+' 'Aa' | cut -c1-20
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+import string
+alphabet = string.ascii_letters + string.digits
+print("".join(secrets.choice(alphabet) for _ in range(20)))
+PY
+  else
+    die "Cannot generate WEB_AUTO_ADMIN_PASSWORD; install openssl or python3."
+  fi
+}
+
 project_path() {
   local value="$1"
   if [[ "$value" = /* ]]; then
@@ -231,6 +250,18 @@ ensure_env() {
     token="$(generate_token)"
     set_env_var SAM3_API_TOKEN "$token"
     info "Generated SAM3_API_TOKEN in .env"
+  fi
+
+  local admin_user admin_password
+  admin_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
+  admin_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
+  if [[ -z "${admin_user//[[:space:]]/}" ]]; then
+    set_env_var WEB_AUTO_ADMIN_USERNAME "admin"
+  fi
+  if [[ -z "${admin_password//[[:space:]]/}" ]]; then
+    admin_password="$(generate_password)"
+    set_env_var WEB_AUTO_ADMIN_PASSWORD "$admin_password"
+    info "Generated WEB_AUTO_ADMIN_PASSWORD in .env"
   fi
 
   local profile
@@ -353,6 +384,163 @@ PY
   select_docker
 }
 
+prompt_proxy_config() {
+  NPM_PROXY_DOMAINS=""
+  NPM_PROXY_USE_SSL=0
+  NPM_PROXY_SSL_EMAIL=""
+  NPM_PROXY_FORCE_SSL=1
+  is_interactive || return 0
+  if ! prompt_yes_no "Configure Nginx Proxy Manager Proxy Host now" "n"; then
+    return 0
+  fi
+  NPM_PROXY_DOMAINS="$(prompt_value "Domain name(s), comma-separated" "")"
+  if [[ -z "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
+    warn "No domain entered; skipping NPM proxy configuration."
+    NPM_PROXY_DOMAINS=""
+    return 0
+  fi
+  if prompt_yes_no "Request Let's Encrypt certificate" "y"; then
+    NPM_PROXY_USE_SSL=1
+    local first_domain default_email
+    first_domain="$(printf '%s' "$NPM_PROXY_DOMAINS" | cut -d',' -f1 | tr -d '[:space:]')"
+    default_email="admin@${first_domain}"
+    NPM_PROXY_SSL_EMAIL="$(prompt_value "Let's Encrypt email" "$default_email")"
+    if prompt_yes_no "Force HTTPS" "y"; then
+      NPM_PROXY_FORCE_SSL=1
+    else
+      NPM_PROXY_FORCE_SSL=0
+    fi
+  fi
+}
+
+configure_npm_proxy_host() {
+  [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || {
+    warn "python3 is required for automatic NPM proxy configuration; configure it manually in NPM."
+    return 0
+  }
+
+  local admin_port admin_email admin_password
+  admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
+  admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
+  admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
+  admin_port="${admin_port:-81}"
+  admin_email="${admin_email:-admin@example.com}"
+  admin_password="${admin_password:-changeme}"
+
+  info "Configuring NPM Proxy Host for: $NPM_PROXY_DOMAINS"
+  if ! NPM_URL="http://127.0.0.1:${admin_port}" \
+    NPM_EMAIL="$admin_email" \
+    NPM_PASSWORD="$admin_password" \
+    NPM_PROXY_DOMAINS="$NPM_PROXY_DOMAINS" \
+    NPM_PROXY_USE_SSL="$NPM_PROXY_USE_SSL" \
+    NPM_PROXY_SSL_EMAIL="$NPM_PROXY_SSL_EMAIL" \
+    NPM_PROXY_FORCE_SSL="$NPM_PROXY_FORCE_SSL" \
+    python3 - <<'PY'
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+base_url = os.environ["NPM_URL"].rstrip("/")
+email = os.environ["NPM_EMAIL"]
+password = os.environ["NPM_PASSWORD"]
+domains = [item.strip() for item in os.environ["NPM_PROXY_DOMAINS"].split(",") if item.strip()]
+use_ssl = os.environ.get("NPM_PROXY_USE_SSL") == "1"
+ssl_email = os.environ.get("NPM_PROXY_SSL_EMAIL", "").strip()
+force_ssl = os.environ.get("NPM_PROXY_FORCE_SSL", "1") == "1"
+
+def request(method, path, payload=None, token=None):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+last_error = None
+for _ in range(45):
+    try:
+        token_payload = request("POST", "/api/tokens", {"identity": email, "secret": password})
+        token = token_payload["token"]
+        break
+    except Exception as exc:
+        last_error = exc
+        time.sleep(2)
+else:
+    raise SystemExit(f"failed to login to NPM API at {base_url}: {last_error}")
+
+hosts = request("GET", "/api/nginx/proxy-hosts", token=token)
+target = None
+for host in hosts:
+    existing = set(host.get("domain_names") or [])
+    if existing.intersection(domains):
+        target = host
+        break
+
+body = {
+    "domain_names": domains,
+    "forward_scheme": "http",
+    "forward_host": "web-auto",
+    "forward_port": 8000,
+    "access_list_id": 0,
+    "certificate_id": 0,
+    "ssl_forced": False,
+    "caching_enabled": False,
+    "block_exploits": True,
+    "advanced_config": "",
+    "meta": {"letsencrypt_agree": False, "dns_challenge": False},
+    "allow_websocket_upgrade": True,
+    "http2_support": False,
+    "hsts_enabled": False,
+    "hsts_subdomains": False,
+    "enabled": True,
+    "locations": [],
+}
+
+if target:
+    host_id = target["id"]
+    request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
+else:
+    created = request("POST", "/api/nginx/proxy-hosts", body, token=token)
+    host_id = created["id"]
+
+if use_ssl:
+    cert_id = 0
+    certs = request("GET", "/api/nginx/certificates", token=token)
+    for cert in certs:
+        if set(cert.get("domain_names") or []) == set(domains):
+            cert_id = cert.get("id") or 0
+            break
+    if not cert_id:
+        cert_body = {
+            "provider": "letsencrypt",
+            "nice_name": ",".join(domains),
+            "domain_names": domains,
+            "meta": {
+                "letsencrypt_email": ssl_email,
+                "letsencrypt_agree": True,
+                "dns_challenge": False,
+            },
+        }
+        cert = request("POST", "/api/nginx/certificates", cert_body, token=token)
+        cert_id = cert["id"]
+    body["certificate_id"] = cert_id
+    body["ssl_forced"] = bool(force_ssl)
+    body["http2_support"] = True
+    body["meta"] = {"letsencrypt_agree": True, "dns_challenge": False}
+    request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
+
+print(f"configured proxy host id={host_id} domains={','.join(domains)} ssl={'yes' if use_ssl else 'no'}")
+PY
+  then
+    warn "Automatic NPM proxy configuration failed. You can still configure it manually in the NPM UI."
+  fi
+}
+
 required_images() {
   local npm_tag base_image
   npm_tag="$(get_env_var NPM_IMAGE_TAG || true)"
@@ -471,14 +659,28 @@ pull_required_images() {
 }
 
 print_next_steps() {
-  local admin_port
+  local admin_port host_ip web_user web_password npm_email npm_password
   admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  host_ip="${host_ip:-SERVER_IP}"
+  web_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
+  web_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
+  npm_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
+  npm_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
   cat <<EOF
 
 Deployment is running.
 
 Nginx Proxy Manager admin:
-  http://SERVER_IP:${admin_port:-81}
+  http://${host_ip}:${admin_port:-81}
+
+Nginx Proxy Manager default login:
+  Email: ${npm_email:-admin@example.com}
+  Password: ${npm_password:-changeme}
+
+web-auto login:
+  Username: ${web_user:-admin}
+  Password: ${web_password:-see .env WEB_AUTO_ADMIN_PASSWORD}
 
 Create a Proxy Host in NPM:
   Domain Names: your domain
@@ -489,8 +691,19 @@ Create a Proxy Host in NPM:
   SSL: Request a new SSL Certificate
   Force SSL: on
 
-Then open your domain. web-auto will redirect to /setup for the first admin account.
+Then open your domain and sign in to web-auto with the credentials above.
 EOF
+  if [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
+    local first_domain scheme
+    first_domain="$(printf '%s' "$NPM_PROXY_DOMAINS" | cut -d',' -f1 | tr -d '[:space:]')"
+    scheme="http"
+    [[ "$NPM_PROXY_USE_SSL" -eq 1 ]] && scheme="https"
+    cat <<EOF
+
+Configured web-auto address:
+  ${scheme}://${first_domain}
+EOF
+  fi
 }
 
 parse_common_options() {
@@ -550,6 +763,7 @@ cmd_install() {
       MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
     fi
   fi
+  prompt_proxy_config
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
 
@@ -567,6 +781,7 @@ cmd_install() {
 
   info "Building and starting stack"
   compose up -d --build
+  configure_npm_proxy_host
   compose ps
   print_next_steps
 }

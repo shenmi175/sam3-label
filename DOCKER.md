@@ -12,9 +12,11 @@
 
 - 复制 `.env.example` 到 `.env`。
 - 生成并写入 `SAM3_API_TOKEN`。
+- 生成并写入 `WEB_AUTO_ADMIN_PASSWORD`，`web-auto` 默认账号为 `admin`。
 - 交互选择 GPU/CPU 模式，默认 GPU。
 - 交互设置 `WEB_AUTO_HOST_DATA_ROOT` 和 NPM 端口，直接回车使用默认值。
 - GPU 模式下检查 Docker NVIDIA runtime；缺失时提示是否自动安装 NVIDIA Container Toolkit，默认安装。
+- 询问是否自动配置 NPM 反代，默认不配置；输入域名后会直接创建 Proxy Host。
 - 创建持久化目录。
 - 预拉取基础镜像、构建并启动服务。
 - 如果 Docker Hub 拉取超时，提示输入 registry mirror 并自动写入 `/etc/docker/daemon.json`。
@@ -91,6 +93,12 @@ https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install
 
 Nginx Proxy Manager 官方 Docker 部署文档: https://nginxproxymanager.com/setup/
 
+脚本结束时会显示：
+
+- NPM 管理地址和默认登录信息。
+- `web-auto` 默认登录账号和密码。
+- 如果已自动配置反代，会显示 `web-auto` 的访问域名。
+
 1. 打开 Nginx Proxy Manager 管理面板：
 
 ```text
@@ -112,7 +120,7 @@ SSL: Request a new SSL Certificate
 Force SSL: on
 ```
 
-4. 打开你的域名。首次访问 `web-auto` 会跳转到 `/setup`，创建管理员用户名和密码；之后通过 `/login` 登录。
+4. 打开你的域名。`web-auto` 会进入 `/login`，使用脚本结束时显示的默认账号和密码登录。
 
 5. `web-auto` 在 Docker 内默认调用：
 

@@ -175,6 +175,22 @@ class AuthStore:
             self.sessions.clear()
         return clean_username
 
+    def ensure_admin_from_env(self) -> str | None:
+        if not AUTH_ENABLED or self.has_admin():
+            return None
+        username = os.getenv('WEB_AUTO_ADMIN_USERNAME', 'admin').strip() or 'admin'
+        password = os.getenv('WEB_AUTO_ADMIN_PASSWORD', '').strip()
+        if not password:
+            logger.warning('web-auto admin is not initialized and WEB_AUTO_ADMIN_PASSWORD is empty')
+            return None
+        try:
+            created = self.setup_admin(username, password)
+            logger.info('initialized web-auto admin user from environment: %s', created)
+            return created
+        except ValueError as exc:
+            logger.error('failed to initialize web-auto admin from environment: %s', exc)
+            return None
+
     def verify_login(self, username: str, password: str) -> str:
         clean_username = str(username or '').strip()
         with self.lock:
@@ -277,9 +293,9 @@ def _request_username(request: Request) -> str | None:
 
 
 def _auth_public_path(path: str) -> bool:
-    if path in {'/login', '/setup', '/logout', '/api/health'}:
+    if path in {'/login', '/logout', '/api/health'}:
         return True
-    return path.startswith('/api/auth/')
+    return path.startswith('/api/auth/') and path != '/api/auth/setup'
 
 
 def _auth_page_html(mode: str) -> str:
@@ -287,7 +303,7 @@ def _auth_page_html(mode: str) -> str:
     title = 'Initialize web-auto admin' if is_setup else 'Sign in to web-auto'
     button = 'Create administrator' if is_setup else 'Sign in'
     endpoint = '/api/auth/setup' if is_setup else '/api/auth/login'
-    extra = '' if is_setup else '<a class="link" href="/setup">Setup</a>'
+    extra = ''
     username_autocomplete = 'username'
     password_autocomplete = 'new-password' if is_setup else 'current-password'
     html = """<!doctype html>
@@ -435,11 +451,11 @@ async def require_web_auto_session(request: Request, call_next):
     if not AUTH_ENABLED or request.method.upper() == 'OPTIONS' or _auth_public_path(request.url.path):
         return await call_next(request)
 
-    setup_required = not AUTH_STORE.has_admin()
-    if setup_required:
+    admin_missing = not AUTH_STORE.has_admin()
+    if admin_missing:
         if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
-            return JSONResponse(status_code=403, content={'detail': 'admin setup required', 'code': 'setup_required'})
-        return RedirectResponse('/setup', status_code=303)
+            return JSONResponse(status_code=503, content={'detail': 'admin credentials are not configured', 'code': 'admin_not_configured'})
+        return RedirectResponse('/login', status_code=303)
 
     if not _request_username(request):
         if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
@@ -4762,25 +4778,21 @@ def _run_infer_batch_example(
 
 @app.on_event('startup')
 def on_startup() -> None:
+    AUTH_STORE.ensure_admin_from_env()
     _recover_video_states_on_startup()
     return None
 
 
 @app.get('/setup', response_class=HTMLResponse)
 def setup_page(request: Request) -> Response:
-    if not AUTH_ENABLED:
-        return RedirectResponse('/', status_code=303)
-    if AUTH_STORE.has_admin():
-        return RedirectResponse('/' if _request_username(request) else '/login', status_code=303)
-    return HTMLResponse(_auth_page_html('setup'))
+    return RedirectResponse('/login', status_code=303)
 
 
 @app.get('/login', response_class=HTMLResponse)
 def login_page(request: Request) -> Response:
     if not AUTH_ENABLED:
         return RedirectResponse('/', status_code=303)
-    if not AUTH_STORE.has_admin():
-        return RedirectResponse('/setup', status_code=303)
+    AUTH_STORE.ensure_admin_from_env()
     if _request_username(request):
         return RedirectResponse('/', status_code=303)
     return HTMLResponse(_auth_page_html('login'))
@@ -4800,7 +4812,7 @@ def auth_status(request: Request) -> dict[str, Any]:
     username = _request_username(request)
     return {
         'enabled': AUTH_ENABLED,
-        'setup_required': AUTH_ENABLED and not AUTH_STORE.has_admin(),
+        'admin_configured': (not AUTH_ENABLED) or AUTH_STORE.has_admin(),
         'authenticated': bool(username),
         'username': username or '',
         'session_ttl_seconds': SESSION_TTL_SECONDS,
@@ -4809,16 +4821,7 @@ def auth_status(request: Request) -> dict[str, Any]:
 
 @app.post('/api/auth/setup')
 def auth_setup(payload: AuthSetupIn, request: Request) -> Response:
-    if not AUTH_ENABLED:
-        return JSONResponse({'ok': True, 'enabled': False})
-    try:
-        username = AUTH_STORE.setup_admin(payload.username, payload.password)
-        token = AUTH_STORE.create_session(username)
-        response = JSONResponse({'ok': True, 'username': username})
-        _set_session_cookie(response, request, token)
-        return response
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=404, detail='interactive setup is disabled; use deployment admin credentials')
 
 
 @app.post('/api/auth/login')
