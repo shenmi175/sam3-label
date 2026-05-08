@@ -13,6 +13,7 @@
 - 复制 `.env.example` 到 `.env`。
 - 生成并写入 `SAM3_API_TOKEN`。
 - 生成并写入 `WEB_AUTO_ADMIN_PASSWORD`，`web-auto` 默认账号为 `admin`。
+- 默认使用 `jc21/nginx-proxy-manager:2.14.0`，避免 `latest` 后续变更导致 API 不兼容。
 - 交互选择 GPU/CPU 模式，默认 GPU。
 - 交互设置 `WEB_AUTO_HOST_DATA_ROOT`、NPM 端口和 `web-auto` 初始端口，直接回车使用默认值。
 - GPU 模式下检查 Docker NVIDIA runtime；缺失时提示是否自动安装 NVIDIA Container Toolkit，默认安装。

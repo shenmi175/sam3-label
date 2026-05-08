@@ -479,12 +479,12 @@ def proxy_host_request(method, path, payload, token=None, retry_meta_schema=True
         retry_payload["meta"] = {}
         return request(method, path, retry_payload, token=token)
 
-def letsencrypt_meta(email):
-    return {
-        "letsencrypt_email": email,
-        "letsencrypt_agree": True,
-        "dns_challenge": False,
-    }
+def letsencrypt_meta(email="", legacy=False):
+    meta = {"dns_challenge": False}
+    if legacy and email:
+        meta["letsencrypt_email"] = email
+        meta["letsencrypt_agree"] = True
+    return meta
 
 last_error = None
 for _ in range(45):
@@ -545,17 +545,30 @@ if use_ssl:
             "provider": "letsencrypt",
             "nice_name": ",".join(domains),
             "domain_names": domains,
-            "meta": letsencrypt_meta(ssl_email),
+            "meta": letsencrypt_meta(),
         }
+        cert_error = None
         try:
             cert = request("POST", "/api/nginx/certificates", cert_body, token=token)
             cert_id = cert["id"]
         except Exception as cert_exc:
+            cert_error = cert_exc
+            if ssl_email:
+                legacy_cert_body = dict(cert_body)
+                legacy_cert_body["meta"] = letsencrypt_meta(ssl_email, legacy=True)
+                try:
+                    cert = request("POST", "/api/nginx/certificates", legacy_cert_body, token=token)
+                    cert_id = cert["id"]
+                    cert_error = None
+                except Exception as legacy_cert_exc:
+                    cert_error = RuntimeError(f"new schema: {cert_exc}; legacy schema: {legacy_cert_exc}")
+        if not cert_id:
             ssl_body = dict(body)
             ssl_body["certificate_id"] = "new"
             ssl_body["ssl_forced"] = bool(force_ssl)
             ssl_body["http2_support"] = True
-            ssl_body["meta"] = letsencrypt_meta(ssl_email)
+            ssl_body["meta"] = letsencrypt_meta()
+            proxy_error = None
             try:
                 updated = proxy_host_request(
                     "PUT",
@@ -565,7 +578,24 @@ if use_ssl:
                     retry_meta_schema=False,
                 )
             except Exception as proxy_exc:
-                raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_exc}; proxy-host API: {proxy_exc}") from proxy_exc
+                proxy_error = proxy_exc
+                if ssl_email:
+                    legacy_ssl_body = dict(ssl_body)
+                    legacy_ssl_body["meta"] = letsencrypt_meta(ssl_email, legacy=True)
+                    try:
+                        updated = proxy_host_request(
+                            "PUT",
+                            f"/api/nginx/proxy-hosts/{host_id}",
+                            legacy_ssl_body,
+                            token=token,
+                            retry_meta_schema=False,
+                        )
+                        ssl_body = legacy_ssl_body
+                        proxy_error = None
+                    except Exception as legacy_proxy_exc:
+                        proxy_error = RuntimeError(f"new schema: {proxy_exc}; legacy schema: {legacy_proxy_exc}")
+                if proxy_error is not None:
+                    raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_error}") from proxy_error
             host_id = updated.get("id") or host_id
             cert_id = updated.get("certificate_id") or 0
             body = ssl_body
@@ -587,7 +617,7 @@ required_images() {
   local npm_tag base_image
   npm_tag="$(get_env_var NPM_IMAGE_TAG || true)"
   base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
-  printf '%s\n' "jc21/nginx-proxy-manager:${npm_tag:-latest}"
+  printf '%s\n' "jc21/nginx-proxy-manager:${npm_tag:-2.14.0}"
   printf '%s\n' "python:3.11-slim"
   printf '%s\n' "${base_image:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}"
 }

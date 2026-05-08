@@ -460,12 +460,12 @@ def _npm_proxy_host_request(
         return _json_request(method, url, retry_payload, token=token, timeout=timeout)
 
 
-def _npm_letsencrypt_meta(email: str) -> dict[str, Any]:
-    return {
-        'letsencrypt_email': email,
-        'letsencrypt_agree': True,
-        'dns_challenge': False,
-    }
+def _npm_letsencrypt_meta(email: str = '', legacy: bool = False) -> dict[str, Any]:
+    meta: dict[str, Any] = {'dns_challenge': False}
+    if legacy and email:
+        meta['letsencrypt_email'] = email
+        meta['letsencrypt_agree'] = True
+    return meta
 
 
 def _npm_base_url() -> str:
@@ -520,8 +520,6 @@ def _load_proxy_config() -> dict[str, Any]:
 def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
     domains = _normalize_domain_names(payload.domain_names)
     ssl_email = str(payload.letsencrypt_email or '').strip()
-    if payload.request_ssl and not ssl_email:
-        raise ValueError('letsencrypt_email is required when request_ssl is enabled')
 
     token = _npm_login()
     base_url = _npm_base_url()
@@ -573,17 +571,30 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                 'provider': 'letsencrypt',
                 'nice_name': ','.join(domains),
                 'domain_names': domains,
-                'meta': _npm_letsencrypt_meta(ssl_email),
+                'meta': _npm_letsencrypt_meta(),
             }
+            cert_error: RuntimeError | None = None
             try:
                 cert = _json_request('POST', f'{base_url}/api/nginx/certificates', cert_payload, token=token, timeout=90.0)
                 certificate_id = int(cert['id'])
             except RuntimeError as cert_exc:
+                cert_error = cert_exc
+                if ssl_email:
+                    legacy_cert_payload = dict(cert_payload)
+                    legacy_cert_payload['meta'] = _npm_letsencrypt_meta(ssl_email, legacy=True)
+                    try:
+                        cert = _json_request('POST', f'{base_url}/api/nginx/certificates', legacy_cert_payload, token=token, timeout=90.0)
+                        certificate_id = int(cert['id'])
+                        cert_error = None
+                    except RuntimeError as legacy_cert_exc:
+                        cert_error = RuntimeError(f'new schema: {cert_exc}; legacy schema: {legacy_cert_exc}')
+            if not certificate_id:
                 ssl_body = dict(body)
                 ssl_body['certificate_id'] = 'new'
                 ssl_body['ssl_forced'] = bool(payload.force_ssl)
                 ssl_body['http2_support'] = True
-                ssl_body['meta'] = _npm_letsencrypt_meta(ssl_email)
+                ssl_body['meta'] = _npm_letsencrypt_meta()
+                proxy_error: RuntimeError | None = None
                 try:
                     updated = _npm_proxy_host_request(
                         'PUT',
@@ -594,7 +605,25 @@ def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
                         retry_meta_schema=False,
                     )
                 except RuntimeError as proxy_exc:
-                    raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_exc}; proxy-host API: {proxy_exc}') from proxy_exc
+                    proxy_error = proxy_exc
+                    if ssl_email:
+                        legacy_ssl_body = dict(ssl_body)
+                        legacy_ssl_body['meta'] = _npm_letsencrypt_meta(ssl_email, legacy=True)
+                        try:
+                            updated = _npm_proxy_host_request(
+                                'PUT',
+                                f'{base_url}/api/nginx/proxy-hosts/{host_id}',
+                                legacy_ssl_body,
+                                token=token,
+                                timeout=120.0,
+                                retry_meta_schema=False,
+                            )
+                            ssl_body = legacy_ssl_body
+                            proxy_error = None
+                        except RuntimeError as legacy_proxy_exc:
+                            proxy_error = RuntimeError(f'new schema: {proxy_exc}; legacy schema: {legacy_proxy_exc}')
+                    if proxy_error is not None:
+                        raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_error}') from proxy_error
                 if isinstance(updated, dict):
                     host_id = int(updated.get('id') or host_id)
                     try:
