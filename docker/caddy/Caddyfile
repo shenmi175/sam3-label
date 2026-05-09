@@ -4,5 +4,9 @@
 
 {$PUBLIC_DOMAIN} {
 	encode zstd gzip
+	log {
+		output stdout
+		format console
+	}
 	reverse_proxy web-auto:8000
 }

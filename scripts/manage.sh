@@ -34,6 +34,7 @@ Commands:
   stop               Stop and remove containers, preserving data.
   status             Show container status.
   logs [service]     Follow logs for all services or one service.
+  doctor             Run DNS, port, HTTPS, and Caddy diagnostics.
   mirror [url]       Configure a Docker Hub registry mirror.
   gpu-check          Check host NVIDIA driver and Docker GPU runtime.
   gpu-install        Install/configure NVIDIA Container Toolkit for Docker.
@@ -58,6 +59,7 @@ Examples:
   ./deploy.sh gpu-install
   ./deploy.sh restart web-auto
   ./deploy.sh logs caddy
+  ./deploy.sh doctor
 EOF
 }
 
@@ -699,11 +701,17 @@ validate_domain_dns() {
 }
 
 check_caddy_ports() {
-  local http_port https_port port matches udp_matches
+  local http_port https_port http_bind https_bind port matches udp_matches
+  http_bind="$(get_env_var CADDY_HTTP_BIND || true)"
+  https_bind="$(get_env_var CADDY_HTTPS_BIND || true)"
   http_port="$(get_env_var CADDY_HTTP_PORT || true)"
   https_port="$(get_env_var CADDY_HTTPS_PORT || true)"
+  http_bind="${http_bind:-0.0.0.0}"
+  https_bind="${https_bind:-0.0.0.0}"
   http_port="${http_port:-80}"
   https_port="${https_port:-443}"
+  [[ "$http_bind" == "0.0.0.0" ]] || die "CADDY_HTTP_BIND must be 0.0.0.0 for public ACME validation, current value: $http_bind"
+  [[ "$https_bind" == "0.0.0.0" ]] || die "CADDY_HTTPS_BIND must be 0.0.0.0 for public HTTPS access, current value: $https_bind"
   [[ "$http_port" == "80" ]] || die "CADDY_HTTP_PORT must be 80 for Let's Encrypt HTTP-01 validation."
   [[ "$https_port" == "443" ]] || die "CADDY_HTTPS_PORT must be 443 for automatic HTTPS."
 
@@ -728,6 +736,34 @@ check_caddy_ports() {
 stop_stack_for_recreate() {
   info "Stopping old Compose services and removing orphans"
   compose down --remove-orphans
+}
+
+show_caddy_logs() {
+  warn "Last Caddy log lines:"
+  compose logs --tail=160 caddy >&2 || true
+}
+
+wait_for_https() {
+  local domain url last_error attempt
+  domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid: ${domain:-empty}"
+  command -v curl >/dev/null 2>&1 || die "curl is required for HTTPS validation."
+
+  url="https://${domain}/api/health"
+  info "Waiting for Caddy HTTPS certificate and web-auto health: $url"
+  last_error=""
+  for attempt in $(seq 1 60); do
+    if curl -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" >/dev/null 2>&1; then
+      info "HTTPS validation passed: $url"
+      return 0
+    fi
+    last_error="$(curl -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" 2>&1 >/dev/null || true)"
+    sleep 3
+  done
+
+  warn "HTTPS validation failed after waiting. Last curl error: ${last_error:-unknown}"
+  show_caddy_logs
+  die "Caddy did not serve a valid HTTPS response for $url. Run './deploy.sh doctor' for the full diagnostic report."
 }
 
 print_next_steps() {
@@ -838,6 +874,7 @@ cmd_install() {
   info "Building and starting stack"
   compose up -d --build --remove-orphans
   compose ps
+  wait_for_https
   print_next_steps
 }
 
@@ -864,6 +901,7 @@ cmd_update() {
   info "Rebuilding and restarting stack"
   compose up -d --build --remove-orphans
   compose ps
+  wait_for_https
   print_next_steps
 }
 
@@ -878,6 +916,7 @@ cmd_start() {
   check_caddy_ports
   compose up -d --remove-orphans
   compose ps
+  wait_for_https
   print_next_steps
 }
 
@@ -904,6 +943,61 @@ cmd_logs() {
   compose_env_defaults
   select_docker
   compose logs -f --tail=200 "$@"
+}
+
+cmd_doctor() {
+  compose_env_defaults
+  local domain public_ipv4
+  domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid or missing in .env."
+
+  select_docker
+  echo "== SAM3 deployment doctor =="
+  echo "Domain: $domain"
+  public_ipv4="$(get_public_ipv4 || true)"
+  echo "Server public IPv4: ${public_ipv4:-unknown}"
+  echo
+
+  echo "DNS records:"
+  resolve_domain_records "$domain" || true
+  echo
+
+  echo "Compose status:"
+  compose ps || true
+  echo
+
+  if command -v ss >/dev/null 2>&1; then
+    echo "TCP listeners on 80/443:"
+    ss -ltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print}' || true
+    echo
+    echo "UDP listeners on 443:"
+    ss -lunp 2>/dev/null | awk '$4 ~ /:443$/ {print}' || true
+    echo
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    echo "Local Caddy HTTP probe:"
+    curl -sS -I --max-time 8 --resolve "${domain}:80:127.0.0.1" "http://${domain}/" || true
+    echo
+    echo "Local Caddy HTTPS probe:"
+    curl -v --max-time 10 --resolve "${domain}:443:127.0.0.1" "https://${domain}/api/health" -o /dev/null || true
+    echo
+    echo "Public DNS HTTP probe:"
+    curl -sS -I --max-time 10 "http://${domain}/.well-known/acme-challenge/deploy-doctor" || true
+    echo
+    echo "Public DNS HTTPS probe:"
+    curl -v --max-time 10 "https://${domain}/api/health" -o /dev/null || true
+    echo
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    echo "TLS handshake probe:"
+    printf '' | openssl s_client -servername "$domain" -connect "127.0.0.1:443" -brief 2>&1 || true
+    echo
+  fi
+
+  echo "Caddy logs:"
+  compose logs --tail=200 caddy || true
 }
 
 cmd_config() {
@@ -952,6 +1046,7 @@ main() {
     stop|down) cmd_stop "$@" ;;
     status|ps) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
+    doctor) cmd_doctor "$@" ;;
     mirror) cmd_mirror "$@" ;;
     gpu-check) cmd_gpu_check "$@" ;;
     gpu-install) cmd_gpu_install "$@" ;;

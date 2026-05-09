@@ -67,10 +67,13 @@ web-auto login:
 
 ```bash
 ./deploy.sh status
+./deploy.sh doctor
 ./deploy.sh logs caddy
 ./deploy.sh logs web-auto
 ./deploy.sh logs sam3-api
 ```
+
+`doctor` 会输出当前域名解析、本机 80/443 监听、Caddy 本地 HTTP/HTTPS 探测、TLS 握手探测和 Caddy 日志。
 
 Caddy 证书申请失败时优先看：
 
