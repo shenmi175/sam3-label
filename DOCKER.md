@@ -49,6 +49,28 @@ WEB_AUTO_HTTP_PORT=18000
 
 如果需要局域网访问，服务器防火墙或云安全组只需要放行你配置的 `WEB_AUTO_HTTP_PORT`。
 
+## 数据上传目录
+
+项目管理页支持把本地文件或文件夹上传到服务器目录。出于安全限制，上传目标必须位于 `.env` 里的 `WEB_AUTO_HOST_DATA_ROOT` 下，例如：
+
+```text
+WEB_AUTO_HOST_DATA_ROOT=/home/enabot/datasets
+```
+
+上传后创建图片项目时，图片目录填写服务器路径，例如：
+
+```text
+/home/enabot/datasets/my-project
+```
+
+如果要把数据写到其他服务器目录，先调整 `WEB_AUTO_HOST_DATA_ROOT`，再重启：
+
+```bash
+./deploy.sh restart
+```
+
+`web-auto` 设置页的“路径配置”可以修改默认上传保存目录，但只能选择 `WEB_AUTO_HOST_DATA_ROOT` 内的目录。设置会保存到 `/data/web-auto/global_config.json`，点击“运行管理”里的“重启 web-auto”后，Docker 会自动拉起新进程。
+
 ## 可选 HTTPS 反代
 
 公司网络、NAT、运营商或安全组不允许公网 `80/443` 入站时，不建议启用反代。
@@ -82,7 +104,20 @@ Caddy 相关依据：
 ./deploy.sh logs web-auto
 ./deploy.sh logs sam3-api
 ./deploy.sh restart web-auto
+./deploy.sh reset-admin
 ./deploy.sh update --direct
+```
+
+如果登录提示 `invalid username or password`，说明旧的 `web-auto/data/auth.json` 里已有管理员密码哈希。重置管理员密码：
+
+```bash
+./deploy.sh reset-admin
+```
+
+也可以指定新密码：
+
+```bash
+./deploy.sh reset-admin 'new-password-here'
 ```
 
 GPU 检查：

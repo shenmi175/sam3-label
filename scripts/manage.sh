@@ -36,6 +36,7 @@ Commands:
   status             Show container status.
   logs [service]     Follow logs for all services or one service.
   doctor             Run DNS, port, HTTPS, and Caddy diagnostics.
+  reset-admin [pass] Reset web-auto admin password and recreate web-auto.
   mirror [url]       Configure a Docker Hub registry mirror.
   gpu-check          Check host NVIDIA driver and Docker GPU runtime.
   gpu-install        Install/configure NVIDIA Container Toolkit for Docker.
@@ -63,6 +64,7 @@ Examples:
   ./deploy.sh gpu-check
   ./deploy.sh gpu-install
   ./deploy.sh restart web-auto
+  ./deploy.sh reset-admin
   ./deploy.sh logs caddy
   ./deploy.sh doctor
 EOF
@@ -243,6 +245,12 @@ project_path() {
   else
     printf '%s/%s' "$ROOT_DIR" "$value"
   fi
+}
+
+auth_file_path() {
+  local web_data
+  web_data="$(get_env_var WEB_AUTO_DATA_DIR || true)"
+  printf '%s/auth.json' "$(project_path "${web_data:-./web-auto/data}")"
 }
 
 is_real_email() {
@@ -1162,6 +1170,43 @@ cmd_doctor() {
   fi
 }
 
+cmd_reset_admin() {
+  [[ "$#" -le 1 ]] || die "Usage: ./deploy.sh reset-admin [new-password]"
+  local new_password auth_file backup_file admin_user
+  ensure_env ""
+  new_password="${1:-}"
+  if [[ -z "$new_password" ]]; then
+    new_password="$(generate_password)"
+  fi
+  if [[ "${#new_password}" -lt 8 ]]; then
+    die "Admin password must be at least 8 characters."
+  fi
+
+  set_env_var WEB_AUTO_ADMIN_PASSWORD "$new_password"
+  admin_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
+  admin_user="${admin_user:-admin}"
+  auth_file="$(auth_file_path)"
+  if [[ -f "$auth_file" ]]; then
+    backup_file="${auth_file}.bak.$(date +%Y%m%d%H%M%S)"
+    mv "$auth_file" "$backup_file"
+    info "Backed up old admin auth file: $backup_file"
+  else
+    info "No existing auth.json found; web-auto will initialize admin from .env."
+  fi
+
+  select_docker
+  info "Recreating web-auto so the new admin password takes effect"
+  compose up -d --force-recreate web-auto
+  wait_for_direct_http
+  cat <<EOF
+
+web-auto admin reset complete.
+
+Username: ${admin_user}
+Password: ${new_password}
+EOF
+}
+
 cmd_config() {
   compose_env_defaults
   select_docker
@@ -1209,6 +1254,7 @@ main() {
     status|ps) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    reset-admin) cmd_reset_admin "$@" ;;
     mirror) cmd_mirror "$@" ;;
     gpu-check) cmd_gpu_check "$@" ;;
     gpu-install) cmd_gpu_install "$@" ;;

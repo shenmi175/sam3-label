@@ -74,6 +74,43 @@
 - 切换时要求当前没有后台任务在运行
 - 后端会重新实例化 `Storage`
 
+### `GET /api/config/global`
+
+查看全局配置和运行配置。
+
+响应：
+
+```json
+{
+  "config": {
+    "cache_dir": "/data/web-auto",
+    "upload_root": "/home/enabot/datasets",
+    "upload_target_dir": "/home/enabot/datasets",
+    "sam3_api_base_url": "http://sam3-api:8001",
+    "allowed_sam3_api_base_urls": ["http://sam3-api:8001"],
+    "restart_supported": true
+  }
+}
+```
+
+### `POST /api/config/global`
+
+保存全局配置。`upload_target_dir` 必须位于 `WEB_AUTO_HOST_DATA_ROOT` 内，`sam3_api_base_url` 必须位于允许列表内。
+
+请求：
+
+```json
+{
+  "cache_dir": "/data/web-auto",
+  "upload_target_dir": "/home/enabot/datasets/default",
+  "sam3_api_base_url": "http://sam3-api:8001"
+}
+```
+
+### `POST /api/system/restart`
+
+请求 web-auto 重启。Docker 部署时依赖 `restart: unless-stopped` 自动拉起新进程；重启前要求没有后台任务在运行。
+
 ## 2. 项目管理
 
 ### `GET /api/projects`
@@ -203,6 +240,41 @@
 ### `POST /api/projects/{project_id}/images/upload`
 
 表单上传图片。
+
+### `GET /api/uploads/config`
+
+获取服务器允许上传的数据根目录。
+
+响应：
+
+```json
+{
+  "host_data_root": "/home/enabot/datasets",
+  "default_target_dir": "/home/enabot/datasets"
+}
+```
+
+### `POST /api/uploads/dataset`
+
+上传一个本地文件到服务器数据目录。前端大数据集上传会逐个文件调用该接口，以便显示上传进度并避免单个超大 multipart 请求。
+
+表单字段：
+
+- `file`: 文件
+- `target_dir`: 服务器目标目录，必须位于 `WEB_AUTO_HOST_DATA_ROOT` 下
+- `relative_path`: 目标目录内的相对路径，可用于保留文件夹结构
+- `overwrite`: 是否覆盖同名文件
+
+响应：
+
+```json
+{
+  "ok": true,
+  "path": "/home/enabot/datasets/demo/images/0001.jpg",
+  "relative_path": "demo/images/0001.jpg",
+  "size": 1024
+}
+```
 
 ### `GET /api/projects/{project_id}/images/{image_id}/file`
 

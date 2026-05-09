@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +33,8 @@ from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ensure_dir(Path(os.getenv('WEB_AUTO_DATA_DIR', str(BASE_DIR / 'data'))).expanduser().resolve())
+HOST_DATA_ROOT = Path(os.getenv('WEB_AUTO_HOST_DATA_ROOT', str(DATA_DIR / 'uploads'))).expanduser().resolve()
+APP_CONFIG_FILE = DATA_DIR / 'global_config.json'
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
 MAX_PENDING_IMAGE_IDS_IN_JOB_STATE = 200
@@ -49,6 +51,48 @@ def _parse_positive_int_env(key: str, default: int) -> int:
 SAM3_MAX_BATCH_FILES = _parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
 
 
+def _read_app_config() -> dict[str, Any]:
+    if not APP_CONFIG_FILE.exists():
+        return {}
+    try:
+        with APP_CONFIG_FILE.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_app_config(data: dict[str, Any]) -> dict[str, Any]:
+    ensure_dir(APP_CONFIG_FILE.parent)
+    tmp = APP_CONFIG_FILE.with_suffix(APP_CONFIG_FILE.suffix + '.tmp')
+    clean = data if isinstance(data, dict) else {}
+    with tmp.open('w', encoding='utf-8') as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write('\n')
+    os.replace(tmp, APP_CONFIG_FILE)
+    return clean
+
+
+def _update_app_config(values: dict[str, Any]) -> dict[str, Any]:
+    data = _read_app_config()
+    for key, value in values.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return _write_app_config(data)
+
+
+def _initial_storage_dir() -> Path:
+    configured = str(_read_app_config().get('cache_dir') or '').strip()
+    if configured:
+        try:
+            return ensure_dir(Path(configured).expanduser().resolve())
+        except Exception:
+            pass
+    return DATA_DIR
+
+
 logger = logging.getLogger('web_auto')
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -58,9 +102,9 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 
-storage = Storage(DATA_DIR)
+storage = Storage(_initial_storage_dir())
 sam3 = Sam3Client(timeout_sec=180)
-CURRENT_DATA_DIR = Path(DATA_DIR)
+CURRENT_DATA_DIR = Path(storage.base_dir)
 
 VIDEO_JOB_LOCK = threading.Lock()
 VIDEO_JOB_THREADS: dict[str, dict[str, Any]] = {}
@@ -579,6 +623,12 @@ class HealthApiIn(BaseModel):
 
 class CacheDirUpdateIn(BaseModel):
     cache_dir: str
+
+
+class GlobalConfigUpdateIn(BaseModel):
+    cache_dir: Optional[str] = None
+    upload_target_dir: Optional[str] = None
+    sam3_api_base_url: Optional[str] = None
 
 
 class UIStateIn(BaseModel):
@@ -2798,6 +2848,47 @@ def _safe_upload_target(root: Path, filename: str) -> Path:
         idx += 1
 
 
+def _path_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_dataset_upload_dir(target_dir: str) -> Path:
+    raw = str(target_dir or '').strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail='target_dir is required')
+
+    root = HOST_DATA_ROOT.resolve()
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = root / target
+    target = target.resolve()
+    if not _path_within_root(target, root):
+        raise HTTPException(status_code=400, detail=f'target_dir must be inside {root}')
+    ensure_dir(target)
+    return target
+
+
+def _safe_dataset_relative_path(relative_path: str, filename: str) -> Path:
+    raw = str(relative_path or filename or '').replace('\\', '/').strip().lstrip('/')
+    if not raw:
+        raw = str(filename or '').replace('\\', '/').strip().lstrip('/')
+    if not raw:
+        raw = f'upload_{new_id()}'
+
+    parts: list[str] = []
+    for part in raw.split('/'):
+        if part in {'', '.', '..'}:
+            raise HTTPException(status_code=400, detail='invalid relative_path')
+        if '\x00' in part:
+            raise HTTPException(status_code=400, detail='invalid relative_path')
+        parts.append(part)
+    return Path(*parts)
+
+
 def _resolve_output_dir(project: dict[str, Any], output_dir: Optional[str]) -> Path:
     if output_dir and str(output_dir).strip():
         return ensure_dir(Path(str(output_dir)).expanduser().resolve())
@@ -3020,7 +3111,7 @@ def _count_running_video_jobs() -> int:
 def _ensure_no_active_jobs_for_config_change() -> None:
     active = _count_running_infer_jobs() + _count_running_smart_filter_jobs() + _count_running_video_jobs()
     if active > 0:
-        raise HTTPException(status_code=409, detail='cannot change cache_dir while background jobs are running')
+        raise HTTPException(status_code=409, detail='cannot change configuration while background jobs are running')
 
 
 def _set_storage_data_dir(path_text: str) -> Path:
@@ -3031,10 +3122,57 @@ def _set_storage_data_dir(path_text: str) -> Path:
     return new_dir
 
 
+def _allowed_sam3_api_base_urls() -> list[str]:
+    raw_allowed = os.getenv(
+        'WEB_AUTO_ALLOWED_SAM3_API_BASE_URLS',
+        os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', DEFAULT_API_BASE_URL),
+    )
+    urls: list[str] = []
+    for item in str(raw_allowed or '').split(','):
+        clean = item.strip().rstrip('/')
+        if clean:
+            urls.append(clean)
+    return urls
+
+
+def _effective_sam3_api_base_url() -> str:
+    configured = str(_read_app_config().get('sam3_api_base_url') or '').strip().rstrip('/')
+    if configured:
+        return configured
+    return DEFAULT_API_BASE_URL
+
+
 def _cache_dir_info() -> dict[str, Any]:
     return {
         'cache_dir': str(CURRENT_DATA_DIR),
         'default_dir': str(BASE_DIR),
+    }
+
+
+def _configured_upload_target_dir() -> Path:
+    configured = str(_read_app_config().get('upload_target_dir') or '').strip()
+    if configured:
+        try:
+            return _resolve_dataset_upload_dir(configured)
+        except HTTPException:
+            pass
+    return _resolve_dataset_upload_dir(str(HOST_DATA_ROOT))
+
+
+def _global_config_info() -> dict[str, Any]:
+    upload_dir = _configured_upload_target_dir()
+    return {
+        'cache_dir': str(CURRENT_DATA_DIR),
+        'default_dir': str(BASE_DIR),
+        'upload_root': str(HOST_DATA_ROOT),
+        'upload_target_dir': str(upload_dir),
+        'sam3_api_base_url': _effective_sam3_api_base_url(),
+        'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
+        'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
+        'auth_enabled': AUTH_ENABLED,
+        'session_ttl_seconds': SESSION_TTL_SECONDS,
+        'restart_supported': True,
+        'restart_note': 'Docker restart policy restarts web-auto after the process exits.',
     }
 
 
@@ -4888,10 +5026,61 @@ def health() -> dict[str, Any]:
 @app.get('/api/config/defaults')
 def get_default_config() -> dict[str, Any]:
     return {
-        'sam3_api_base_url': DEFAULT_API_BASE_URL,
+        'sam3_api_base_url': _effective_sam3_api_base_url(),
+        'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
         'data_dir': str(CURRENT_DATA_DIR),
         'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
     }
+
+
+@app.get('/api/config/global')
+def get_global_config() -> dict[str, Any]:
+    return {'config': _global_config_info()}
+
+
+@app.post('/api/config/global')
+def set_global_config(payload: GlobalConfigUpdateIn) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    with CONFIG_LOCK:
+        if payload.cache_dir is not None:
+            cache_dir = str(payload.cache_dir or '').strip()
+            if cache_dir:
+                _ensure_no_active_jobs_for_config_change()
+                new_dir = _set_storage_data_dir(cache_dir)
+                changes['cache_dir'] = str(new_dir)
+
+        if payload.upload_target_dir is not None:
+            upload_target = str(payload.upload_target_dir or '').strip()
+            if upload_target:
+                target = _resolve_dataset_upload_dir(upload_target)
+                changes['upload_target_dir'] = str(target)
+
+        if payload.sam3_api_base_url is not None:
+            api_base_url = str(payload.sam3_api_base_url or '').strip().rstrip('/')
+            if api_base_url:
+                try:
+                    api_base_url = Sam3Client._api_root(api_base_url)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                changes['sam3_api_base_url'] = api_base_url
+
+        if changes:
+            _update_app_config(changes)
+
+    return {'ok': True, 'config': _global_config_info()}
+
+
+@app.post('/api/system/restart')
+def restart_web_auto() -> dict[str, Any]:
+    _ensure_no_active_jobs_for_config_change()
+
+    def _delayed_exit() -> None:
+        time.sleep(0.5)
+        os._exit(0)
+
+    thread = threading.Thread(target=_delayed_exit, daemon=True)
+    thread.start()
+    return {'ok': True, 'message': 'web-auto is restarting'}
 
 
 @app.get('/api/config/cache_dir')
@@ -4904,6 +5093,7 @@ def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
     with CONFIG_LOCK:
         _ensure_no_active_jobs_for_config_change()
         new_dir = _set_storage_data_dir(payload.cache_dir)
+        _update_app_config({'cache_dir': str(new_dir)})
     return {
         'ok': True,
         'cache_dir': str(new_dir),
@@ -4956,6 +5146,65 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
 @app.get('/api/health')
 def health_check() -> dict[str, Any]:
     return {'status': 'ok', 'timestamp': now_ts()}
+
+
+@app.get('/api/uploads/config')
+def get_upload_config() -> dict[str, Any]:
+    target = _configured_upload_target_dir()
+    return {
+        'host_data_root': str(HOST_DATA_ROOT),
+        'default_target_dir': str(target),
+    }
+
+
+@app.post('/api/uploads/dataset')
+async def upload_dataset_file(
+    file: UploadFile = File(...),
+    target_dir: str = Form(...),
+    relative_path: str = Form(default=''),
+    overwrite: bool = Form(default=False),
+) -> dict[str, Any]:
+    upload_root = _resolve_dataset_upload_dir(target_dir)
+    safe_rel = _safe_dataset_relative_path(relative_path, file.filename or '')
+    target_path = (upload_root / safe_rel).resolve()
+    if not _path_within_root(target_path, upload_root):
+        raise HTTPException(status_code=400, detail='relative_path escapes target_dir')
+    if target_path.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail=f'file already exists: {target_path}')
+
+    ensure_dir(target_path.parent)
+    tmp_path = target_path.with_name(f'.{target_path.name}.upload-{new_id()}.tmp')
+    bytes_written = 0
+    try:
+        with tmp_path.open('wb') as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                bytes_written += len(chunk)
+        os.replace(tmp_path, target_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f'failed to save file: {exc}') from exc
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    return {
+        'ok': True,
+        'path': str(target_path),
+        'relative_path': safe_rel.as_posix(),
+        'size': bytes_written,
+    }
 
 
 @app.post('/api/projects/{project_id}/images/upload')

@@ -59,14 +59,18 @@ export const store = {
   
   async init() {
     this.applyTheme(this.state.config.theme);
-    if (localStorage.getItem('sam3ApiUrl')) return;
     try {
       const response = await fetch('/api/config/defaults');
       if (!response.ok) return;
       const defaults = await response.json();
       const apiUrl = String(defaults?.sam3_api_base_url || '').trim();
-      if (apiUrl) {
+      const allowed = Array.isArray(defaults?.allowed_sam3_api_base_urls)
+        ? defaults.allowed_sam3_api_base_urls.map((item) => String(item || '').replace(/\/+$/, '')).filter(Boolean)
+        : [];
+      const current = String(localStorage.getItem('sam3ApiUrl') || '').replace(/\/+$/, '');
+      if (apiUrl && (!current || (allowed.length && !allowed.includes(current)))) {
         this.state.config.sam3ApiUrl = apiUrl;
+        localStorage.setItem('sam3ApiUrl', apiUrl);
         this.notify();
       }
     } catch (err) {

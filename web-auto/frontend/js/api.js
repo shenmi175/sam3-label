@@ -79,6 +79,44 @@ export const api = {
   },
   importImages(projectId, sourceDir) { return this.request('POST', `/projects/${projectId}/images/import`, {source_dir: sourceDir}); },
   deleteImage(projectId, imageId) { return this.request('DELETE', `/projects/${projectId}/images/${imageId}`); },
+  getUploadConfig() { return this.request('GET', '/uploads/config'); },
+  uploadDatasetFile({ file, targetDir, relativePath = '', overwrite = false, onProgress = null, onXhr = null }) {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('target_dir', targetDir);
+      fd.append('relative_path', relativePath || file.webkitRelativePath || file.name);
+      fd.append('overwrite', overwrite ? 'true' : 'false');
+
+      const xhr = new XMLHttpRequest();
+      if (onXhr) onXhr(xhr);
+      xhr.open('POST', `${API_BASE}/uploads/dataset`);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && onProgress) onProgress(event.loaded, event.total);
+      };
+      xhr.onload = () => {
+        let data = {};
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+        } catch(e) {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+          return;
+        }
+        const errorCode = data && data.code ? String(data.code) : '';
+        if (xhr.status === 401 || errorCode === 'login_required') {
+          window.location.href = '/login';
+          reject(new Error('Login required'));
+          return;
+        }
+        const detail = data && data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : xhr.statusText;
+        reject(new Error(`API Error ${xhr.status}: ${detail}`));
+      };
+      xhr.onerror = () => reject(new Error('network error during upload'));
+      xhr.onabort = () => reject(new Error('upload canceled'));
+      xhr.send(fd);
+    });
+  },
   
   getAnnotations(projectId, imageId) { return this.request('GET', `/projects/${projectId}/images/${imageId}/annotations`); },
   saveAnnotations(projectId, imageId, annotations) { return this.request('POST', '/annotations/save', { project_id: projectId, image_id: imageId, annotations}); },
@@ -134,6 +172,9 @@ export const api = {
   },
 
   // Configuration
+  getGlobalConfig() { return this.request('GET', '/config/global'); },
+  setGlobalConfig(data) { return this.request('POST', '/config/global', data); },
+  restartWebAuto() { return this.request('POST', '/system/restart'); },
   getCacheDir() { return this.request('GET', '/config/cache_dir'); },
   setCacheDir(path) { return this.request('POST', '/config/cache_dir', {cache_dir: path}); }
 };
