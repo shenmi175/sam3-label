@@ -3,6 +3,8 @@ name: sam3-auto-label
 services:
   caddy:
     image: caddy:${CADDY_IMAGE_TAG:-2.11.2-alpine}
+    profiles:
+      - proxy
     restart: unless-stopped
     depends_on:
       web-auto:
@@ -13,8 +15,8 @@ services:
       - "${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443/udp"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.org}
     volumes:
       - ./docker/caddy:/etc/caddy:ro
       - caddy_data:/data
@@ -82,6 +84,8 @@ services:
       WEB_AUTO_SAM3_MAX_BATCH_FILES: ${WEB_AUTO_SAM3_MAX_BATCH_FILES:-32}
     expose:
       - "8000"
+    ports:
+      - "${WEB_AUTO_HTTP_BIND:-0.0.0.0}:${WEB_AUTO_HTTP_PORT:-8000}:8000"
     volumes:
       - ${WEB_AUTO_DATA_DIR:-./web-auto/data}:/data/web-auto
       - ${WEB_AUTO_HOST_DATA_ROOT:-/home/zmb}:${WEB_AUTO_HOST_DATA_ROOT:-/home/zmb}:rw

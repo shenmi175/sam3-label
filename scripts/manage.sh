@@ -6,6 +6,7 @@ ENV_FILE="$ROOT_DIR/.env"
 DOCKER_CMD=()
 FORCE_PROFILE_PROMPT=0
 FORCE_CONFIG_PROMPT=0
+ACCESS_MODE_OVERRIDE=""
 
 info() {
   printf '\033[1;34m==>\033[0m %s\n' "$*"
@@ -27,7 +28,7 @@ Usage: ./deploy.sh [command] [options]
 Running ./deploy.sh without a command starts the interactive install wizard.
 
 Commands:
-  install            Guided setup, DNS preflight, image pull, build, and start.
+  install            Guided setup, image pull, build, and start.
   update             Pull latest git changes, rebuild, and restart.
   restart [service]  Restart all services or one service.
   start              Start the stack without rebuilding.
@@ -45,6 +46,8 @@ Commands:
 Options for install/update/start:
   --gpu              Use GPU profile. This is the default.
   --cpu              Use CPU profile for functional testing.
+  --direct           Expose web-auto directly on IP:port. This is the default.
+  --proxy            Enable optional Caddy HTTPS reverse proxy.
   --mirror URL       Configure Docker Hub mirror before pulling images.
   --skip-pull        Skip pre-pulling base images.
   --skip-gpu-check   Skip Docker GPU runtime preflight.
@@ -53,6 +56,8 @@ Options for install/update/start:
 Examples:
   ./deploy.sh
   ./deploy.sh install
+  ./deploy.sh install --direct
+  ./deploy.sh install --proxy
   ./deploy.sh install --mirror https://your-mirror.example
   ./deploy.sh update
   ./deploy.sh gpu-check
@@ -365,32 +370,59 @@ ensure_env() {
       ;;
   esac
 
-  local public_domain
-  public_domain="$(get_env_var PUBLIC_DOMAIN || true)"
-  if ! is_valid_domain "$public_domain"; then
-    if is_interactive; then
-      public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
-    else
-      die "PUBLIC_DOMAIN must be set in .env to a real domain, for example sam3.example.com."
-    fi
-    set_env_var PUBLIC_DOMAIN "$public_domain"
-  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
-    set_env_var PUBLIC_DOMAIN "$public_domain"
+  local access_mode
+  access_mode="$(get_env_var SAM3_ACCESS_MODE || true)"
+  if [[ -n "$ACCESS_MODE_OVERRIDE" ]]; then
+    access_mode="$ACCESS_MODE_OVERRIDE"
   fi
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && -z "$ACCESS_MODE_OVERRIDE" && is_interactive ]]; then
+    access_mode="$(prompt_choice "Access mode" "${access_mode:-direct}" "direct proxy")"
+  elif [[ -z "$access_mode" ]]; then
+    access_mode="direct"
+  fi
+  case "$access_mode" in
+    direct|proxy) set_env_var SAM3_ACCESS_MODE "$access_mode" ;;
+    *) die "Invalid SAM3_ACCESS_MODE: $access_mode. Use direct or proxy." ;;
+  esac
 
-  local acme_email
-  acme_email="$(get_env_var ACME_EMAIL || true)"
-  if ! is_real_email "$acme_email"; then
-    if is_interactive; then
-      acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
-    else
-      die "ACME_EMAIL must be set in .env to a real email address."
+  local web_http_port web_http_bind
+  web_http_port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
+  web_http_bind="$(get_env_var WEB_AUTO_HTTP_BIND || true)"
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && "$access_mode" == "direct" && is_interactive ]]; then
+    web_http_bind="$(prompt_value "web-auto direct bind address" "${web_http_bind:-0.0.0.0}")"
+    web_http_port="$(prompt_value "web-auto direct HTTP port" "${web_http_port:-8000}")"
+  fi
+  set_env_var WEB_AUTO_HTTP_BIND "${web_http_bind:-0.0.0.0}"
+  set_env_var WEB_AUTO_HTTP_PORT "${web_http_port:-8000}"
+
+  if [[ "$access_mode" == "proxy" ]]; then
+    local public_domain
+    public_domain="$(get_env_var PUBLIC_DOMAIN || true)"
+    if ! is_valid_domain "$public_domain"; then
+      if is_interactive; then
+        public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
+      else
+        die "PUBLIC_DOMAIN must be set in .env to a real domain, for example sam3.example.com."
+      fi
+      set_env_var PUBLIC_DOMAIN "$public_domain"
+    elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+      public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
+      set_env_var PUBLIC_DOMAIN "$public_domain"
     fi
-    set_env_var ACME_EMAIL "$acme_email"
-  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
-    set_env_var ACME_EMAIL "$acme_email"
+
+    local acme_email
+    acme_email="$(get_env_var ACME_EMAIL || true)"
+    if ! is_real_email "$acme_email"; then
+      if is_interactive; then
+        acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
+      else
+        die "ACME_EMAIL must be set in .env to a real email address."
+      fi
+      set_env_var ACME_EMAIL "$acme_email"
+    elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+      acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
+      set_env_var ACME_EMAIL "$acme_email"
+    fi
   fi
 
   local caddy_http_port caddy_https_port caddy_http_bind caddy_https_bind caddy_image_tag
@@ -431,8 +463,21 @@ effective_profile() {
   printf '%s' "${profile:-gpu}"
 }
 
+effective_access_mode() {
+  local mode
+  mode="$(get_env_var SAM3_ACCESS_MODE || true)"
+  printf '%s' "${mode:-direct}"
+}
+
+using_proxy_mode() {
+  [[ "$(effective_access_mode)" == "proxy" ]]
+}
+
 compose_args() {
   printf '%s\0' -f docker-compose.yml
+  if using_proxy_mode; then
+    printf '%s\0' --profile proxy
+  fi
   if [[ "$(effective_profile)" == "gpu" ]]; then
     printf '%s\0' -f docker-compose.gpu.yml
   fi
@@ -507,7 +552,9 @@ required_images() {
   local caddy_tag base_image
   caddy_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
   base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
-  printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
+  if using_proxy_mode; then
+    printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
+  fi
   printf '%s\n' "python:3.11-slim"
   printf '%s\n' "${base_image:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}"
 }
@@ -624,7 +671,7 @@ get_public_ipv4() {
   command -v curl >/dev/null 2>&1 || die "curl is required for DNS preflight."
   local url value
   for url in https://api.ipify.org https://ifconfig.me/ip; do
-    value="$(curl -fsS --max-time 8 "$url" 2>/dev/null || true)"
+    value="$(curl --noproxy '*' -fsS --max-time 8 "$url" 2>/dev/null || true)"
     value="$(trim "$value")"
     if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       printf '%s' "$value"
@@ -674,6 +721,9 @@ validate_domain_dns() {
   is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid: ${domain:-empty}"
 
   info "Checking DNS for $domain"
+  if env | grep -qiE '^(http|https|all)_proxy='; then
+    warn "Proxy environment variables are set; DNS preflight bypasses them with curl --noproxy '*'."
+  fi
   public_ipv4="$(get_public_ipv4)" || die "Cannot determine this server's public IPv4. Check outbound network access, then rerun."
 
   local dns_lines=()
@@ -733,6 +783,23 @@ check_caddy_ports() {
   fi
 }
 
+check_direct_port() {
+  local bind port matches
+  bind="$(get_env_var WEB_AUTO_HTTP_BIND || true)"
+  port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
+  bind="${bind:-0.0.0.0}"
+  port="${port:-8000}"
+  if ! command -v ss >/dev/null 2>&1; then
+    warn "ss command not found; skipping local port occupancy check."
+    return 0
+  fi
+  matches="$(ss -ltnp 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" {print}' || true)"
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    die "Port $port is already in use after stopping this Compose stack. Change WEB_AUTO_HTTP_PORT or stop the process using it."
+  fi
+}
+
 stop_stack_for_recreate() {
   info "Stopping old Compose services and removing orphans"
   compose down --remove-orphans
@@ -753,11 +820,11 @@ wait_for_https() {
   info "Waiting for Caddy HTTPS certificate and web-auto health: $url"
   last_error=""
   for attempt in $(seq 1 60); do
-    if curl -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" >/dev/null 2>&1; then
+    if curl --noproxy '*' -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" >/dev/null 2>&1; then
       info "HTTPS validation passed: $url"
       return 0
     fi
-    last_error="$(curl -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" 2>&1 >/dev/null || true)"
+    last_error="$(curl --noproxy '*' -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" 2>&1 >/dev/null || true)"
     sleep 3
   done
 
@@ -766,17 +833,49 @@ wait_for_https() {
   die "Caddy did not serve a valid HTTPS response for $url. Run './deploy.sh doctor' for the full diagnostic report."
 }
 
+wait_for_direct_http() {
+  local port url last_error
+  port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
+  port="${port:-8000}"
+  url="http://127.0.0.1:${port}/api/health"
+  command -v curl >/dev/null 2>&1 || die "curl is required for direct HTTP validation."
+  info "Waiting for web-auto direct health: $url"
+  last_error=""
+  for _ in $(seq 1 40); do
+    if curl --noproxy '*' -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+      info "Direct HTTP validation passed: $url"
+      return 0
+    fi
+    last_error="$(curl --noproxy '*' -fsS --max-time 5 "$url" 2>&1 >/dev/null || true)"
+    sleep 2
+  done
+  die "web-auto did not become reachable on $url. Last curl error: ${last_error:-unknown}"
+}
+
 print_next_steps() {
-  local domain web_user web_password
+  local domain web_user web_password port host_ip
   domain="$(get_env_var PUBLIC_DOMAIN || true)"
   web_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
   web_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
+  port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  host_ip="${host_ip:-SERVER_IP}"
   cat <<EOF
 
 Deployment is running.
 
 web-auto:
+EOF
+  if using_proxy_mode; then
+    cat <<EOF
   https://${domain}
+EOF
+  else
+    cat <<EOF
+  http://${host_ip}:${port:-8000}
+EOF
+  fi
+  cat <<EOF
 
 web-auto login:
   Username: ${web_user:-admin}
@@ -787,9 +886,13 @@ sam3-api is internal only:
 
 Useful commands:
   ./deploy.sh status
-  ./deploy.sh logs caddy
   ./deploy.sh logs web-auto
 EOF
+  if using_proxy_mode; then
+    cat <<EOF
+  ./deploy.sh logs caddy
+EOF
+  fi
 }
 
 parse_common_options() {
@@ -807,6 +910,14 @@ parse_common_options() {
         ;;
       --cpu)
         PROFILE_OVERRIDE="cpu"
+        shift
+        ;;
+      --direct)
+        ACCESS_MODE_OVERRIDE="direct"
+        shift
+        ;;
+      --proxy)
+        ACCESS_MODE_OVERRIDE="proxy"
         shift
         ;;
       --mirror)
@@ -856,7 +967,7 @@ cmd_install() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown install option: ${POSITIONAL[*]}"
   if is_interactive; then
-    info "Starting interactive SAM3 deployment wizard. Domain and Let's Encrypt email are required."
+    info "Starting interactive SAM3 deployment wizard. Direct IP:port access is the default."
     [[ -z "$PROFILE_OVERRIDE" ]] && FORCE_PROFILE_PROMPT=1
     FORCE_CONFIG_PROMPT=1
   fi
@@ -866,15 +977,25 @@ cmd_install() {
       MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
     fi
   fi
-  validate_domain_dns
+  if using_proxy_mode; then
+    validate_domain_dns
+  fi
   prepare_runtime
   stop_stack_for_recreate
-  check_caddy_ports
+  if using_proxy_mode; then
+    check_caddy_ports
+  else
+    check_direct_port
+  fi
 
   info "Building and starting stack"
   compose up -d --build --remove-orphans
   compose ps
-  wait_for_https
+  if using_proxy_mode; then
+    wait_for_https
+  else
+    wait_for_direct_http
+  fi
   print_next_steps
 }
 
@@ -882,7 +1003,9 @@ cmd_update() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown update option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
-  validate_domain_dns
+  if using_proxy_mode; then
+    validate_domain_dns
+  fi
   select_docker
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
@@ -897,11 +1020,19 @@ cmd_update() {
   fi
 
   stop_stack_for_recreate
-  check_caddy_ports
+  if using_proxy_mode; then
+    check_caddy_ports
+  else
+    check_direct_port
+  fi
   info "Rebuilding and restarting stack"
   compose up -d --build --remove-orphans
   compose ps
-  wait_for_https
+  if using_proxy_mode; then
+    wait_for_https
+  else
+    wait_for_direct_http
+  fi
   print_next_steps
 }
 
@@ -909,14 +1040,24 @@ cmd_start() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
-  validate_domain_dns
+  if using_proxy_mode; then
+    validate_domain_dns
+  fi
   select_docker
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
   stop_stack_for_recreate
-  check_caddy_ports
+  if using_proxy_mode; then
+    check_caddy_ports
+  else
+    check_direct_port
+  fi
   compose up -d --remove-orphans
   compose ps
-  wait_for_https
+  if using_proxy_mode; then
+    wait_for_https
+  else
+    wait_for_direct_http
+  fi
   print_next_steps
 }
 
@@ -947,57 +1088,78 @@ cmd_logs() {
 
 cmd_doctor() {
   compose_env_defaults
-  local domain public_ipv4
+  local domain public_ipv4 port
   domain="$(get_env_var PUBLIC_DOMAIN || true)"
-  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid or missing in .env."
+  port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
 
   select_docker
   echo "== SAM3 deployment doctor =="
-  echo "Domain: $domain"
+  echo "Access mode: $(effective_access_mode)"
+  if using_proxy_mode; then
+    is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid or missing in .env."
+    echo "Domain: $domain"
+  else
+    echo "Direct URL: http://127.0.0.1:${port:-8000}"
+  fi
   public_ipv4="$(get_public_ipv4 || true)"
   echo "Server public IPv4: ${public_ipv4:-unknown}"
   echo
 
-  echo "DNS records:"
-  resolve_domain_records "$domain" || true
-  echo
+  if using_proxy_mode; then
+    echo "DNS records:"
+    resolve_domain_records "$domain" || true
+    echo
+  fi
 
   echo "Compose status:"
   compose ps || true
   echo
 
   if command -v ss >/dev/null 2>&1; then
-    echo "TCP listeners on 80/443:"
-    ss -ltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print}' || true
-    echo
-    echo "UDP listeners on 443:"
-    ss -lunp 2>/dev/null | awk '$4 ~ /:443$/ {print}' || true
+    if using_proxy_mode; then
+      echo "TCP listeners on 80/443:"
+      ss -ltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print}' || true
+      echo
+      echo "UDP listeners on 443:"
+      ss -lunp 2>/dev/null | awk '$4 ~ /:443$/ {print}' || true
+    else
+      echo "TCP listeners on web-auto port ${port:-8000}:"
+      ss -ltnp 2>/dev/null | awk -v suffix=":${port:-8000}" '$4 ~ suffix "$" {print}' || true
+    fi
     echo
   fi
 
   if command -v curl >/dev/null 2>&1; then
-    echo "Local Caddy HTTP probe:"
-    curl -sS -I --max-time 8 --resolve "${domain}:80:127.0.0.1" "http://${domain}/" || true
-    echo
-    echo "Local Caddy HTTPS probe:"
-    curl -v --max-time 10 --resolve "${domain}:443:127.0.0.1" "https://${domain}/api/health" -o /dev/null || true
-    echo
-    echo "Public DNS HTTP probe:"
-    curl -sS -I --max-time 10 "http://${domain}/.well-known/acme-challenge/deploy-doctor" || true
-    echo
-    echo "Public DNS HTTPS probe:"
-    curl -v --max-time 10 "https://${domain}/api/health" -o /dev/null || true
-    echo
+    if using_proxy_mode; then
+      echo "Local Caddy HTTP probe:"
+      curl --noproxy '*' -sS -I --max-time 8 --resolve "${domain}:80:127.0.0.1" "http://${domain}/" || true
+      echo
+      echo "Local Caddy HTTPS probe:"
+      curl --noproxy '*' -v --max-time 10 --resolve "${domain}:443:127.0.0.1" "https://${domain}/api/health" -o /dev/null || true
+      echo
+      echo "Public DNS HTTP probe:"
+      curl --noproxy '*' -sS -I --max-time 10 "http://${domain}/.well-known/acme-challenge/deploy-doctor" || true
+      echo
+      echo "Public DNS HTTPS probe:"
+      curl --noproxy '*' -v --max-time 10 "https://${domain}/api/health" -o /dev/null || true
+      echo
+    else
+      echo "Direct web-auto health probe:"
+      curl --noproxy '*' -sS -i --max-time 8 "http://127.0.0.1:${port:-8000}/api/health" || true
+      echo
+    fi
   fi
 
-  if command -v openssl >/dev/null 2>&1; then
-    echo "TLS handshake probe:"
-    printf '' | openssl s_client -servername "$domain" -connect "127.0.0.1:443" -brief 2>&1 || true
-    echo
-  fi
+  if using_proxy_mode; then
+    if command -v openssl >/dev/null 2>&1; then
+      echo "TLS handshake probe:"
+      printf '' | openssl s_client -servername "$domain" -connect "127.0.0.1:443" -brief 2>&1 || true
+      echo
+    fi
 
-  echo "Caddy logs:"
-  compose logs --tail=200 caddy || true
+    echo "Caddy logs:"
+    compose logs --tail=200 caddy || true
+  fi
 }
 
 cmd_config() {
