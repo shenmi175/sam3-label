@@ -46,7 +46,6 @@ export const i18n = {
     global_settings: '全局设置',
     back_to_projects: '返回项目',
     settings_basic: '基础配置',
-    settings_proxy: '反代域名',
     settings_account: '登录管理',
     settings_saved: '设置已保存',
     sam_api_url: 'sam3-api 地址 (Local)',
@@ -60,12 +59,6 @@ export const i18n = {
     password_changed_login_again: '密码已修改，请重新登录',
     password_confirm_mismatch: '两次输入的新密码不一致',
     logout: '退出登录',
-    reverse_proxy: '反代域名',
-    proxy_domains: '域名',
-    proxy_request_ssl: '申请 HTTPS 证书',
-    proxy_force_ssl: '强制 HTTPS',
-    proxy_save: '配置反代',
-    proxy_configured: '反代已配置：{url}',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API 地址',
@@ -215,7 +208,6 @@ export const i18n = {
     global_settings: 'Global Settings',
     back_to_projects: 'Back to Projects',
     settings_basic: 'Basic',
-    settings_proxy: 'Reverse Proxy',
     settings_account: 'Account',
     settings_saved: 'Settings saved',
     sam_api_url: 'sam3-api URL (Local)',
@@ -229,12 +221,6 @@ export const i18n = {
     password_changed_login_again: 'Password changed. Please sign in again.',
     password_confirm_mismatch: 'New passwords do not match',
     logout: 'Sign Out',
-    reverse_proxy: 'Reverse Proxy',
-    proxy_domains: 'Domain Names',
-    proxy_request_ssl: 'Request HTTPS Certificate',
-    proxy_force_ssl: 'Force HTTPS',
-    proxy_save: 'Configure Proxy',
-    proxy_configured: 'Proxy configured: {url}',
     
     // Image Workspace - Top Bar
     web_auto_api: 'web-auto API URL',

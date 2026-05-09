@@ -6,9 +6,6 @@ ENV_FILE="$ROOT_DIR/.env"
 DOCKER_CMD=()
 FORCE_PROFILE_PROMPT=0
 FORCE_CONFIG_PROMPT=0
-NPM_PROXY_DOMAINS=""
-NPM_PROXY_USE_SSL=0
-NPM_PROXY_FORCE_SSL=1
 
 info() {
   printf '\033[1;34m==>\033[0m %s\n' "$*"
@@ -30,7 +27,7 @@ Usage: ./deploy.sh [command] [options]
 Running ./deploy.sh without a command starts the interactive install wizard.
 
 Commands:
-  install            Guided first-time setup, image pull, build, and start.
+  install            Guided setup, DNS preflight, image pull, build, and start.
   update             Pull latest git changes, rebuild, and restart.
   restart [service]  Restart all services or one service.
   start              Start the stack without rebuilding.
@@ -60,8 +57,15 @@ Examples:
   ./deploy.sh gpu-check
   ./deploy.sh gpu-install
   ./deploy.sh restart web-auto
-  ./deploy.sh logs sam3-api
+  ./deploy.sh logs caddy
 EOF
+}
+
+trim() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
 }
 
 is_interactive() {
@@ -75,23 +79,7 @@ prompt_value() {
   if is_interactive; then
     read -r -p "$prompt [$default_value]: " value
   fi
-  printf '%s' "${value:-$default_value}"
-}
-
-prompt_required_value() {
-  local prompt="$1"
-  local value=""
-  is_interactive || die "$prompt is required."
-  while true; do
-    read -r -p "$prompt: " value
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    if [[ -n "$value" ]]; then
-      printf '%s' "$value"
-      return
-    fi
-    warn "This value is required; Enter cannot use an empty/default value."
-  done
+  printf '%s' "$(trim "${value:-$default_value}")"
 }
 
 prompt_yes_no() {
@@ -103,7 +91,7 @@ prompt_yes_no() {
   if is_interactive; then
     read -r -p "$prompt $suffix: " answer
   fi
-  answer="${answer:-$default_value}"
+  answer="$(trim "${answer:-$default_value}")"
   [[ "$answer" =~ ^[Yy]$ ]]
 }
 
@@ -118,7 +106,7 @@ prompt_choice() {
   fi
   while true; do
     read -r -p "$prompt ($choices) [$default_value]: " answer
-    answer="${answer:-$default_value}"
+    answer="$(trim "${answer:-$default_value}")"
     for choice in $choices; do
       if [[ "$answer" == "$choice" ]]; then
         printf '%s' "$answer"
@@ -260,6 +248,47 @@ is_real_email() {
   return 0
 }
 
+is_valid_domain() {
+  local domain="${1,,}"
+  domain="$(trim "$domain")"
+  [[ -n "$domain" ]] || return 1
+  [[ "$domain" != *"://"* && "$domain" != *"/"* && "$domain" != *"@"* ]] || return 1
+  [[ "$domain" != *"*"* && "$domain" != *":"* ]] || return 1
+  [[ "${#domain}" -le 253 ]] || return 1
+  [[ "$domain" == *.* ]] || return 1
+
+  local label
+  IFS='.' read -r -a labels <<<"$domain"
+  [[ "${#labels[@]}" -ge 2 ]] || return 1
+  for label in "${labels[@]}"; do
+    [[ "${#label}" -ge 1 && "${#label}" -le 63 ]] || return 1
+    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  done
+  return 0
+}
+
+prompt_required_domain() {
+  local prompt="$1"
+  local current_value="${2:-}"
+  local value=""
+  is_interactive || die "$prompt is required."
+  while true; do
+    if is_valid_domain "$current_value"; then
+      read -r -p "$prompt [$current_value]: " value
+      value="${value:-$current_value}"
+    else
+      read -r -p "$prompt: " value
+    fi
+    value="${value,,}"
+    value="$(trim "$value")"
+    if is_valid_domain "$value"; then
+      printf '%s' "$value"
+      return
+    fi
+    warn "Enter a real domain such as sam3.example.com. Do not include http://, paths, ports, or wildcard domains."
+  done
+}
+
 prompt_required_email() {
   local prompt="$1"
   local current_value="${2:-}"
@@ -272,8 +301,7 @@ prompt_required_email() {
     else
       read -r -p "$prompt: " value
     fi
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
+    value="$(trim "$value")"
     if is_real_email "$value"; then
       printf '%s' "$value"
       return
@@ -286,11 +314,9 @@ ensure_env() {
   local profile_override="${1:-}"
   cd "$ROOT_DIR"
 
-  local env_created=0
   if [[ ! -f "$ENV_FILE" ]]; then
     info "Creating .env from .env.example"
     cp .env.example .env
-    env_created=1
   fi
 
   local token
@@ -337,6 +363,46 @@ ensure_env() {
       ;;
   esac
 
+  local public_domain
+  public_domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  if ! is_valid_domain "$public_domain"; then
+    if is_interactive; then
+      public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
+    else
+      die "PUBLIC_DOMAIN must be set in .env to a real domain, for example sam3.example.com."
+    fi
+    set_env_var PUBLIC_DOMAIN "$public_domain"
+  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
+    set_env_var PUBLIC_DOMAIN "$public_domain"
+  fi
+
+  local acme_email
+  acme_email="$(get_env_var ACME_EMAIL || true)"
+  if ! is_real_email "$acme_email"; then
+    if is_interactive; then
+      acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
+    else
+      die "ACME_EMAIL must be set in .env to a real email address."
+    fi
+    set_env_var ACME_EMAIL "$acme_email"
+  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
+    set_env_var ACME_EMAIL "$acme_email"
+  fi
+
+  local caddy_http_port caddy_https_port caddy_http_bind caddy_https_bind caddy_image_tag
+  caddy_http_port="$(get_env_var CADDY_HTTP_PORT || true)"
+  caddy_https_port="$(get_env_var CADDY_HTTPS_PORT || true)"
+  caddy_http_bind="$(get_env_var CADDY_HTTP_BIND || true)"
+  caddy_https_bind="$(get_env_var CADDY_HTTPS_BIND || true)"
+  caddy_image_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
+  [[ -n "$caddy_http_port" ]] || set_env_var CADDY_HTTP_PORT "80"
+  [[ -n "$caddy_https_port" ]] || set_env_var CADDY_HTTPS_PORT "443"
+  [[ -n "$caddy_http_bind" ]] || set_env_var CADDY_HTTP_BIND "0.0.0.0"
+  [[ -n "$caddy_https_bind" ]] || set_env_var CADDY_HTTPS_BIND "0.0.0.0"
+  [[ -n "$caddy_image_tag" ]] || set_env_var CADDY_IMAGE_TAG "2.11.2-alpine"
+
   local host_root
   host_root="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
   if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
@@ -345,40 +411,6 @@ ensure_env() {
   elif [[ -z "$host_root" || ( "$host_root" == "/home/zmb" && ! -d /home/zmb ) ]]; then
     host_root="$(prompt_value "Host data root mounted into web-auto" "${HOME:-$ROOT_DIR}")"
     set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
-  fi
-
-  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    local http_port https_port admin_port bootstrap_port bootstrap_bind
-    http_port="$(prompt_value "Nginx Proxy Manager HTTP port" "$(get_env_var NPM_HTTP_PORT || true)")"
-    https_port="$(prompt_value "Nginx Proxy Manager HTTPS port" "$(get_env_var NPM_HTTPS_PORT || true)")"
-    admin_port="$(prompt_value "Nginx Proxy Manager admin port" "$(get_env_var NPM_ADMIN_PORT || true)")"
-    bootstrap_bind="$(prompt_value "web-auto bootstrap bind address" "$(get_env_var WEB_AUTO_BOOTSTRAP_BIND || true)")"
-    bootstrap_port="$(prompt_value "web-auto bootstrap port" "$(get_env_var WEB_AUTO_BOOTSTRAP_PORT || true)")"
-    set_env_var NPM_HTTP_PORT "${http_port:-80}"
-    set_env_var NPM_HTTPS_PORT "${https_port:-443}"
-    set_env_var NPM_ADMIN_PORT "${admin_port:-81}"
-    set_env_var WEB_AUTO_BOOTSTRAP_BIND "${bootstrap_bind:-0.0.0.0}"
-    set_env_var WEB_AUTO_BOOTSTRAP_PORT "${bootstrap_port:-8000}"
-  fi
-
-  local npm_admin_email npm_admin_password
-  npm_admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
-  npm_admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
-  if ! is_real_email "$npm_admin_email"; then
-    if is_interactive; then
-      npm_admin_email="$(prompt_required_email "NPM admin email used by Let's Encrypt" "$npm_admin_email")"
-    else
-      die "NPM_ADMIN_EMAIL must be set to a real email address in .env. Placeholder values such as admin@example.com are not allowed."
-    fi
-    set_env_var NPM_ADMIN_EMAIL "$npm_admin_email"
-  elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    npm_admin_email="$(prompt_required_email "NPM admin email used by Let's Encrypt" "$npm_admin_email")"
-    set_env_var NPM_ADMIN_EMAIL "$npm_admin_email"
-  fi
-  if [[ -z "${npm_admin_password//[[:space:]]/}" ]]; then
-    npm_admin_password="$(generate_password)"
-    set_env_var NPM_ADMIN_PASSWORD "$npm_admin_password"
-    info "Generated NPM_ADMIN_PASSWORD in .env"
   fi
 
   local web_data sam_data ckpt_dir
@@ -412,75 +444,16 @@ compose() {
   (cd "$ROOT_DIR" && "${DOCKER_CMD[@]}" compose "${args[@]}" "$@")
 }
 
-npm_login_check() {
-  command -v python3 >/dev/null 2>&1 || return 1
-  local admin_port admin_email admin_password
-  admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
-  admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
-  admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
-  admin_port="${admin_port:-81}"
-  is_real_email "$admin_email" || return 1
-  [[ -n "${admin_password//[[:space:]]/}" ]] || return 1
-
-  NPM_URL="http://127.0.0.1:${admin_port}" \
-    NPM_EMAIL="$admin_email" \
-    NPM_PASSWORD="$admin_password" \
-    python3 - <<'PY'
-import json
-import os
-import time
-import urllib.error
-import urllib.request
-
-base_url = os.environ["NPM_URL"].rstrip("/")
-email = os.environ["NPM_EMAIL"]
-password = os.environ["NPM_PASSWORD"]
-payload = json.dumps({"identity": email, "secret": password}).encode("utf-8")
-last_error = None
-for _ in range(45):
-    req = urllib.request.Request(
-        base_url + "/api/tokens",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8") or "{}")
-            raise SystemExit(0 if data.get("token") else 1)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        last_error = f"HTTP {exc.code}: {detail[:160]}"
-        if exc.code in {400, 401, 403}:
-            break
-    except Exception as exc:
-        last_error = str(exc)
-    time.sleep(2)
-print(last_error or "NPM login failed", flush=True)
-raise SystemExit(1)
-PY
-}
-
-ensure_npm_login_or_offer_reset() {
-  info "Checking NPM admin login with configured .env credentials"
-  if npm_login_check; then
-    return 0
-  fi
-
-  warn "NPM login failed with NPM_ADMIN_EMAIL/NPM_ADMIN_PASSWORD from .env."
-  if is_interactive && prompt_yes_no "Reset NPM data volumes to apply the configured admin email/password? Recommended for first-time setup with stale NPM data; clears NPM proxy hosts and certificates only, not web-auto data" "y"; then
-    local project_name
-    project_name="$(get_env_var COMPOSE_PROJECT_NAME || true)"
-    project_name="${project_name:-sam3-auto-label}"
-    warn "Resetting NPM volumes: ${project_name}_npm_data ${project_name}_npm_letsencrypt"
-    compose down --remove-orphans
-    "${DOCKER_CMD[@]}" volume rm "${project_name}_npm_data" "${project_name}_npm_letsencrypt" >/dev/null 2>&1 || true
-    compose up -d --build
-    npm_login_check || die "NPM login still failed after resetting NPM volumes. Check NPM_ADMIN_EMAIL and NPM_ADMIN_PASSWORD in .env."
-    return 0
-  fi
-
-  die "NPM login failed. Set NPM_ADMIN_EMAIL/NPM_ADMIN_PASSWORD to the existing NPM admin account, or rerun and approve the NPM volume reset prompt."
+compose_env_defaults() {
+  local value
+  value="$(get_env_var PUBLIC_DOMAIN || true)"
+  export PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-${value:-status.local}}"
+  value="$(get_env_var ACME_EMAIL || true)"
+  export ACME_EMAIL="${ACME_EMAIL:-${value:-status@example.org}}"
+  value="$(get_env_var SAM3_API_TOKEN || true)"
+  export SAM3_API_TOKEN="${SAM3_API_TOKEN:-${value:-status-token}}"
+  value="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
+  export WEB_AUTO_ADMIN_PASSWORD="${WEB_AUTO_ADMIN_PASSWORD:-${value:-status-password}}"
 }
 
 configure_mirror() {
@@ -528,193 +501,11 @@ PY
   select_docker
 }
 
-prompt_proxy_config() {
-  NPM_PROXY_DOMAINS=""
-  NPM_PROXY_USE_SSL=0
-  NPM_PROXY_FORCE_SSL=1
-  is_interactive || return 0
-  if ! prompt_yes_no "Configure Nginx Proxy Manager Proxy Host now" "n"; then
-    return 0
-  fi
-  NPM_PROXY_DOMAINS="$(prompt_required_value "Domain name(s), comma-separated")"
-  if prompt_yes_no "Request Let's Encrypt certificate" "y"; then
-    NPM_PROXY_USE_SSL=1
-    local npm_admin_email
-    npm_admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
-    is_real_email "$npm_admin_email" || die "NPM_ADMIN_EMAIL must be a real email before requesting a Let's Encrypt certificate. Edit .env and rerun."
-    if prompt_yes_no "Force HTTPS" "y"; then
-      NPM_PROXY_FORCE_SSL=1
-    else
-      NPM_PROXY_FORCE_SSL=0
-    fi
-  fi
-}
-
-configure_npm_proxy_host() {
-  [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]] || return 0
-  command -v python3 >/dev/null 2>&1 || {
-    warn "python3 is required for automatic NPM proxy configuration; configure it manually in NPM."
-    return 0
-  }
-
-  local admin_port admin_email admin_password
-  admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
-  admin_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
-  admin_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
-  admin_port="${admin_port:-81}"
-  is_real_email "$admin_email" || die "NPM_ADMIN_EMAIL must be a real email before configuring NPM proxy."
-  [[ -n "${admin_password//[[:space:]]/}" ]] || die "NPM_ADMIN_PASSWORD is required before configuring NPM proxy."
-
-  info "Configuring NPM Proxy Host for: $NPM_PROXY_DOMAINS"
-  if ! NPM_URL="http://127.0.0.1:${admin_port}" \
-    NPM_EMAIL="$admin_email" \
-    NPM_PASSWORD="$admin_password" \
-    NPM_PROXY_DOMAINS="$NPM_PROXY_DOMAINS" \
-    NPM_PROXY_USE_SSL="$NPM_PROXY_USE_SSL" \
-    NPM_PROXY_FORCE_SSL="$NPM_PROXY_FORCE_SSL" \
-    python3 - <<'PY'
-import json
-import os
-import time
-import urllib.error
-import urllib.request
-
-base_url = os.environ["NPM_URL"].rstrip("/")
-email = os.environ["NPM_EMAIL"]
-password = os.environ["NPM_PASSWORD"]
-domains = [item.strip() for item in os.environ["NPM_PROXY_DOMAINS"].split(",") if item.strip()]
-use_ssl = os.environ.get("NPM_PROXY_USE_SSL") == "1"
-force_ssl = os.environ.get("NPM_PROXY_FORCE_SSL", "1") == "1"
-
-def request(method, path, payload=None, token=None):
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"NPM API HTTP {exc.code}: {detail[:240]}") from exc
-
-def proxy_host_request(method, path, payload, token=None, retry_meta_schema=True):
-    try:
-        return request(method, path, payload, token=token)
-    except Exception as exc:
-        if not retry_meta_schema or "data/meta must NOT have additional properties" not in str(exc):
-            raise
-        retry_payload = dict(payload)
-        retry_payload["meta"] = {}
-        return request(method, path, retry_payload, token=token)
-
-last_error = None
-for _ in range(45):
-    try:
-        token_payload = request("POST", "/api/tokens", {"identity": email, "secret": password})
-        token = token_payload["token"]
-        break
-    except Exception as exc:
-        last_error = exc
-        time.sleep(2)
-else:
-    raise SystemExit(f"failed to login to NPM API at {base_url}: {last_error}")
-
-hosts = request("GET", "/api/nginx/proxy-hosts", token=token)
-target = None
-for host in hosts:
-    existing = set(host.get("domain_names") or [])
-    if existing.intersection(domains):
-        target = host
-        break
-
-body = {
-    "domain_names": domains,
-    "forward_scheme": "http",
-    "forward_host": "web-auto",
-    "forward_port": 8000,
-    "access_list_id": 0,
-    "certificate_id": 0,
-    "ssl_forced": False,
-    "caching_enabled": False,
-    "block_exploits": True,
-    "advanced_config": "",
-    "meta": {},
-    "allow_websocket_upgrade": True,
-    "http2_support": False,
-    "hsts_enabled": False,
-    "hsts_subdomains": False,
-    "enabled": True,
-    "locations": [],
-}
-
-if target:
-    host_id = target["id"]
-    proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
-else:
-    created = proxy_host_request("POST", "/api/nginx/proxy-hosts", body, token=token)
-    host_id = created["id"]
-
-if use_ssl:
-    cert_id = 0
-    certs = request("GET", "/api/nginx/certificates", token=token)
-    for cert in certs:
-        if set(cert.get("domain_names") or []) == set(domains):
-            cert_id = cert.get("id") or 0
-            break
-    if not cert_id:
-        cert_body = {
-            "provider": "letsencrypt",
-            "nice_name": ",".join(domains),
-            "domain_names": domains,
-            "meta": {"dns_challenge": False},
-        }
-        cert_error = None
-        try:
-            cert = request("POST", "/api/nginx/certificates", cert_body, token=token)
-            cert_id = cert["id"]
-        except Exception as cert_exc:
-            cert_error = cert_exc
-        if not cert_id:
-            ssl_body = dict(body)
-            ssl_body["certificate_id"] = "new"
-            ssl_body["ssl_forced"] = bool(force_ssl)
-            ssl_body["http2_support"] = True
-            ssl_body["meta"] = {"dns_challenge": False}
-            try:
-                updated = proxy_host_request(
-                    "PUT",
-                    f"/api/nginx/proxy-hosts/{host_id}",
-                    ssl_body,
-                    token=token,
-                    retry_meta_schema=False,
-                )
-            except Exception as proxy_exc:
-                raise RuntimeError(f"NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_exc}") from proxy_exc
-            host_id = updated.get("id") or host_id
-            cert_id = updated.get("certificate_id") or 0
-            body = ssl_body
-    if cert_id:
-        body["certificate_id"] = cert_id
-        body["ssl_forced"] = bool(force_ssl)
-        body["http2_support"] = True
-        body["meta"] = {}
-        proxy_host_request("PUT", f"/api/nginx/proxy-hosts/{host_id}", body, token=token)
-
-print(f"configured proxy host id={host_id} domains={','.join(domains)} ssl={'yes' if use_ssl else 'no'}")
-PY
-  then
-    warn "Automatic NPM proxy configuration failed. You can still configure it manually in the NPM UI."
-  fi
-}
-
 required_images() {
-  local npm_tag base_image
-  npm_tag="$(get_env_var NPM_IMAGE_TAG || true)"
+  local caddy_tag base_image
+  caddy_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
   base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
-  printf '%s\n' "jc21/nginx-proxy-manager:${npm_tag:-2.14.0}"
+  printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
   printf '%s\n' "python:3.11-slim"
   printf '%s\n' "${base_image:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}"
 }
@@ -827,47 +618,142 @@ pull_required_images() {
   return "$failed"
 }
 
+get_public_ipv4() {
+  command -v curl >/dev/null 2>&1 || die "curl is required for DNS preflight."
+  local url value
+  for url in https://api.ipify.org https://ifconfig.me/ip; do
+    value="$(curl -fsS --max-time 8 "$url" 2>/dev/null || true)"
+    value="$(trim "$value")"
+    if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_domain_records() {
+  local domain="$1"
+  require_command python3
+  PUBLIC_DOMAIN="$domain" python3 - <<'PY'
+import socket
+import os
+
+domain = os.environ["PUBLIC_DOMAIN"]
+records = []
+for family, label in ((socket.AF_INET, "A"), (socket.AF_INET6, "AAAA")):
+    try:
+        infos = socket.getaddrinfo(domain, 80, family, socket.SOCK_STREAM)
+    except socket.gaierror:
+        continue
+    for item in infos:
+        address = item[4][0]
+        row = (label, address)
+        if row not in records:
+            records.append(row)
+for label, address in records:
+    print(label, address)
+PY
+}
+
+array_contains() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+validate_domain_dns() {
+  local domain public_ipv4
+  domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid: ${domain:-empty}"
+
+  info "Checking DNS for $domain"
+  public_ipv4="$(get_public_ipv4)" || die "Cannot determine this server's public IPv4. Check outbound network access, then rerun."
+
+  local dns_lines=()
+  mapfile -t dns_lines < <(resolve_domain_records "$domain")
+
+  local a_records=()
+  local aaaa_records=()
+  local line record_type address
+  for line in "${dns_lines[@]}"; do
+    read -r record_type address <<<"$line"
+    case "$record_type" in
+      A) a_records+=("$address") ;;
+      AAAA) aaaa_records+=("$address") ;;
+    esac
+  done
+
+  [[ "${#a_records[@]}" -gt 0 ]] || die "DNS preflight failed: $domain has no A record. Add an A record pointing to $public_ipv4."
+  if ! array_contains "$public_ipv4" "${a_records[@]}"; then
+    die "DNS preflight failed: $domain A record is ${a_records[*]}, but this server's public IPv4 is $public_ipv4. Fix DNS first."
+  fi
+
+  if [[ "${#aaaa_records[@]}" -gt 0 ]]; then
+    die "DNS preflight failed: $domain has AAAA record(s) ${aaaa_records[*]}. Remove AAAA records for this deployment and use an A record to $public_ipv4."
+  fi
+}
+
+check_caddy_ports() {
+  local http_port https_port port matches udp_matches
+  http_port="$(get_env_var CADDY_HTTP_PORT || true)"
+  https_port="$(get_env_var CADDY_HTTPS_PORT || true)"
+  http_port="${http_port:-80}"
+  https_port="${https_port:-443}"
+  [[ "$http_port" == "80" ]] || die "CADDY_HTTP_PORT must be 80 for Let's Encrypt HTTP-01 validation."
+  [[ "$https_port" == "443" ]] || die "CADDY_HTTPS_PORT must be 443 for automatic HTTPS."
+
+  if ! command -v ss >/dev/null 2>&1; then
+    warn "ss command not found; skipping local port occupancy check."
+    return 0
+  fi
+  for port in "$http_port" "$https_port"; do
+    matches="$(ss -ltnp 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" {print}' || true)"
+    if [[ -n "$matches" ]]; then
+      printf '%s\n' "$matches" >&2
+      die "Port $port is already in use after stopping this Compose stack. Stop the process using it, then rerun."
+    fi
+  done
+  udp_matches="$(ss -lunp 2>/dev/null | awk -v suffix=":$https_port" '$4 ~ suffix "$" {print}' || true)"
+  if [[ -n "$udp_matches" ]]; then
+    printf '%s\n' "$udp_matches" >&2
+    die "UDP port $https_port is already in use after stopping this Compose stack. Stop the process using it, then rerun."
+  fi
+}
+
+stop_stack_for_recreate() {
+  info "Stopping old Compose services and removing orphans"
+  compose down --remove-orphans
+}
+
 print_next_steps() {
-  local admin_port bootstrap_port host_ip web_user web_password npm_email npm_password
-  admin_port="$(get_env_var NPM_ADMIN_PORT || true)"
-  bootstrap_port="$(get_env_var WEB_AUTO_BOOTSTRAP_PORT || true)"
-  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  host_ip="${host_ip:-SERVER_IP}"
+  local domain web_user web_password
+  domain="$(get_env_var PUBLIC_DOMAIN || true)"
   web_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
   web_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
-  npm_email="$(get_env_var NPM_ADMIN_EMAIL || true)"
-  npm_password="$(get_env_var NPM_ADMIN_PASSWORD || true)"
   cat <<EOF
 
 Deployment is running.
 
-Initial web-auto address:
-  http://${host_ip}:${bootstrap_port:-8000}
+web-auto:
+  https://${domain}
 
 web-auto login:
   Username: ${web_user:-admin}
   Password: ${web_password:-see .env WEB_AUTO_ADMIN_PASSWORD}
 
-Configure domain:
-  Open web-auto -> Global Settings -> Reverse Proxy.
-  Fill domain name, then click Configure Proxy.
+sam3-api is internal only:
+  http://sam3-api:8001
 
-Nginx Proxy Manager admin is only for troubleshooting:
-  http://127.0.0.1:${admin_port:-81}
-  Email: ${npm_email:-see .env NPM_ADMIN_EMAIL}
-  Password: ${npm_password:-see .env NPM_ADMIN_PASSWORD}
+Useful commands:
+  ./deploy.sh status
+  ./deploy.sh logs caddy
+  ./deploy.sh logs web-auto
 EOF
-  if [[ -n "${NPM_PROXY_DOMAINS//[[:space:]]/}" ]]; then
-    local first_domain scheme
-    first_domain="$(printf '%s' "$NPM_PROXY_DOMAINS" | cut -d',' -f1 | tr -d '[:space:]')"
-    scheme="http"
-    [[ "$NPM_PROXY_USE_SSL" -eq 1 ]] && scheme="https"
-    cat <<EOF
-
-Configured web-auto address:
-  ${scheme}://${first_domain}
-EOF
-  fi
 }
 
 parse_common_options() {
@@ -912,22 +798,8 @@ parse_common_options() {
   done
 }
 
-cmd_install() {
-  parse_common_options "$@"
-  [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown install option: ${POSITIONAL[*]}"
-  if is_interactive; then
-    info "Starting interactive SAM3 deployment wizard. Press Enter to accept defaults."
-    [[ -z "$PROFILE_OVERRIDE" ]] && FORCE_PROFILE_PROMPT=1
-    FORCE_CONFIG_PROMPT=1
-  fi
-  ensure_env "$PROFILE_OVERRIDE"
+prepare_runtime() {
   select_docker
-  if [[ -z "$MIRROR_URL" && is_interactive ]]; then
-    if prompt_yes_no "Configure a Docker Hub registry mirror now" "n"; then
-      MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
-    fi
-  fi
-  prompt_proxy_config
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
 
@@ -938,15 +810,33 @@ cmd_install() {
         configure_mirror ""
         pull_required_images || die "Image pull still failed after configuring mirror."
       else
-        die "Image pull failed. Run './deploy.sh mirror <url>' and retry './deploy.sh install'."
+        die "Image pull failed. Run './deploy.sh mirror <url>' and retry."
       fi
     fi
   fi
+}
+
+cmd_install() {
+  parse_common_options "$@"
+  [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown install option: ${POSITIONAL[*]}"
+  if is_interactive; then
+    info "Starting interactive SAM3 deployment wizard. Domain and Let's Encrypt email are required."
+    [[ -z "$PROFILE_OVERRIDE" ]] && FORCE_PROFILE_PROMPT=1
+    FORCE_CONFIG_PROMPT=1
+  fi
+  ensure_env "$PROFILE_OVERRIDE"
+  if [[ -z "$MIRROR_URL" && is_interactive ]]; then
+    if prompt_yes_no "Configure a Docker Hub registry mirror now" "n"; then
+      MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
+    fi
+  fi
+  validate_domain_dns
+  prepare_runtime
+  stop_stack_for_recreate
+  check_caddy_ports
 
   info "Building and starting stack"
-  compose up -d --build
-  ensure_npm_login_or_offer_reset
-  configure_npm_proxy_host
+  compose up -d --build --remove-orphans
   compose ps
   print_next_steps
 }
@@ -955,6 +845,7 @@ cmd_update() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown update option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
+  validate_domain_dns
   select_docker
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
@@ -968,50 +859,55 @@ cmd_update() {
     pull_required_images || warn "Pre-pull failed; continuing with compose build so Docker can retry."
   fi
 
+  stop_stack_for_recreate
+  check_caddy_ports
   info "Rebuilding and restarting stack"
-  compose up -d --build
-  ensure_npm_login_or_offer_reset
+  compose up -d --build --remove-orphans
   compose ps
+  print_next_steps
 }
 
 cmd_start() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
+  validate_domain_dns
   select_docker
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
-  compose up -d
-  ensure_npm_login_or_offer_reset
+  stop_stack_for_recreate
+  check_caddy_ports
+  compose up -d --remove-orphans
   compose ps
+  print_next_steps
 }
 
 cmd_restart() {
-  ensure_env ""
+  compose_env_defaults
   select_docker
   compose restart "$@"
   compose ps
 }
 
 cmd_stop() {
-  ensure_env ""
+  compose_env_defaults
   select_docker
   compose down --remove-orphans
 }
 
 cmd_status() {
-  ensure_env ""
+  compose_env_defaults
   select_docker
   compose ps
 }
 
 cmd_logs() {
-  ensure_env ""
+  compose_env_defaults
   select_docker
   compose logs -f --tail=200 "$@"
 }
 
 cmd_config() {
-  ensure_env ""
+  compose_env_defaults
   select_docker
   compose config
 }

@@ -1,152 +1,134 @@
-# Docker + Nginx Proxy Manager 部署
+# Docker + Caddy 部署
 
-该部署方式长期只需要对公网暴露 Nginx Proxy Manager 的 `80/443` 端口。`sam3-api` 不发布宿主机端口；`web-auto` 默认临时暴露 `8000` 作为首次登录和配置入口，配置好域名反代后可以在 `.env` 里把 `WEB_AUTO_BOOTSTRAP_BIND` 改为 `127.0.0.1`。
+最终方案只对公网暴露 Caddy 的 `80/443`。`web-auto` 和 `sam3-api` 只在 Docker 内部网络里互通，`sam3-api` 不发布宿主机端口。
 
-## 目录准备
+## 成熟方案依据
 
-```bash
-./deploy.sh
-```
+- Caddy 官方支持 Automatic HTTPS，会自动申请、续期和启用证书: https://caddyserver.com/docs/automatic-https
+- Caddy 官方 `reverse_proxy` 指令用于反向代理到内部服务: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+- Caddy 官方 Docker 镜像: https://hub.docker.com/_/caddy
+- Let’s Encrypt HTTP-01 校验要求公网能够访问域名的 `80` 端口: https://letsencrypt.org/docs/challenge-types/
+- Let’s Encrypt 建议保持 `80` 端口开放，用于校验和 HTTP 到 HTTPS 跳转: https://letsencrypt.org/docs/allow-port-80/
 
-脚本会自动：
+## 部署前必须确认
 
-- 复制 `.env.example` 到 `.env`。
-- 生成并写入 `SAM3_API_TOKEN`。
-- 生成并写入 `WEB_AUTO_ADMIN_PASSWORD`，`web-auto` 默认账号为 `admin`。
-- 默认使用 `jc21/nginx-proxy-manager:2.14.0`，避免 `latest` 后续变更导致 API 不兼容。
-- 强制要求输入真实 `NPM_ADMIN_EMAIL`，该邮箱用于 NPM 管理员账号和 Let’s Encrypt 证书申请，不能使用 `admin@example.com` 这类占位邮箱。
-- 交互选择 GPU/CPU 模式，默认 GPU。
-- 交互设置 `WEB_AUTO_HOST_DATA_ROOT`、NPM 端口和 `web-auto` 初始端口，直接回车使用默认值。
-- GPU 模式下检查 Docker NVIDIA runtime；缺失时提示是否自动安装 NVIDIA Container Toolkit，默认安装。
-- 询问是否自动配置 NPM 反代，默认不配置；也可以启动后在 `web-auto` 设置里配置。
-- 创建持久化目录。
-- 预拉取基础镜像、构建并启动服务。
-- 如果 Docker Hub 拉取超时，提示输入 registry mirror 并自动写入 `/etc/docker/daemon.json`。
+1. 域名已经添加 `A` 记录，指向服务器公网 IPv4。
+2. 删除该域名的 `AAAA` 记录。本脚本采用最稳定的 IPv4 HTTP-01/TLS-ALPN 路径，避免 Let’s Encrypt 走到错误的 IPv6 地址。
+3. DNS 不要先开 CDN 代理，脚本要求 `A` 记录直接等于服务器公网 IPv4。
+4. 云厂商安全组、服务器防火墙、路由器端口转发必须放行公网 `80` 和 `443`。
+5. 宿主机本地不能已有其他服务占用 `80/443`。
+6. GPU 模式需要宿主机 `nvidia-smi` 正常，并且 Docker 已配置 NVIDIA Container Toolkit。
 
-如果不从 Hugging Face 自动下载模型，把 `sam3.pt` 放到：
+`./deploy.sh` 会检查域名 `A` 解析、拒绝 `AAAA` 记录、检查 `80/443` 本地占用和 GPU Docker runtime。检查失败会直接停止，不会继续启动半配置状态。
 
-```text
-sam3_checkpoints/sam3.pt
-```
+Compose 默认固定使用 `caddy:2.11.2-alpine`，不使用 `latest`。
 
-如果你的图片/视频数据不在 `/home/zmb` 下，修改 `.env`：
-
-```text
-WEB_AUTO_HOST_DATA_ROOT=/path/to/your/data/root
-```
-
-`web-auto` 会把该路径按相同绝对路径挂进容器，已有项目里的绝对路径才不会失效。
-
-## 启动
-
-## GPU 运行
-
-```bash
-./deploy.sh install --gpu
-```
-
-也可以直接：
+## 一键安装
 
 ```bash
 ./deploy.sh
 ```
 
-CPU 可用于功能验证，不建议用于大规模 SAM3 推理：
+交互式安装会强制要求填写：
 
-```bash
-./deploy.sh install --cpu
-```
+- `Public domain for web-auto`: 例如 `sam3.example.com`，不能留空，不能填 URL。
+- `Email for Let's Encrypt account`: 真实邮箱，供 ACME 账户使用。
 
-如果你已有可用的 Docker Hub 镜像站：
+可以回车使用默认值的项目：
 
-```bash
-./deploy.sh install --mirror https://你的镜像站地址
-```
+- `Deployment mode`: 默认 `gpu`，可选 `cpu`。
+- `Host data root mounted into web-auto`: 默认当前用户 home 目录。
+- 是否配置 Docker Hub 镜像站: 默认不配置。
 
-如果宿主机 `nvidia-smi` 正常，但 Docker 报错：
+安装完成后输出：
 
 ```text
-could not select device driver "" with capabilities: [[gpu]]
+web-auto:
+  https://你的域名
+
+web-auto login:
+  Username: admin
+  Password: .env 中生成的 WEB_AUTO_ADMIN_PASSWORD
 ```
 
-说明 Docker 还没有配置 NVIDIA Container Toolkit。运行：
+## 更新和重启
+
+```bash
+./deploy.sh update
+./deploy.sh restart
+./deploy.sh restart web-auto
+./deploy.sh restart sam3-api
+./deploy.sh restart caddy
+```
+
+`update` 会重新执行 DNS 和端口预检，然后重建并启动。
+
+## 查看状态和日志
+
+```bash
+./deploy.sh status
+./deploy.sh logs caddy
+./deploy.sh logs web-auto
+./deploy.sh logs sam3-api
+```
+
+Caddy 证书申请失败时优先看：
+
+```bash
+./deploy.sh logs caddy
+```
+
+常见原因是域名 `A` 记录不指向当前服务器、存在 `AAAA` 记录，或者公网 `80/443` 没有放行。
+
+## Docker Hub 镜像站
+
+如果服务器无法访问 Docker Hub，可以配置 registry mirror：
+
+```bash
+./deploy.sh mirror https://你的镜像站地址
+./deploy.sh update
+```
+
+也可以安装时选择配置。
+
+## GPU
+
+检查 GPU 环境：
+
+```bash
+./deploy.sh gpu-check
+```
+
+安装 NVIDIA Container Toolkit：
 
 ```bash
 ./deploy.sh gpu-install
 ./deploy.sh start --gpu
 ```
 
-脚本内置的安装流程来自 NVIDIA 官方 Container Toolkit 文档：
-https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
-
-只检查 GPU/Docker runtime 状态：
-
-```bash
-./deploy.sh gpu-check
-```
-
-如果暂时只想先跑通面板和 CPU 功能：
+临时 CPU 模式：
 
 ```bash
 ./deploy.sh start --cpu
 ```
 
-## 首次配置
+## 端口和安全边界
 
-Nginx Proxy Manager 官方 Docker 部署文档: https://nginxproxymanager.com/setup/
+- 对公网开放: Caddy `80/tcp`、`443/tcp`、`443/udp`。
+- Docker 内部服务: `web-auto:8000`、`sam3-api:8001`。
+- `sam3-api` 不映射到宿主机端口，只能被 `web-auto` 通过 Docker 网络访问。
+- web-auto 登录由 `WEB_AUTO_ADMIN_USERNAME` 和 `WEB_AUTO_ADMIN_PASSWORD` 控制。
+- 内部 API token 由 `SAM3_API_TOKEN` 在 `.env` 里自动生成，web-auto 调用 sam3-api 时使用。
 
-脚本结束时会显示：
+## 卸载
 
-- `web-auto` 初始访问地址，例如 `http://服务器IP:8000`。
-- `web-auto` 默认登录账号和密码。
-- 如果已自动配置反代，会显示 `web-auto` 的访问域名。
-- NPM 管理地址只作为排障入口，默认绑定 `127.0.0.1:81`，不是日常配置入口。
-
-1. 打开 `web-auto` 初始地址：
-
-```text
-http://服务器IP:8000
-```
-
-2. 使用脚本结束时显示的 `web-auto` 默认账号和密码登录。
-
-3. 在 `web-auto` 的「全局设置 -> 反代域名」里填写：
-
-```text
-域名: label.example.com
-申请 HTTPS 证书: 开启
-强制 HTTPS: 开启
-```
-
-4. 点击「配置反代」，`web-auto` 会调用 NPM API 创建/更新 Proxy Host。
-
-5. 打开你的域名。`web-auto` 会进入 `/login`，使用同一个账号和密码登录。
-
-`web-auto` 在 Docker 内默认调用：
-
-```text
-http://sam3-api:8001
-```
-
-该地址已被 `WEB_AUTO_ALLOWED_SAM3_API_BASE_URLS` 限制为内部地址，前端不会拿到 `SAM3_API_TOKEN`。
-
-## 安全边界
-
-- 服务器安全组只需要长期开放 `80/443`。
-- `81` 是 NPM 管理端口，默认只绑定 `127.0.0.1`，日常域名反代配置在 `web-auto` 的设置页完成。
-- 不要给 `sam3-api` 创建公网 Proxy Host。
-- `.env` 里的 `SAM3_API_TOKEN` 同时用于 `sam3-api` 校验和 `web-auto` 内部调用。
-- `web-auto/data/auth.json` 保存管理员密码哈希，不保存明文密码。
-
-## 一键卸载
-
-默认只删除容器和 compose 网络，保留项目数据、模型和缓存：
+保留数据卸载：
 
 ```bash
 ./deploy.sh uninstall
 ```
 
-删除容器、网络和 Docker volumes，并删除默认的 `web-auto/data`、`sam3-api/data`：
+删除 Compose volumes 和默认数据目录：
 
 ```bash
 ./deploy.sh uninstall --purge
@@ -158,26 +140,4 @@ http://sam3-api:8001
 ./deploy.sh uninstall --purge --with-images
 ```
 
-卸载脚本不会删除 `WEB_AUTO_HOST_DATA_ROOT` 指向的原始图片/视频数据集。
-
-## 常用命令
-
-```bash
-./deploy.sh status
-./deploy.sh logs nginx-proxy-manager
-./deploy.sh logs web-auto
-./deploy.sh logs sam3-api
-./deploy.sh restart sam3-api
-./deploy.sh update
-./deploy.sh stop
-```
-
-`restart: unless-stopped` 已启用。机器重启后 Docker daemon 启动时会自动恢复容器，除非你手动执行过 `docker compose stop`。
-
-## 持久化内容
-
-- `web-auto/data`: 项目列表、SQLite 索引、UI 状态、项目工作目录。
-- `sam3-api/data`: 上传缓存和视频临时数据。
-- `sam3_checkpoints`: 本地模型权重，默认读取 `sam3.pt`。
-- Docker volumes `npm_data`、`npm_letsencrypt`: NPM 配置和证书。
-- Docker volumes `sam3_hf_cache` 和 `sam3_torch_cache`: Hugging Face/Torch 缓存。
+卸载脚本不会删除 `sam3_checkpoints`，也不会删除 `WEB_AUTO_HOST_DATA_ROOT` 指向的数据集目录。

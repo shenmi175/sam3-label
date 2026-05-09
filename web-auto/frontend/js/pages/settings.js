@@ -32,7 +32,6 @@ export const SettingsPage = {
         <div class="settings-layout" style="display: grid; grid-template-columns: minmax(180px, 220px) minmax(0, 720px); gap: 28px; padding: 30px 40px; align-items: start;">
           <div class="neu-card settings-tabs" style="padding: 14px; display: flex; flex-direction: column; gap: 10px;">
             <button class="neu-button settings-tab" data-settings-tab="basic" style="justify-content: flex-start; padding: 12px 14px; text-align: left;">${i18n.t('settings_basic')}</button>
-            <button class="neu-button settings-tab" data-settings-tab="proxy" style="justify-content: flex-start; padding: 12px 14px; text-align: left;">${i18n.t('settings_proxy')}</button>
             <button class="neu-button settings-tab" data-settings-tab="account" style="justify-content: flex-start; padding: 12px 14px; text-align: left;">${i18n.t('settings_account')}</button>
           </div>
 
@@ -55,27 +54,6 @@ export const SettingsPage = {
             </div>
             <div style="display: flex; justify-content: flex-end;">
               <button id="btn-save-settings-basic" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('save')}</button>
-            </div>
-          </div>
-
-          <div class="neu-card settings-panel" data-settings-panel="proxy" style="padding: 28px;">
-            <h2 style="margin: 0 0 22px; font-size: 20px;">${i18n.t('reverse_proxy')}</h2>
-            <div style="margin-bottom: 18px;">
-              <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('proxy_domains')}</label>
-              <input type="text" id="inp-proxy-domains" class="neu-input" placeholder="label.example.com" />
-            </div>
-            <div id="npm-admin-email-status" style="font-size: 12px; color: var(--neu-text-light); margin-bottom: 18px;"></div>
-            <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 12px; font-weight: 600; font-size: 13px;">
-              <input type="checkbox" id="inp-proxy-ssl" checked />
-              ${i18n.t('proxy_request_ssl')}
-            </label>
-            <label style="display:flex; align-items:center; gap: 8px; margin-bottom: 18px; font-weight: 600; font-size: 13px;">
-              <input type="checkbox" id="inp-proxy-force-ssl" checked />
-              ${i18n.t('proxy_force_ssl')}
-            </label>
-            <div id="proxy-status" style="min-height: 18px; font-size: 12px; color: var(--neu-text-light); margin-bottom: 18px;"></div>
-            <div style="display: flex; justify-content: flex-end;">
-              <button id="btn-save-proxy" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('proxy_save')}</button>
             </div>
           </div>
 
@@ -157,27 +135,6 @@ export const SettingsPage = {
       if (langChanged) this.render(this.container);
     };
 
-    document.getElementById('btn-save-proxy').onclick = async () => {
-      const btn = document.getElementById('btn-save-proxy');
-      const status = document.getElementById('proxy-status');
-      const payload = {
-        domain_names: document.getElementById('inp-proxy-domains').value,
-        request_ssl: document.getElementById('inp-proxy-ssl').checked,
-        force_ssl: document.getElementById('inp-proxy-force-ssl').checked,
-      };
-      try {
-        btn.disabled = true;
-        const res = await api.setProxyConfig(payload);
-        const cfg = res?.config || {};
-        status.textContent = i18n.t('proxy_configured', {url: cfg.url || payload.domain_names});
-        showToast(status.textContent, 'success');
-      } catch(e) {
-        showToast(e.message, 'error');
-      } finally {
-        btn.disabled = false;
-      }
-    };
-
     document.getElementById('btn-change-password').onclick = async () => {
       const currentPassword = document.getElementById('inp-current-password').value;
       const newPassword = document.getElementById('inp-new-password').value;
@@ -205,19 +162,5 @@ export const SettingsPage = {
       if (res && res.cache_dir) document.getElementById('inp-set-cachedir').value = res.cache_dir;
     } catch(e) {}
 
-    try {
-      const res = await api.getProxyConfig();
-      const cfg = res?.config || {};
-      if (Array.isArray(cfg.domain_names)) document.getElementById('inp-proxy-domains').value = cfg.domain_names.join(', ');
-      if (typeof cfg.request_ssl === 'boolean') document.getElementById('inp-proxy-ssl').checked = cfg.request_ssl;
-      if (typeof cfg.force_ssl === 'boolean') document.getElementById('inp-proxy-force-ssl').checked = cfg.force_ssl;
-      if (cfg.url) document.getElementById('proxy-status').textContent = i18n.t('proxy_configured', {url: cfg.url});
-      const npmEmail = res?.npm_admin_email;
-      const emailStatus = document.getElementById('npm-admin-email-status');
-      if (npmEmail && emailStatus) {
-        emailStatus.textContent = `${npmEmail.message}: ${npmEmail.email}`;
-        emailStatus.style.color = npmEmail.ready ? 'var(--neu-text-light)' : '#ef4444';
-      }
-    } catch(e) {}
   },
 };

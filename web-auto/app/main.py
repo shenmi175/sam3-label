@@ -17,8 +17,6 @@ import time
 import re
 from pathlib import Path
 from typing import Any, Callable, Optional
-import urllib.error
-import urllib.request
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -79,7 +77,6 @@ CONFIG_LOCK = threading.Lock()
 
 
 AUTH_FILE = DATA_DIR / 'auth.json'
-PROXY_CONFIG_FILE = DATA_DIR / 'proxy_config.json'
 SESSION_COOKIE_NAME = os.getenv('WEB_AUTO_SESSION_COOKIE_NAME', 'web_auto_session').strip() or 'web_auto_session'
 SESSION_TTL_SECONDS = _parse_positive_int_env('WEB_AUTO_SESSION_TTL_SECONDS', 12 * 60 * 60)
 AUTH_ENABLED = os.getenv('WEB_AUTO_AUTH_ENABLED', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
@@ -425,229 +422,6 @@ def _auth_page_html(mode: str) -> str:
     )
 
 
-def _json_request(method: str, url: str, payload: dict[str, Any] | None = None, token: str = '', timeout: float = 30.0) -> Any:
-    data = None if payload is None else json.dumps(payload).encode('utf-8')
-    headers = {'Content-Type': 'application/json'}
-    if token:
-        headers['Authorization'] = f'Bearer {token}'
-    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode('utf-8')
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode('utf-8', errors='replace')
-        raise RuntimeError(f'NPM API HTTP {exc.code}: {detail[:240]}') from exc
-
-
-def _npm_proxy_host_request(
-    method: str,
-    url: str,
-    payload: dict[str, Any],
-    token: str,
-    timeout: float = 30.0,
-    retry_meta_schema: bool = True,
-) -> Any:
-    try:
-        return _json_request(method, url, payload, token=token, timeout=timeout)
-    except RuntimeError as exc:
-        # Some NPM builds validate proxy-host meta strictly unless a new
-        # certificate is being requested in the same proxy-host operation.
-        if not retry_meta_schema or 'data/meta must NOT have additional properties' not in str(exc):
-            raise
-        retry_payload = dict(payload)
-        retry_payload['meta'] = {}
-        return _json_request(method, url, retry_payload, token=token, timeout=timeout)
-
-
-def _npm_certificate_meta() -> dict[str, Any]:
-    return {'dns_challenge': False}
-
-
-def _looks_like_real_email(email: str) -> bool:
-    email = str(email or '').strip().lower()
-    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email):
-        return False
-    domain = email.rsplit('@', 1)[-1]
-    return domain not in {'example.com', 'example.org', 'example.net', 'localhost'}
-
-
-def _validate_npm_acme_email() -> str:
-    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
-    if not _looks_like_real_email(email):
-        raise ValueError('NPM 管理员邮箱不是可用于 Let’s Encrypt 的真实邮箱。请把 .env 里的 NPM_ADMIN_EMAIL 改成真实邮箱；如果 NPM 已经初始化过，还需要同步修改 NPM 管理员账号邮箱或重置 NPM 数据卷。')
-    return email
-
-
-def _npm_admin_email_status() -> dict[str, Any]:
-    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
-    ready = _looks_like_real_email(email)
-    return {
-        'email': email,
-        'ready': ready,
-        'message': 'NPM 管理员邮箱可用于申请证书' if ready else 'NPM 管理员邮箱仍是占位值，申请 HTTPS 证书前请改成真实邮箱',
-    }
-
-
-def _npm_base_url() -> str:
-    return os.getenv('NPM_INTERNAL_URL', 'http://nginx-proxy-manager:81').strip().rstrip('/')
-
-
-def _npm_login() -> str:
-    email = os.getenv('NPM_ADMIN_EMAIL', '').strip()
-    password = os.getenv('NPM_ADMIN_PASSWORD', '').strip()
-    if not email or not password:
-        raise RuntimeError('NPM_ADMIN_EMAIL and NPM_ADMIN_PASSWORD must be configured')
-    payload = _json_request('POST', f'{_npm_base_url()}/api/tokens', {'identity': email, 'secret': password})
-    token = payload.get('token') if isinstance(payload, dict) else ''
-    if not token:
-        raise RuntimeError('NPM API did not return a token')
-    return str(token)
-
-
-def _normalize_domain_names(raw: str) -> list[str]:
-    domains = [item.strip().lower() for item in re.split(r'[\s,，;；]+', str(raw or '')) if item.strip()]
-    clean: list[str] = []
-    seen: set[str] = set()
-    for domain in domains:
-        if not re.fullmatch(r'[a-z0-9*.-]+', domain) or '.' not in domain:
-            raise ValueError(f'invalid domain name: {domain}')
-        if domain not in seen:
-            seen.add(domain)
-            clean.append(domain)
-    if not clean:
-        raise ValueError('domain_names is required')
-    return clean
-
-
-def _save_proxy_config(config: dict[str, Any]) -> None:
-    ensure_dir(PROXY_CONFIG_FILE.parent)
-    tmp = PROXY_CONFIG_FILE.with_suffix(PROXY_CONFIG_FILE.suffix + '.tmp')
-    with tmp.open('w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write('\n')
-    os.replace(tmp, PROXY_CONFIG_FILE)
-
-
-def _load_proxy_config() -> dict[str, Any]:
-    if not PROXY_CONFIG_FILE.exists():
-        return {}
-    try:
-        with PROXY_CONFIG_FILE.open('r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _configure_npm_proxy(payload: ReverseProxyConfigIn) -> dict[str, Any]:
-    domains = _normalize_domain_names(payload.domain_names)
-
-    token = _npm_login()
-    base_url = _npm_base_url()
-    hosts = _json_request('GET', f'{base_url}/api/nginx/proxy-hosts', token=token)
-    target = None
-    if isinstance(hosts, list):
-        for item in hosts:
-            if isinstance(item, dict) and set(item.get('domain_names') or []).intersection(domains):
-                target = item
-                break
-
-    body: dict[str, Any] = {
-        'domain_names': domains,
-        'forward_scheme': 'http',
-        'forward_host': 'web-auto',
-        'forward_port': 8000,
-        'access_list_id': 0,
-        'certificate_id': 0,
-        'ssl_forced': False,
-        'caching_enabled': False,
-        'block_exploits': True,
-        'advanced_config': '',
-        'meta': {},
-        'allow_websocket_upgrade': True,
-        'http2_support': False,
-        'hsts_enabled': False,
-        'hsts_subdomains': False,
-        'enabled': True,
-        'locations': [],
-    }
-
-    if target:
-        host_id = int(target['id'])
-        _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token)
-    else:
-        created = _npm_proxy_host_request('POST', f'{base_url}/api/nginx/proxy-hosts', body, token=token)
-        host_id = int(created['id'])
-
-    certificate_id = 0
-    if payload.request_ssl:
-        npm_admin_email = _validate_npm_acme_email()
-        certs = _json_request('GET', f'{base_url}/api/nginx/certificates', token=token)
-        if isinstance(certs, list):
-            for cert in certs:
-                if isinstance(cert, dict) and set(cert.get('domain_names') or []) == set(domains):
-                    certificate_id = int(cert.get('id') or 0)
-                    break
-        if not certificate_id:
-            cert_payload = {
-                'provider': 'letsencrypt',
-                'nice_name': ','.join(domains),
-                'domain_names': domains,
-                'meta': _npm_certificate_meta(),
-            }
-            cert_error: RuntimeError | None = None
-            try:
-                cert = _json_request('POST', f'{base_url}/api/nginx/certificates', cert_payload, token=token, timeout=90.0)
-                certificate_id = int(cert['id'])
-            except RuntimeError as cert_exc:
-                cert_error = cert_exc
-            if not certificate_id:
-                ssl_body = dict(body)
-                ssl_body['certificate_id'] = 'new'
-                ssl_body['ssl_forced'] = bool(payload.force_ssl)
-                ssl_body['http2_support'] = True
-                ssl_body['meta'] = _npm_certificate_meta()
-                try:
-                    updated = _npm_proxy_host_request(
-                        'PUT',
-                        f'{base_url}/api/nginx/proxy-hosts/{host_id}',
-                        ssl_body,
-                        token=token,
-                        timeout=120.0,
-                        retry_meta_schema=False,
-                    )
-                except RuntimeError as proxy_exc:
-                    raise RuntimeError(f'NPM SSL certificate request failed: certificates API: {cert_error}; proxy-host API: {proxy_exc}') from proxy_exc
-                if isinstance(updated, dict):
-                    host_id = int(updated.get('id') or host_id)
-                    try:
-                        certificate_id = int(updated.get('certificate_id') or 0)
-                    except (TypeError, ValueError):
-                        certificate_id = 0
-                body = ssl_body
-        if certificate_id:
-            body['certificate_id'] = certificate_id
-            body['ssl_forced'] = bool(payload.force_ssl)
-            body['http2_support'] = True
-            body['meta'] = {}
-            _npm_proxy_host_request('PUT', f'{base_url}/api/nginx/proxy-hosts/{host_id}', body, token=token, timeout=90.0)
-
-    result = {
-        'ok': True,
-        'host_id': host_id,
-        'domain_names': domains,
-        'request_ssl': bool(payload.request_ssl),
-        'force_ssl': bool(payload.force_ssl),
-        'npm_admin_email': _validate_npm_acme_email() if payload.request_ssl else os.getenv('NPM_ADMIN_EMAIL', '').strip(),
-        'certificate_id': certificate_id,
-        'url': ('https' if payload.request_ssl and payload.force_ssl else 'http') + f'://{domains[0]}',
-        'updated_at': now_ts(),
-    }
-    _save_proxy_config(result)
-    return result
-
-
 def _parse_allowed_origins(raw: str) -> list[str]:
     text = str(raw or '').strip()
     if not text:
@@ -881,12 +655,6 @@ class AuthLoginIn(BaseModel):
 class AuthPasswordChangeIn(BaseModel):
     current_password: str
     new_password: str
-
-
-class ReverseProxyConfigIn(BaseModel):
-    domain_names: str
-    request_ssl: bool = True
-    force_ssl: bool = True
 
 
 class InferJobPaused(RuntimeError):
@@ -5091,26 +4859,6 @@ def auth_change_password(payload: AuthPasswordChangeIn, request: Request) -> Res
         return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get('/api/proxy/config')
-def get_reverse_proxy_config() -> dict[str, Any]:
-    return {
-        'config': _load_proxy_config(),
-        'npm_available': bool(os.getenv('NPM_INTERNAL_URL', '').strip() or 'http://nginx-proxy-manager:81'),
-        'npm_admin_email': _npm_admin_email_status(),
-    }
-
-
-@app.post('/api/proxy/config')
-def set_reverse_proxy_config(payload: ReverseProxyConfigIn) -> dict[str, Any]:
-    try:
-        return {'config': _configure_npm_proxy(payload)}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        logger.exception('failed to configure reverse proxy: %s', exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get('/api/info')

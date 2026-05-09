@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PURGE=0
 WITH_IMAGES=0
+DOCKER_CMD=()
 
 usage() {
   cat <<'EOF'
@@ -18,6 +19,19 @@ Options:
 
 The script never deletes WEB_AUTO_HOST_DATA_ROOT datasets or sam3_checkpoints.
 EOF
+}
+
+select_docker() {
+  if docker info >/dev/null 2>&1; then
+    DOCKER_CMD=(docker)
+  elif command -v sudo >/dev/null 2>&1; then
+    echo "WARN: Current user cannot access Docker directly; trying sudo docker." >&2
+    sudo docker info >/dev/null
+    DOCKER_CMD=(sudo docker)
+  else
+    echo "ERROR: Cannot access Docker daemon. Add this user to the docker group or run with sudo." >&2
+    exit 1
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -43,8 +57,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$ROOT_DIR"
+select_docker
 
-COMPOSE=(docker compose -f docker-compose.yml)
+export PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-uninstall.local}"
+export ACME_EMAIL="${ACME_EMAIL:-uninstall@example.org}"
+export SAM3_API_TOKEN="${SAM3_API_TOKEN:-uninstall-token}"
+export WEB_AUTO_ADMIN_PASSWORD="${WEB_AUTO_ADMIN_PASSWORD:-uninstall-password}"
+
+COMPOSE=("${DOCKER_CMD[@]}" compose -f docker-compose.yml -f docker-compose.gpu.yml)
 DOWN_ARGS=(down --remove-orphans)
 if [[ "$PURGE" -eq 1 ]]; then
   DOWN_ARGS+=(--volumes)
@@ -60,7 +80,7 @@ fi
 
 if [[ "$WITH_IMAGES" -eq 1 ]]; then
   echo "Removing local project images..."
-  docker image rm sam3-api:local web-auto:local 2>/dev/null || true
+  "${DOCKER_CMD[@]}" image rm sam3-api:local web-auto:local 2>/dev/null || true
 fi
 
 echo "Uninstall complete."
