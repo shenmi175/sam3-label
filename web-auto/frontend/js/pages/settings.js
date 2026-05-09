@@ -215,6 +215,7 @@ export const SettingsPage = {
     const rows = [
       [i18n.t('cache_dir'), this.config?.cache_dir || '--'],
       [i18n.t('upload_root'), this.config?.upload_root || '--'],
+      [i18n.t('default_upload_target_dir'), this.config?.default_upload_target_dir || '--'],
       [i18n.t('upload_target_dir'), this.config?.upload_target_dir || '--'],
       [i18n.t('sam_api_url'), this.config?.sam3_api_base_url || '--'],
       [i18n.t('settings_auth_enabled'), this.config?.auth_enabled ? i18n.t('yes') : i18n.t('no')],

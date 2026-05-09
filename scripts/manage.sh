@@ -247,6 +247,28 @@ project_path() {
   fi
 }
 
+default_host_data_root() {
+  printf '%s/project-data' "$ROOT_DIR"
+}
+
+default_upload_target_dir() {
+  local host_root="$1"
+  printf '%s/uploads' "$host_root"
+}
+
+canonical_dir() {
+  local value="$1"
+  value="$(project_path "$value")"
+  mkdir -p "$value"
+  (cd "$value" && pwd -P)
+}
+
+path_inside_dir() {
+  local child="$1"
+  local parent="$2"
+  [[ "$child/" == "$parent/"* ]]
+}
+
 auth_file_path() {
   local web_data
   web_data="$(get_env_var WEB_AUTO_DATA_DIR || true)"
@@ -445,14 +467,85 @@ ensure_env() {
   [[ -n "$caddy_https_bind" ]] || set_env_var CADDY_HTTPS_BIND "0.0.0.0"
   [[ -n "$caddy_image_tag" ]] || set_env_var CADDY_IMAGE_TAG "2.11.2-alpine"
 
-  local host_root
+  local host_root default_data_root upload_target default_upload_target
+  default_data_root="$(default_host_data_root)"
   host_root="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
   if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    host_root="$(prompt_value "Host data root mounted into web-auto" "${host_root:-${HOME:-$ROOT_DIR}}")"
-    set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
-  elif [[ -z "$host_root" || ( "$host_root" == "/home/zmb" && ! -d /home/zmb ) ]]; then
-    host_root="$(prompt_value "Host data root mounted into web-auto" "${HOME:-$ROOT_DIR}")"
-    set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
+    [[ -n "$host_root" && "$host_root" != "/home/zmb" ]] || host_root="$default_data_root"
+    host_root="$(prompt_value "Server project data root mounted into web-auto" "$host_root")"
+  elif [[ -z "$host_root" || "$host_root" == "/home/zmb" ]]; then
+    host_root="$default_data_root"
+  fi
+  host_root="$(canonical_dir "$host_root")"
+  set_env_var WEB_AUTO_HOST_DATA_ROOT "$host_root"
+
+  upload_target="$(get_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR || true)"
+  default_upload_target="$(default_upload_target_dir "$host_root")"
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
+    if [[ -z "$upload_target" || "$upload_target" == "/home/zmb"* ]]; then
+      upload_target="$default_upload_target"
+    fi
+    upload_target="$(prompt_value "Default dataset upload directory" "$upload_target")"
+  elif [[ -z "$upload_target" || "$upload_target" == "/home/zmb"* ]]; then
+    upload_target="$default_upload_target"
+  fi
+  upload_target="$(canonical_dir "$upload_target")"
+  if ! path_inside_dir "$upload_target" "$host_root"; then
+    warn "WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR must be inside WEB_AUTO_HOST_DATA_ROOT; using $default_upload_target"
+    upload_target="$(canonical_dir "$default_upload_target")"
+  fi
+  set_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR "$upload_target"
+
+  if [[ "$host_root" == "$default_data_root" ]]; then
+    info "Using project data root: $host_root"
+  else
+    info "Using external/project data root: $host_root"
+  fi
+  if [[ "$upload_target" == "$default_upload_target" ]]; then
+    info "Using default upload directory: $upload_target"
+  else
+    info "Using configured upload directory: $upload_target"
+  fi
+
+  if [[ ! -w "$host_root" ]]; then
+    warn "Current user cannot write to WEB_AUTO_HOST_DATA_ROOT: $host_root. Docker may still write as root, but uploads can fail if permissions are restrictive."
+  fi
+  if [[ ! -w "$upload_target" ]]; then
+    warn "Current user cannot write to WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR: $upload_target. Check external disk permissions if uploads fail."
+  fi
+
+  # Reset stale UI-level upload defaults from previous Docker mount roots.
+  local web_data config_file
+  web_data="$(get_env_var WEB_AUTO_DATA_DIR || true)"
+  config_file="$(project_path "${web_data:-./web-auto/data}")/global_config.json"
+  if [[ -f "$config_file" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$config_file" "$host_root" "$upload_target" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+root = Path(sys.argv[2]).resolve()
+upload = str(Path(sys.argv[3]).resolve())
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+raw = str(data.get("upload_target_dir") or "").strip()
+changed = False
+if raw:
+    try:
+        Path(raw).expanduser().resolve().relative_to(root)
+    except Exception:
+        data["upload_target_dir"] = upload
+        changed = True
+if changed:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+PY
   fi
 
   local web_data sam_data ckpt_dir
@@ -462,7 +555,9 @@ ensure_env() {
   mkdir -p \
     "$(project_path "${web_data:-./web-auto/data}")" \
     "$(project_path "${sam_data:-./sam3-api/data}")" \
-    "$(project_path "${ckpt_dir:-./sam3_checkpoints}")"
+    "$(project_path "${ckpt_dir:-./sam3_checkpoints}")" \
+    "$host_root" \
+    "$upload_target"
 }
 
 effective_profile() {

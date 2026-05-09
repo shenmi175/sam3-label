@@ -85,6 +85,7 @@
   "config": {
     "cache_dir": "/data/web-auto",
     "upload_root": "/home/enabot/datasets",
+    "default_upload_target_dir": "/home/enabot/datasets/uploads",
     "upload_target_dir": "/home/enabot/datasets",
     "sam3_api_base_url": "http://sam3-api:8001",
     "allowed_sam3_api_base_urls": ["http://sam3-api:8001"],

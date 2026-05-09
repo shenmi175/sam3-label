@@ -34,6 +34,9 @@ from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ensure_dir(Path(os.getenv('WEB_AUTO_DATA_DIR', str(BASE_DIR / 'data'))).expanduser().resolve())
 HOST_DATA_ROOT = Path(os.getenv('WEB_AUTO_HOST_DATA_ROOT', str(DATA_DIR / 'uploads'))).expanduser().resolve()
+DEFAULT_UPLOAD_TARGET_DIR = Path(
+    os.getenv('WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR', '').strip() or str(HOST_DATA_ROOT / 'uploads')
+).expanduser().resolve()
 APP_CONFIG_FILE = DATA_DIR / 'global_config.json'
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
@@ -3156,6 +3159,10 @@ def _configured_upload_target_dir() -> Path:
             return _resolve_dataset_upload_dir(configured)
         except HTTPException:
             pass
+    try:
+        return _resolve_dataset_upload_dir(str(DEFAULT_UPLOAD_TARGET_DIR))
+    except HTTPException:
+        pass
     return _resolve_dataset_upload_dir(str(HOST_DATA_ROOT))
 
 
@@ -3165,6 +3172,7 @@ def _global_config_info() -> dict[str, Any]:
         'cache_dir': str(CURRENT_DATA_DIR),
         'default_dir': str(BASE_DIR),
         'upload_root': str(HOST_DATA_ROOT),
+        'default_upload_target_dir': str(DEFAULT_UPLOAD_TARGET_DIR),
         'upload_target_dir': str(upload_dir),
         'sam3_api_base_url': _effective_sam3_api_base_url(),
         'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
