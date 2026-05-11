@@ -1,0 +1,16 @@
+# SAM3 Auto Label Wiki
+
+本目录是项目内置 Wiki。服务器不能直接使用 GitHub Wiki 时，可以先看这里。
+
+## 页面
+
+- [Docker 部署](docker-deployment.md)
+- [数据根目录和上传](data-roots-and-uploads.md)
+- [web-auto 设置面板](web-auto-settings.md)
+
+## 推荐部署模型
+
+- `web-auto` 对外暴露一个登录入口，例如 `http://服务器IP:8000`。
+- `sam3-api` 只在 Docker 内部网络暴露，不映射宿主机端口。
+- 数据集目录由 `deploy.sh data-root` 管理 Docker 挂载。
+- web 页面只选择已挂载目录内的上传目标，不直接管理 Docker。

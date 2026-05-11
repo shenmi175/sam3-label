@@ -85,6 +85,7 @@
   "config": {
     "cache_dir": "/data/web-auto",
     "upload_root": "/home/enabot/datasets",
+    "allowed_data_roots": ["/home/enabot/datasets", "/media/enabot/disk/zmb_datas"],
     "default_upload_target_dir": "/home/enabot/datasets/uploads",
     "upload_target_dir": "/home/enabot/datasets",
     "sam3_api_base_url": "http://sam3-api:8001",
@@ -96,7 +97,7 @@
 
 ### `POST /api/config/global`
 
-保存全局配置。`upload_target_dir` 必须位于 `WEB_AUTO_HOST_DATA_ROOT` 内，`sam3_api_base_url` 必须位于允许列表内。
+保存全局配置。`upload_target_dir` 必须位于已挂载数据根目录之一内，`sam3_api_base_url` 必须位于允许列表内。
 
 请求：
 
@@ -262,7 +263,7 @@
 表单字段：
 
 - `file`: 文件
-- `target_dir`: 服务器目标目录，必须位于 `WEB_AUTO_HOST_DATA_ROOT` 下
+- `target_dir`: 服务器目标目录，必须位于已挂载数据根目录之一内
 - `relative_path`: 目标目录内的相对路径，可用于保留文件夹结构
 - `overwrite`: 是否覆盖同名文件
 

@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+docker-compose.mounts.yml
 **/__pycache__
 **/*.pyc
 **/.pytest_cache

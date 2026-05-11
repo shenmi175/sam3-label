@@ -54,6 +54,25 @@ def _parse_positive_int_env(key: str, default: int) -> int:
 SAM3_MAX_BATCH_FILES = _parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
 
 
+def _parse_allowed_data_roots() -> list[Path]:
+    roots: list[Path] = []
+    raw = os.getenv('WEB_AUTO_ALLOWED_DATA_ROOTS', '').strip()
+    items = [str(HOST_DATA_ROOT)]
+    if raw:
+        items.extend(item for item in raw.split(os.pathsep) if item.strip())
+    for item in items:
+        try:
+            root = Path(item).expanduser().resolve()
+        except Exception:
+            continue
+        if root not in roots:
+            roots.append(root)
+    return roots or [HOST_DATA_ROOT]
+
+
+ALLOWED_DATA_ROOTS = _parse_allowed_data_roots()
+
+
 def _read_app_config() -> dict[str, Any]:
     if not APP_CONFIG_FILE.exists():
         return {}
@@ -2859,18 +2878,29 @@ def _path_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _data_root_for_path(path: Path) -> Path | None:
+    resolved = path.resolve()
+    matches = [root for root in ALLOWED_DATA_ROOTS if _path_within_root(resolved, root)]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: len(str(item)))
+
+
 def _resolve_dataset_upload_dir(target_dir: str) -> Path:
     raw = str(target_dir or '').strip()
     if not raw:
         raise HTTPException(status_code=400, detail='target_dir is required')
 
-    root = HOST_DATA_ROOT.resolve()
     target = Path(raw).expanduser()
     if not target.is_absolute():
-        target = root / target
+        target = ALLOWED_DATA_ROOTS[0] / target
     target = target.resolve()
-    if not _path_within_root(target, root):
-        raise HTTPException(status_code=400, detail=f'target_dir must be inside {root}')
+    if _data_root_for_path(target) is None:
+        roots_text = ', '.join(str(root) for root in ALLOWED_DATA_ROOTS)
+        raise HTTPException(
+            status_code=400,
+            detail=f'target_dir must be inside a mounted data root: {roots_text}. Add a root with ./deploy.sh data-root add <path> --default',
+        )
     ensure_dir(target)
     return target
 
@@ -3172,6 +3202,7 @@ def _global_config_info() -> dict[str, Any]:
         'cache_dir': str(CURRENT_DATA_DIR),
         'default_dir': str(BASE_DIR),
         'upload_root': str(HOST_DATA_ROOT),
+        'allowed_data_roots': [str(root) for root in ALLOWED_DATA_ROOTS],
         'default_upload_target_dir': str(DEFAULT_UPLOAD_TARGET_DIR),
         'upload_target_dir': str(upload_dir),
         'sam3_api_base_url': _effective_sam3_api_base_url(),
@@ -5161,6 +5192,7 @@ def get_upload_config() -> dict[str, Any]:
     target = _configured_upload_target_dir()
     return {
         'host_data_root': str(HOST_DATA_ROOT),
+        'allowed_data_roots': [str(root) for root in ALLOWED_DATA_ROOTS],
         'default_target_dir': str(target),
     }
 

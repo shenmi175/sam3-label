@@ -58,7 +58,9 @@ WEB_AUTO_HTTP_PORT=18000
 <sam3 仓库目录>/project-data/uploads
 ```
 
-如果数据要写到外置盘，在安装向导的 `Server project data root mounted into web-auto` 输入外置盘目录，例如：
+如果数据要写到外置盘，有两种方式。
+
+安装时直接设置主数据根目录：
 
 ```text
 /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
@@ -71,19 +73,39 @@ WEB_AUTO_HOST_DATA_ROOT=/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_d
 WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
 ```
 
+部署后新增一个外置盘挂载：
+
+```bash
+./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
+```
+
+查看所有已挂载数据根目录：
+
+```bash
+./deploy.sh data-root list
+```
+
+删除一个额外挂载：
+
+```bash
+./deploy.sh data-root remove /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+```
+
 上传后创建图片项目时，图片目录填写服务器路径，例如：
 
 ```text
 /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads/my-project
 ```
 
-出于安全限制，上传目标必须位于 `WEB_AUTO_HOST_DATA_ROOT` 下。如果要改到其他宿主机目录，重新运行安装向导并修改该根目录：
+出于安全限制，上传目标必须位于任意一个已挂载数据根目录下。如果页面提示目录未挂载，在服务器执行：
 
 ```bash
-./deploy.sh install --direct
+./deploy.sh data-root add /path/to/data-root --default
 ```
 
-`web-auto` 设置页的“路径配置”可以修改默认上传保存目录，但只能选择 `WEB_AUTO_HOST_DATA_ROOT` 内的目录。设置会保存到 `/data/web-auto/global_config.json`，点击“运行管理”里的“重启 web-auto”后，Docker 会自动拉起新进程。
+`web-auto` 设置页的“路径配置”可以修改默认上传保存目录，但只能选择已挂载数据根目录内的目录。设置会保存到 `/data/web-auto/global_config.json`。
+
+更多操作说明见 [数据根目录和上传 Wiki](docs/wiki/data-roots-and-uploads.md)。
 
 ## 可选 HTTPS 反代
 

@@ -91,6 +91,11 @@ export const SettingsPage = {
                 <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('upload_root_readonly_hint')}</div>
               </div>
               <div>
+                <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('allowed_data_roots')}</label>
+                <textarea id="inp-set-allowed-roots" class="neu-input" readonly style="height: 96px; resize: vertical;"></textarea>
+                <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('allowed_data_roots_hint')}</div>
+              </div>
+              <div>
                 <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('upload_target_dir')}</label>
                 <input type="text" id="inp-set-upload-target" class="neu-input" placeholder="/home/enabot/datasets" />
                 <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('upload_target_hint')}</div>
@@ -200,6 +205,7 @@ export const SettingsPage = {
     document.getElementById('inp-set-batch').value = store.state.config.batchSize ?? 10;
     document.getElementById('inp-set-cachedir').value = this.config.cache_dir || '';
     document.getElementById('inp-set-upload-root').value = this.config.upload_root || '';
+    document.getElementById('inp-set-allowed-roots').value = (this.config.allowed_data_roots || []).join('\n');
     document.getElementById('inp-set-upload-target').value = this.config.upload_target_dir || this.config.upload_root || '';
 
     document.getElementById('sam-url-hint').textContent = allowed.length
@@ -215,6 +221,7 @@ export const SettingsPage = {
     const rows = [
       [i18n.t('cache_dir'), this.config?.cache_dir || '--'],
       [i18n.t('upload_root'), this.config?.upload_root || '--'],
+      [i18n.t('allowed_data_roots'), (this.config?.allowed_data_roots || []).join('\n') || '--'],
       [i18n.t('default_upload_target_dir'), this.config?.default_upload_target_dir || '--'],
       [i18n.t('upload_target_dir'), this.config?.upload_target_dir || '--'],
       [i18n.t('sam_api_url'), this.config?.sam3_api_base_url || '--'],
@@ -256,6 +263,10 @@ export const SettingsPage = {
   async savePathSettings() {
     const cacheDir = document.getElementById('inp-set-cachedir').value.trim();
     const uploadTargetDir = document.getElementById('inp-set-upload-target').value.trim();
+    if (uploadTargetDir && !this.pathInsideAllowedRoots(uploadTargetDir)) {
+      showToast(i18n.t('upload_target_not_mounted', {path: uploadTargetDir}), 'error');
+      return;
+    }
     try {
       const res = await api.setGlobalConfig({
         cache_dir: cacheDir,
@@ -325,6 +336,15 @@ export const SettingsPage = {
 
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  },
+
+  pathInsideAllowedRoots(path) {
+    const cleanPath = String(path || '').replace(/\/+$/, '');
+    const roots = this.config?.allowed_data_roots || [];
+    return roots.some((root) => {
+      const cleanRoot = String(root || '').replace(/\/+$/, '');
+      return cleanPath === cleanRoot || cleanPath.startsWith(`${cleanRoot}/`);
+    });
   },
 
   escapeHtml(value) {
