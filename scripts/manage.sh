@@ -1446,8 +1446,12 @@ data_root_usage() {
   cat <<'EOF'
 Usage:
   ./deploy.sh data-root list
-  ./deploy.sh data-root add <host-path> [--default] [--no-recreate]
+  ./deploy.sh data-root add <host-path> [--default] [--upload-target <dir>] [--no-recreate]
   ./deploy.sh data-root remove <host-path> [--no-recreate]
+
+Examples:
+  ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
+  ./deploy.sh data-root add /media/enabot/disk/zmb_datas --upload-target /media/enabot/disk/zmb_datas/uploads
 
 Notes:
   - Added paths are mounted into web-auto at the same absolute path.
@@ -1518,12 +1522,18 @@ cmd_data_root() {
       [[ -f "$MOUNTS_COMPOSE_FILE" ]] && echo "Compose override: $MOUNTS_COMPOSE_FILE"
       ;;
     add)
-      local path="" set_default=0 no_recreate=0 arg
+      local path="" upload_target_override="" set_default=0 no_recreate=0 arg
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --default)
             set_default=1
             shift
+            ;;
+          --upload-target|--target)
+            [[ $# -ge 2 ]] || die "$1 requires a directory"
+            upload_target_override="$2"
+            set_default=1
+            shift 2
             ;;
           --no-recreate)
             no_recreate=1
@@ -1568,7 +1578,14 @@ cmd_data_root() {
       fi
       if [[ "$use_as_default" -eq 1 ]]; then
         local new_upload_target
-        new_upload_target="$(canonical_dir "$(default_upload_target_dir "$new_root")")"
+        if [[ -n "$upload_target_override" ]]; then
+          new_upload_target="$(canonical_dir "$upload_target_override")"
+          if ! path_inside_dir "$new_upload_target" "$new_root"; then
+            die "--upload-target must be inside the added data root: $new_root"
+          fi
+        else
+          new_upload_target="$(canonical_dir "$(default_upload_target_dir "$new_root")")"
+        fi
         set_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR "$new_upload_target"
         write_global_upload_target_config "$new_upload_target"
       fi

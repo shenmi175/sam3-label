@@ -79,6 +79,15 @@ WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480
 ./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
 ```
 
+或指定精确上传目录：
+
+```bash
+./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas \
+  --upload-target /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+```
+
+设置页会在目标目录未挂载时生成可复制命令。
+
 查看所有已挂载数据根目录：
 
 ```bash

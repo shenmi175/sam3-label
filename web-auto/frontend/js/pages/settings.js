@@ -100,6 +100,14 @@ export const SettingsPage = {
                 <input type="text" id="inp-set-upload-target" class="neu-input" placeholder="/home/enabot/datasets" />
                 <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('upload_target_hint')}</div>
               </div>
+              <div id="mount-command-panel" style="display: none; padding: 16px; border-radius: 8px; background: rgba(217,119,6,0.08); border: 1px solid rgba(217,119,6,0.24);">
+                <div id="mount-command-title" style="font-size: 13px; font-weight: 800; color: #d97706; margin-bottom: 8px;"></div>
+                <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.5; margin-bottom: 10px;">${i18n.t('mount_command_hint')}</div>
+                <textarea id="mount-command-text" class="neu-input" readonly style="height: 92px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"></textarea>
+                <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px;">
+                  <button id="btn-copy-mount-command" class="neu-button" type="button">${i18n.t('copy_command')}</button>
+                </div>
+              </div>
             </div>
             <div style="display: flex; justify-content: flex-end; margin-top: 24px;">
               <button id="btn-save-settings-paths" class="neu-button" style="color: var(--neu-text-active); font-weight: bold;">${i18n.t('save')}</button>
@@ -181,6 +189,8 @@ export const SettingsPage = {
     document.getElementById('btn-reload-settings').onclick = () => this.loadConfig();
     document.getElementById('btn-restart-web-auto').onclick = () => this.restartWebAuto();
     document.getElementById('btn-change-password').onclick = () => this.changePassword();
+    document.getElementById('inp-set-upload-target').oninput = () => this.updateMountCommandPanel();
+    document.getElementById('btn-copy-mount-command').onclick = () => this.copyMountCommand();
   },
 
   async loadConfig() {
@@ -212,6 +222,7 @@ export const SettingsPage = {
       ? i18n.t('allowed_sam_urls', {urls: allowed.join(', ')})
       : '';
     this.renderRuntimeInfo();
+    this.updateMountCommandPanel();
     document.getElementById('settings-status-line').textContent = i18n.t('settings_loaded');
   },
 
@@ -264,6 +275,7 @@ export const SettingsPage = {
     const cacheDir = document.getElementById('inp-set-cachedir').value.trim();
     const uploadTargetDir = document.getElementById('inp-set-upload-target').value.trim();
     if (uploadTargetDir && !this.pathInsideAllowedRoots(uploadTargetDir)) {
+      this.updateMountCommandPanel();
       showToast(i18n.t('upload_target_not_mounted', {path: uploadTargetDir}), 'error');
       return;
     }
@@ -345,6 +357,61 @@ export const SettingsPage = {
       const cleanRoot = String(root || '').replace(/\/+$/, '');
       return cleanPath === cleanRoot || cleanPath.startsWith(`${cleanRoot}/`);
     });
+  },
+
+  updateMountCommandPanel() {
+    const panel = document.getElementById('mount-command-panel');
+    const title = document.getElementById('mount-command-title');
+    const text = document.getElementById('mount-command-text');
+    if (!panel || !title || !text) return;
+
+    const uploadTarget = document.getElementById('inp-set-upload-target')?.value.trim() || '';
+    if (!uploadTarget || this.pathInsideAllowedRoots(uploadTarget)) {
+      panel.style.display = 'none';
+      text.value = '';
+      return;
+    }
+
+    const dataRoot = this.suggestDataRootForUploadTarget(uploadTarget);
+    const command = [
+      'cd ~/zmb_work/sam3',
+      `./deploy.sh data-root add ${this.shellQuote(dataRoot)} --upload-target ${this.shellQuote(uploadTarget)}`,
+    ].join('\n');
+    title.textContent = i18n.t('mount_command_title');
+    text.value = command;
+    panel.style.display = 'block';
+  },
+
+  suggestDataRootForUploadTarget(path) {
+    const clean = String(path || '').replace(/\/+$/, '');
+    const parts = clean.split('/').filter(Boolean);
+    const uploadsIndex = parts.lastIndexOf('uploads');
+    if (uploadsIndex > 0) {
+      return `/${parts.slice(0, uploadsIndex).join('/')}`;
+    }
+    return clean;
+  },
+
+  shellQuote(value) {
+    return `'${String(value || '').replaceAll("'", "'\\''")}'`;
+  },
+
+  async copyMountCommand() {
+    const text = document.getElementById('mount-command-text');
+    const command = text?.value || '';
+    if (!command) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(command);
+      } else {
+        text.focus();
+        text.select();
+        document.execCommand('copy');
+      }
+      showToast(i18n.t('command_copied'), 'success');
+    } catch(e) {
+      showToast(i18n.t('copy_failed'), 'error');
+    }
   },
 
   escapeHtml(value) {

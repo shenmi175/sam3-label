@@ -43,6 +43,15 @@ cd ~/zmb_work/sam3
 - 生成 `docker-compose.mounts.yml`。
 - 重建 `web-auto` 容器，让 Docker 挂载生效。
 
+如果想指定精确的默认上传目录：
+
+```bash
+./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas \
+  --upload-target /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+```
+
+web-auto 设置页在发现目标目录未挂载时，会自动生成这类命令，复制到服务器终端执行即可。
+
 ## 设置默认上传目录
 
 如果使用 `--default`，默认上传目录会被设置为：
