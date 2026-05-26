@@ -100,10 +100,15 @@ export const SettingsPage = {
                 <input type="text" id="inp-set-upload-target" class="neu-input" placeholder="/home/enabot/datasets" />
                 <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('upload_target_hint')}</div>
               </div>
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('new_data_root')}</label>
+                <input type="text" id="inp-set-new-data-root" class="neu-input" placeholder="/media/enabot/disk/zmb_datas" />
+                <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('new_data_root_hint')}</div>
+              </div>
               <div id="mount-command-panel" style="display: none; padding: 16px; border-radius: 8px; background: rgba(217,119,6,0.08); border: 1px solid rgba(217,119,6,0.24);">
                 <div id="mount-command-title" style="font-size: 13px; font-weight: 800; color: #d97706; margin-bottom: 8px;"></div>
                 <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.5; margin-bottom: 10px;">${i18n.t('mount_command_hint')}</div>
-                <textarea id="mount-command-text" class="neu-input" readonly style="height: 92px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"></textarea>
+                <textarea id="mount-command-text" class="neu-input" readonly style="height: 132px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"></textarea>
                 <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px;">
                   <button id="btn-copy-mount-command" class="neu-button" type="button">${i18n.t('copy_command')}</button>
                 </div>
@@ -190,6 +195,7 @@ export const SettingsPage = {
     document.getElementById('btn-restart-web-auto').onclick = () => this.restartWebAuto();
     document.getElementById('btn-change-password').onclick = () => this.changePassword();
     document.getElementById('inp-set-upload-target').oninput = () => this.updateMountCommandPanel();
+    document.getElementById('inp-set-new-data-root').oninput = () => this.updateMountCommandPanel();
     document.getElementById('btn-copy-mount-command').onclick = () => this.copyMountCommand();
   },
 
@@ -217,6 +223,8 @@ export const SettingsPage = {
     document.getElementById('inp-set-upload-root').value = this.config.upload_root || '';
     document.getElementById('inp-set-allowed-roots').value = (this.config.allowed_data_roots || []).join('\n');
     document.getElementById('inp-set-upload-target').value = this.config.upload_target_dir || this.config.upload_root || '';
+    const newRootInput = document.getElementById('inp-set-new-data-root');
+    if (newRootInput && !newRootInput.value.trim()) newRootInput.value = '';
 
     document.getElementById('sam-url-hint').textContent = allowed.length
       ? i18n.t('allowed_sam_urls', {urls: allowed.join(', ')})
@@ -365,19 +373,29 @@ export const SettingsPage = {
     const text = document.getElementById('mount-command-text');
     if (!panel || !title || !text) return;
 
-    const uploadTarget = document.getElementById('inp-set-upload-target')?.value.trim() || '';
-    if (!uploadTarget || this.pathInsideAllowedRoots(uploadTarget)) {
+    const uploadTarget = this.normalizeHostPathInput(document.getElementById('inp-set-upload-target')?.value.trim() || '');
+    const explicitRoot = this.normalizeHostPathInput(document.getElementById('inp-set-new-data-root')?.value.trim() || '');
+    const uploadTargetNeedsMount = Boolean(uploadTarget && !this.pathInsideAllowedRoots(uploadTarget));
+    const dataRoot = explicitRoot || (uploadTargetNeedsMount ? this.suggestDataRootForUploadTarget(uploadTarget) : '');
+    if (!dataRoot) {
       panel.style.display = 'none';
       text.value = '';
       return;
     }
 
-    const dataRoot = this.suggestDataRootForUploadTarget(uploadTarget);
+    const uploadTargetInsideDataRoot = uploadTarget && this.pathInsideRoot(uploadTarget, dataRoot);
+    const addArgs = uploadTargetInsideDataRoot
+      ? `--upload-target ${this.shellQuote(uploadTarget)}`
+      : '--default';
+    const doctorTarget = uploadTargetInsideDataRoot ? uploadTarget : dataRoot;
     const command = [
       'cd ~/zmb_work/sam3',
-      `./deploy.sh data-root add ${this.shellQuote(dataRoot)} --upload-target ${this.shellQuote(uploadTarget)}`,
+      `./deploy.sh data-root add ${this.shellQuote(dataRoot)} ${addArgs}`,
+      `./deploy.sh data-root doctor ${this.shellQuote(doctorTarget)}`,
     ].join('\n');
-    title.textContent = i18n.t('mount_command_title');
+    title.textContent = uploadTargetNeedsMount && !explicitRoot
+      ? i18n.t('mount_command_title')
+      : i18n.t('mount_command_generated_title');
     text.value = command;
     panel.style.display = 'block';
   },
@@ -390,6 +408,18 @@ export const SettingsPage = {
       return `/${parts.slice(0, uploadsIndex).join('/')}`;
     }
     return clean;
+  },
+
+  normalizeHostPathInput(path) {
+    const clean = String(path || '').trim().replace(/\/+$/, '');
+    if (clean.startsWith('media/')) return `/${clean}`;
+    return clean;
+  },
+
+  pathInsideRoot(path, root) {
+    const cleanPath = String(path || '').replace(/\/+$/, '');
+    const cleanRoot = String(root || '').replace(/\/+$/, '');
+    return Boolean(cleanPath && cleanRoot && (cleanPath === cleanRoot || cleanPath.startsWith(`${cleanRoot}/`)));
   },
 
   shellQuote(value) {

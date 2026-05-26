@@ -13,8 +13,25 @@
 - `服务器可写数据根目录`: 主 Docker 挂载目录，只读展示。
 - `已挂载数据根目录`: 所有通过 `deploy.sh data-root` 挂载到容器的目录。
 - `默认上传保存目录`: 项目页上传数据集默认写入的目录。
+- `新增挂载目录`: 输入宿主机上要挂载进 `web-auto` 的目录，页面会生成完整命令。
 
 `默认上传保存目录` 必须位于“已挂载数据根目录”之一下面。
+
+例如新增外置盘目录：
+
+```text
+/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+```
+
+页面会生成类似命令：
+
+```bash
+cd ~/zmb_work/sam3
+./deploy.sh data-root add '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas' --upload-target '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads'
+./deploy.sh data-root doctor '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads'
+```
+
+复制整段到服务器终端运行。`data-root add` 会生成或修复 `docker-compose.mounts.yml`，并重建 `web-auto`，不用再手写 `docker compose -f ...`。
 
 ## 运行管理
 
