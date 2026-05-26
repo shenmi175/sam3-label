@@ -98,8 +98,7 @@ curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
 确认容器能看到目录：
 
 ```bash
-sudo docker exec sam3-auto-label-web-auto-1 sh -lc \
-  'printenv WEB_AUTO_ALLOWED_DATA_ROOTS; ls -ld /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg; find /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg -maxdepth 3 -type d -name "prj_*" -print'
+./deploy.sh data-root doctor /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg
 ```
 
 如果容器内没有这个目录，先执行：

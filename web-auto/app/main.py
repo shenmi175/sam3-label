@@ -3220,8 +3220,6 @@ def _resolve_project_discovery_roots(scan_root: str = '') -> list[Path]:
     if _data_root_for_path(resolved) is None:
         roots_text = ', '.join(str(root) for root in ALLOWED_DATA_ROOTS)
         raise HTTPException(status_code=400, detail=f'scan_root must be inside a mounted data root: {roots_text}')
-    if not resolved.exists() or not resolved.is_dir():
-        raise HTTPException(status_code=400, detail=f'scan_root does not exist or is not a directory: {resolved}')
     return [resolved]
 
 

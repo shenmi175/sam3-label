@@ -68,6 +68,7 @@ Examples:
   ./deploy.sh restart web-auto
   ./deploy.sh reset-admin
   ./deploy.sh data-root list
+  ./deploy.sh data-root doctor /media/enabot/disk/zmb_datas/openimg
   ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
   ./deploy.sh data-root remove /media/enabot/disk/zmb_datas
   ./deploy.sh logs caddy
@@ -311,6 +312,7 @@ normalize_data_roots() {
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
     [[ "$item" != "/home/zmb" ]] || continue
+    item="$(repair_data_root_path "$item")"
     resolved="$(canonical_dir "$item")"
     existing=0
     for item in "${roots[@]}"; do
@@ -323,6 +325,16 @@ normalize_data_roots() {
   done < <(split_roots "$raw")
 
   join_roots "${roots[@]}"
+}
+
+repair_data_root_path() {
+  local item="$1"
+  local prefix="$ROOT_DIR/media/"
+  if [[ "$item" == "$prefix"* ]]; then
+    printf '/media/%s' "${item#"$prefix"}"
+    return
+  fi
+  printf '%s' "$item"
 }
 
 write_mounts_compose_file() {
@@ -1446,10 +1458,12 @@ data_root_usage() {
   cat <<'EOF'
 Usage:
   ./deploy.sh data-root list
+  ./deploy.sh data-root doctor [path]
   ./deploy.sh data-root add <host-path> [--default] [--upload-target <dir>] [--no-recreate]
   ./deploy.sh data-root remove <host-path> [--no-recreate]
 
 Examples:
+  ./deploy.sh data-root doctor /media/enabot/disk/zmb_datas/openimg
   ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
   ./deploy.sh data-root add /media/enabot/disk/zmb_datas --upload-target /media/enabot/disk/zmb_datas/uploads
 
@@ -1521,6 +1535,57 @@ cmd_data_root() {
       echo "  $(get_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR || true)"
       [[ -f "$MOUNTS_COMPOSE_FILE" ]] && echo "Compose override: $MOUNTS_COMPOSE_FILE"
       ;;
+    doctor)
+      local path="${1:-}"
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      if [[ -z "$path" ]]; then
+        path="$(get_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR || true)"
+      fi
+      path="$(repair_data_root_path "$path")"
+      echo "Host-side path:"
+      echo "  $path"
+      if [[ -e "$path" ]]; then
+        ls -ld "$path"
+      else
+        warn "Host path does not exist: $path"
+      fi
+      echo
+      echo "web-auto container view:"
+      compose exec -T web-auto sh -lc '
+target="${1:-}"
+echo "WEB_AUTO_HOST_DATA_ROOT=${WEB_AUTO_HOST_DATA_ROOT:-}"
+echo "WEB_AUTO_ALLOWED_DATA_ROOTS=${WEB_AUTO_ALLOWED_DATA_ROOTS:-}"
+echo "WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=${WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR:-}"
+echo
+if [ -z "$target" ]; then
+  echo "No target path provided."
+  exit 0
+fi
+echo "Target: $target"
+if [ -e "$target" ]; then
+  ls -ld "$target"
+else
+  echo "MISSING: $target"
+fi
+parent="$(dirname "$target")"
+echo
+echo "Parent: $parent"
+if [ -d "$parent" ]; then
+  ls -la "$parent" | sed -n "1,80p"
+else
+  echo "MISSING PARENT: $parent"
+fi
+echo
+echo "Project directories under target/parent:"
+if [ -d "$target" ]; then
+  find "$target" -maxdepth 4 -type d -name "prj_*" -print | sed -n "1,120p"
+elif [ -d "$parent" ]; then
+  find "$parent" -maxdepth 4 -type d -name "prj_*" -print | sed -n "1,120p"
+fi
+' sh "$path"
+      ;;
     add)
       local path="" upload_target_override="" set_default=0 no_recreate=0 arg
       while [[ $# -gt 0 ]]; do
@@ -1551,6 +1616,7 @@ cmd_data_root() {
         esac
       done
       [[ -n "$path" ]] || die "data-root add requires a host path."
+      path="$(repair_data_root_path "$path")"
       ensure_env ""
       local primary allowed new_root root exists roots=()
       primary="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
@@ -1579,6 +1645,7 @@ cmd_data_root() {
       if [[ "$use_as_default" -eq 1 ]]; then
         local new_upload_target
         if [[ -n "$upload_target_override" ]]; then
+          upload_target_override="$(repair_data_root_path "$upload_target_override")"
           new_upload_target="$(canonical_dir "$upload_target_override")"
           if ! path_inside_dir "$new_upload_target" "$new_root"; then
             die "--upload-target must be inside the added data root: $new_root"
@@ -1612,6 +1679,7 @@ cmd_data_root() {
         esac
       done
       [[ -n "$path" ]] || die "data-root remove requires a host path."
+      path="$(repair_data_root_path "$path")"
       ensure_env ""
       remove_root="$(canonical_dir "$path")"
       primary="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
