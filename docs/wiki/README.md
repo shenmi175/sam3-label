@@ -6,6 +6,7 @@
 
 - [Docker 部署](docker-deployment.md)
 - [数据根目录和上传](data-roots-and-uploads.md)
+- [项目恢复和已有输出导入](project-recovery.md)
 - [web-auto 设置面板](web-auto-settings.md)
 
 ## 推荐部署模型
@@ -14,3 +15,4 @@
 - `sam3-api` 只在 Docker 内部网络暴露，不映射宿主机端口。
 - 数据集目录由 `deploy.sh data-root` 管理 Docker 挂载。
 - web 页面只选择已挂载目录内的上传目标，不直接管理 Docker。
+- 项目输出目录写入 `web_auto_project.json`，索引丢失后可从挂载目录恢复。

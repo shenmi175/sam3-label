@@ -10,6 +10,7 @@ export const ProjectsPage = {
   _cancelDatasetUpload: false,
   _datasetTargetProjectId: '',
   _uploadConfig: null,
+  _discoveryCandidates: [],
 
   async render(container) {
     this.container = container;
@@ -28,6 +29,7 @@ export const ProjectsPage = {
                 </div>
               </div>
               <button id="btn-dataset-upload" class="neu-button" style="padding: 8px 16px;">${i18n.t('upload_dataset_btn')}</button>
+              <button id="btn-restore-project" class="neu-button" style="padding: 8px 16px;">${i18n.t('restore_project_btn')}</button>
               <button id="btn-create-project" class="neu-button" style="padding: 8px 16px; color: var(--neu-text-active); font-weight: 700;">${i18n.t('create_btn')}</button>
               <button id="btn-toggle-theme" class="neu-button" title="${i18n.t('toggle_theme')}" style="padding: 8px 12px;">
                  <span id="theme-icon">🌓</span>
@@ -84,6 +86,47 @@ export const ProjectsPage = {
           <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
             <button id="btn-cancel-create-project" class="neu-button">${i18n.t('cancel')}</button>
             <button id="btn-submit-new" class="neu-button" style="color: var(--neu-text-active); font-weight: 700; min-width: 120px;">${i18n.t('create_btn')}</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="modal-restore-project" class="modal-overlay" style="display: none;">
+        <div class="neu-card modal-content" style="width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; padding: 28px; position: relative;">
+          <button id="btn-close-restore-project" class="neu-button" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;">×</button>
+          <h2 style="margin: 0 0 8px; font-size: 20px;">${i18n.t('restore_project_title')}</h2>
+          <div style="font-size: 13px; color: var(--neu-text-light); margin-bottom: 20px; line-height: 1.5;">${i18n.t('restore_project_desc')}</div>
+          <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px;">
+            <div style="display: grid; gap: 14px;">
+              <button id="btn-scan-existing-projects" class="neu-button" style="justify-self: start; color: var(--neu-text-active); font-weight: 700;">${i18n.t('scan_existing_projects')}</button>
+              <div id="existing-projects-list" style="display: grid; gap: 12px; max-height: 360px; overflow-y: auto; padding-right: 4px;">
+                <div style="padding: 18px; color: var(--neu-text-light);">${i18n.t('no_existing_projects')}</div>
+              </div>
+            </div>
+            <div style="display: grid; gap: 14px; align-content: start;">
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('existing_project_output_dir')}</label>
+                <input type="text" id="inp-restore-output-dir" class="neu-input" placeholder="/path/to/prj_xxxxx" />
+              </div>
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('image_dir')}</label>
+                <input type="text" id="inp-restore-image-dir" class="neu-input" placeholder="/path/to/images" />
+                <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('existing_project_image_dir_hint')}</div>
+              </div>
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_name')}</label>
+                <input type="text" id="inp-restore-name" class="neu-input" placeholder="${i18n.t('project_name')}" />
+              </div>
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('initial_classes')}</label>
+                <textarea id="inp-restore-classes" class="neu-input" style="height: 82px; resize: vertical;" placeholder="cat&#10;dog&#10;person face"></textarea>
+              </div>
+              <input type="hidden" id="inp-restore-manifest-path" />
+              <input type="hidden" id="inp-restore-project-type" />
+              <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                <button id="btn-cancel-restore-project" class="neu-button">${i18n.t('cancel')}</button>
+                <button id="btn-submit-restore-project" class="neu-button" style="color: var(--neu-text-active); font-weight: 700; min-width: 120px;">${i18n.t('import_existing_project')}</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -180,6 +223,7 @@ export const ProjectsPage = {
     const btnTheme = document.getElementById('btn-toggle-theme');
     const btnLogout = document.getElementById('btn-logout');
     const btnCreate = document.getElementById('btn-create-project');
+    const btnRestore = document.getElementById('btn-restore-project');
     const btnDatasetUpload = document.getElementById('btn-dataset-upload');
     const btnSubmitNew = document.getElementById('btn-submit-new');
     const typeSelect = document.getElementById('inp-pj-type');
@@ -218,11 +262,16 @@ export const ProjectsPage = {
     };
 
     btnCreate.onclick = () => this.openCreateModal();
+    btnRestore.onclick = () => this.openRestoreModal();
     document.getElementById('btn-close-create-project').onclick = () => this.closeCreateModal();
     document.getElementById('btn-cancel-create-project').onclick = () => this.closeCreateModal();
     btnSubmitNew.onclick = () => this.submitProject();
     btnSet.onclick = () => router.navigate('/settings');
     btnDatasetUpload.onclick = () => this.showDatasetUpload();
+    document.getElementById('btn-close-restore-project').onclick = () => this.closeRestoreModal();
+    document.getElementById('btn-cancel-restore-project').onclick = () => this.closeRestoreModal();
+    document.getElementById('btn-scan-existing-projects').onclick = () => this.scanExistingProjects();
+    document.getElementById('btn-submit-restore-project').onclick = () => this.importExistingProject();
 
     const folderInput = document.getElementById('inp-dataset-folder');
     const filesInput = document.getElementById('inp-dataset-files');
@@ -315,6 +364,121 @@ export const ProjectsPage = {
   closeCreateModal() {
     const modal = document.getElementById('modal-create-project');
     if (modal) modal.style.display = 'none';
+  },
+
+  openRestoreModal() {
+    const modal = document.getElementById('modal-restore-project');
+    if (!modal) return;
+    document.getElementById('inp-restore-output-dir').value = '';
+    document.getElementById('inp-restore-image-dir').value = '';
+    document.getElementById('inp-restore-name').value = '';
+    document.getElementById('inp-restore-classes').value = '';
+    document.getElementById('inp-restore-manifest-path').value = '';
+    document.getElementById('inp-restore-project-type').value = '';
+    this._discoveryCandidates = [];
+    this.renderDiscoveryCandidates();
+    modal.style.display = 'flex';
+    this.scanExistingProjects();
+  },
+
+  closeRestoreModal() {
+    const modal = document.getElementById('modal-restore-project');
+    if (modal) modal.style.display = 'none';
+  },
+
+  async scanExistingProjects() {
+    const btn = document.getElementById('btn-scan-existing-projects');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = i18n.t('scanning_existing_projects');
+    }
+    try {
+      const data = await api.discoverProjects();
+      this._discoveryCandidates = data.candidates || [];
+      this.renderDiscoveryCandidates();
+    } catch(e) {
+      showToast(e.message, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = i18n.t('scan_existing_projects');
+      }
+    }
+  },
+
+  renderDiscoveryCandidates() {
+    const list = document.getElementById('existing-projects-list');
+    if (!list) return;
+    if (!this._discoveryCandidates.length) {
+      list.innerHTML = `<div style="padding: 18px; color: var(--neu-text-light);">${i18n.t('no_existing_projects')}</div>`;
+      return;
+    }
+    list.innerHTML = this._discoveryCandidates.map((item, index) => {
+      const kind = item.kind === 'manifest' ? i18n.t('existing_project_kind_manifest') : i18n.t('existing_project_kind_legacy');
+      const status = item.imported ? i18n.t('existing_project_imported') : (item.requires_image_dir ? i18n.t('existing_project_requires_image_dir') : '');
+      const name = this.escapeHtml(item.name || item.project_id || '');
+      const outputDir = this.escapeHtml(item.output_dir || '');
+      const annCount = Number(item.annotation_count || 0);
+      const disabled = item.imported ? 'disabled' : '';
+      return `
+        <div class="neu-box" style="padding: 14px; display: grid; gap: 10px; box-shadow: var(--neu-inset);">
+          <div style="display: flex; justify-content: space-between; gap: 12px; align-items: start;">
+            <div style="min-width: 0;">
+              <div style="font-weight: 800; overflow-wrap: anywhere;">${name}</div>
+              <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 4px;">${this.escapeHtml(kind)} · ${annCount} JSON</div>
+            </div>
+            <button class="neu-button" ${disabled} onclick="window.projectsPage.selectDiscoveredProject(${index})" style="padding: 6px 10px;">${i18n.t('import_existing_project')}</button>
+          </div>
+          <div style="font-size: 12px; color: var(--neu-text-light); overflow-wrap: anywhere;">${outputDir}</div>
+          ${status ? `<div style="font-size: 12px; color: ${item.imported ? '#48bb78' : 'var(--neu-text-active)'};">${this.escapeHtml(status)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  },
+
+  selectDiscoveredProject(index) {
+    const item = this._discoveryCandidates[Number(index)] || null;
+    if (!item || item.imported) return;
+    document.getElementById('inp-restore-output-dir').value = item.output_dir || '';
+    document.getElementById('inp-restore-image-dir').value = item.image_dir || '';
+    document.getElementById('inp-restore-name').value = item.name || '';
+    document.getElementById('inp-restore-manifest-path').value = item.manifest_path || '';
+    document.getElementById('inp-restore-project-type').value = item.project_type || '';
+    document.getElementById('inp-restore-image-dir')?.focus();
+    if (!item.requires_image_dir && item.manifest_path) this.importExistingProject();
+  },
+
+  async importExistingProject() {
+    const btn = document.getElementById('btn-submit-restore-project');
+    const payload = {
+      output_dir: document.getElementById('inp-restore-output-dir').value.trim(),
+      manifest_path: document.getElementById('inp-restore-manifest-path').value.trim(),
+      image_dir: document.getElementById('inp-restore-image-dir').value.trim(),
+      name: document.getElementById('inp-restore-name').value.trim(),
+      classes_text: document.getElementById('inp-restore-classes').value.replace(/\r\n?/g, '\n'),
+      project_type: document.getElementById('inp-restore-project-type').value.trim(),
+    };
+    if (!payload.output_dir && !payload.manifest_path) {
+      showToast(i18n.t('existing_project_output_dir'), 'error');
+      return;
+    }
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = i18n.t('importing_existing_project');
+      }
+      await api.importExistingProject(payload);
+      await this.loadProjects();
+      this.closeRestoreModal();
+      showToast(i18n.t('restore_success'));
+    } catch(e) {
+      showToast(e.message, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = i18n.t('import_existing_project');
+      }
+    }
   },
 
   async loadUploadConfig() {

@@ -140,6 +140,9 @@ SMART_FILTER_JOB_STATES: dict[str, dict[str, Any]] = {}
 SMART_FILTER_PROJECT_ACTIVE: dict[str, str] = {}
 SMART_FILTER_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 CONFIG_LOCK = threading.Lock()
+PROJECT_DISCOVERY_LOCK = threading.Lock()
+PROJECT_DISCOVERY_LAST_SCAN = 0.0
+PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
 
 
 AUTH_FILE = DATA_DIR / 'auth.json'
@@ -546,6 +549,16 @@ class UpdateClassesIn(BaseModel):
 
 class ImportImagesIn(BaseModel):
     source_dir: str
+
+
+class ImportExistingProjectIn(BaseModel):
+    output_dir: str = ''
+    manifest_path: str = ''
+    image_dir: str = ''
+    video_path: str = ''
+    name: str = ''
+    classes_text: str = ''
+    project_type: str = ''
 
 
 class InferIn(BaseModel):
@@ -3196,6 +3209,24 @@ def _configured_upload_target_dir() -> Path:
     return _resolve_dataset_upload_dir(str(HOST_DATA_ROOT))
 
 
+def _auto_import_project_manifests(*, force: bool = False) -> dict[str, Any]:
+    global PROJECT_DISCOVERY_LAST_SCAN
+    now = time.time()
+    with PROJECT_DISCOVERY_LOCK:
+        if not force and (now - PROJECT_DISCOVERY_LAST_SCAN) < PROJECT_DISCOVERY_INTERVAL_SECONDS:
+            return {'imported': [], 'skipped': 0, 'errors': [], 'cached': True}
+        PROJECT_DISCOVERY_LAST_SCAN = now
+    try:
+        result = storage.auto_import_manifests(ALLOWED_DATA_ROOTS)
+        result['cached'] = False
+        if result.get('errors'):
+            logger.warning('project manifest auto-import completed with errors: %s', result.get('errors'))
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('project manifest auto-import failed: %s', exc)
+        return {'imported': [], 'skipped': 0, 'errors': [{'error': str(exc)}], 'cached': False}
+
+
 def _global_config_info() -> dict[str, Any]:
     upload_dir = _configured_upload_target_dir()
     return {
@@ -5142,7 +5173,32 @@ def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
 
 @app.get('/api/projects')
 def list_projects() -> dict[str, Any]:
-    return {'projects': storage.list_projects()}
+    discovery = _auto_import_project_manifests()
+    return {'projects': storage.list_projects(), 'discovery': discovery}
+
+
+@app.get('/api/projects/discover')
+def discover_existing_projects() -> dict[str, Any]:
+    discovery = _auto_import_project_manifests(force=True)
+    candidates = storage.discover_existing_projects(ALLOWED_DATA_ROOTS)
+    return {'candidates': candidates, 'discovery': discovery}
+
+
+@app.post('/api/projects/import_existing')
+def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
+    try:
+        result = storage.import_existing_project(
+            output_dir=payload.output_dir,
+            manifest_path=payload.manifest_path,
+            image_dir=payload.image_dir,
+            video_path=payload.video_path,
+            name=payload.name,
+            classes_text=payload.classes_text,
+            project_type=payload.project_type,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get('/api/projects/{project_id}')

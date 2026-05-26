@@ -51,6 +51,8 @@ export const api = {
     });
   },
   createProject(data) { return this.request('POST', '/projects/open', data); },
+  discoverProjects() { return this.request('GET', '/projects/discover'); },
+  importExistingProject(data) { return this.request('POST', '/projects/import_existing', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   
   getImages(projectId, offset=0, limit=200, filters = {}) {

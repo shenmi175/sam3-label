@@ -116,6 +116,20 @@ WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480
 
 更多操作说明见 [数据根目录和上传 Wiki](docs/wiki/data-roots-and-uploads.md)。
 
+## 恢复已有项目输出
+
+新建项目后，`web-auto` 会在项目输出目录写入 `web_auto_project.json`。如果换机器部署或索引丢失，只要数据根目录已经挂载，项目列表会定期扫描这些清单并自动恢复项目索引。
+
+旧版本留下的 `prj_*` 输出目录没有清单时，在页面执行：
+
+```text
+项目管理页 -> 恢复已有项目 -> 扫描已有项目
+```
+
+选择输出目录，并填写当时创建项目使用的图片目录。恢复只读取已有 `annotations/*.json` 并重建索引，不会重新调用 `sam3-api` 推理。
+
+详细说明见 [项目恢复和已有输出导入 Wiki](docs/wiki/project-recovery.md)。
+
 ## 可选 HTTPS 反代
 
 公司网络、NAT、运营商或安全组不允许公网 `80/443` 入站时，不建议启用反代。

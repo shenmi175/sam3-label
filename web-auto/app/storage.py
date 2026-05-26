@@ -32,6 +32,9 @@ from app.utils import (
 
 
 class Storage:
+    PROJECT_MANIFEST_NAME = 'web_auto_project.json'
+    PROJECT_MANIFEST_SCHEMA = 'web-auto.project.v1'
+
     def __init__(self, base_dir: Path):
         self.base_dir = ensure_dir(base_dir)
         self.projects_file = self.base_dir / 'projects.json'
@@ -48,6 +51,76 @@ class Storage:
 
     def _save_projects(self, projects: list[dict[str, Any]]) -> None:
         atomic_write_json(self.projects_file, projects)
+
+    def _project_manifest_payload(self, project: dict[str, Any]) -> dict[str, Any]:
+        p = self._normalize_project(project)
+        keys = [
+            'id',
+            'name',
+            'project_type',
+            'image_dir',
+            'video_path',
+            'video_name',
+            'video_meta',
+            'save_base_dir',
+            'project_save_dir',
+            'save_dir',
+            'annotation_dir',
+            'export_dir',
+            'workspace_dir',
+            'cache_dir',
+            'classes',
+            'num_images',
+            'num_frames',
+            'labeled_images',
+            'unlabeled_images',
+            'created_at',
+            'updated_at',
+            'content_rev',
+        ]
+        project_payload = {key: p.get(key) for key in keys if key in p}
+        return {
+            'schema': self.PROJECT_MANIFEST_SCHEMA,
+            'version': 1,
+            'image_id_strategy': 'uuid5:url:rel_path',
+            'annotation_file': 'annotations/{image_id}.json',
+            'project': project_payload,
+            'updated_at': now_ts(),
+        }
+
+    def _write_project_manifest(self, project: dict[str, Any]) -> None:
+        payload = self._project_manifest_payload(project)
+        p = payload.get('project', {}) if isinstance(payload.get('project'), dict) else {}
+        targets: list[Path] = []
+        for raw in (p.get('project_save_dir'), p.get('workspace_dir')):
+            text = str(raw or '').strip()
+            if not text:
+                continue
+            try:
+                target_dir = ensure_dir(Path(text).expanduser().resolve())
+            except Exception:
+                continue
+            if target_dir not in targets:
+                targets.append(target_dir)
+        for target_dir in targets:
+            atomic_write_json(target_dir / self.PROJECT_MANIFEST_NAME, payload)
+
+    def _read_project_manifest(self, manifest_path: Path) -> dict[str, Any] | None:
+        data = read_json(manifest_path, {})
+        if not isinstance(data, dict):
+            return None
+        if str(data.get('schema') or '') != self.PROJECT_MANIFEST_SCHEMA:
+            return None
+        project = data.get('project')
+        if not isinstance(project, dict):
+            return None
+        project_id = str(project.get('id') or '').strip()
+        if not project_id:
+            return None
+        return data
+
+    def _known_project_ids(self) -> set[str]:
+        return {str(p.get('id') or '').strip() for p in self._load_projects() if str(p.get('id') or '').strip()}
 
     def _init_index_db(self) -> None:
         if sqlite3 is None:
@@ -1564,6 +1637,295 @@ class Storage:
         project['labeled_images'] = labeled
         project['unlabeled_images'] = max(0, len(normalized_images) - labeled)
 
+    @staticmethod
+    def _annotation_json_count(annotation_dir: Path) -> int:
+        if not annotation_dir.exists() or not annotation_dir.is_dir():
+            return 0
+        try:
+            return sum(1 for p in annotation_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json')
+        except OSError:
+            return 0
+
+    def _infer_classes_from_annotations(self, annotation_dir: Path, *, max_files: int = 2000) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        if not annotation_dir.exists() or not annotation_dir.is_dir():
+            return out
+        try:
+            files = [p for p in sorted(annotation_dir.glob('*.json')) if p.is_file()]
+        except OSError:
+            return out
+        for path in files[:max(1, max_files)]:
+            data = read_json(path, [])
+            if not isinstance(data, list):
+                continue
+            for ann in data:
+                if not isinstance(ann, dict):
+                    continue
+                class_name = self._annotation_class_name(ann)
+                key = norm_text(class_name)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append(class_name)
+        return out
+
+    def _project_candidate_dirs(self, roots: list[Path], *, max_depth: int = 3) -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[str] = set()
+
+        def add_candidate(path: Path) -> None:
+            key = str(path)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(path)
+
+        def walk(path: Path, depth: int) -> None:
+            try:
+                current = path.expanduser().resolve()
+            except Exception:
+                return
+            if not current.exists() or not current.is_dir():
+                return
+
+            has_manifest = (current / self.PROJECT_MANIFEST_NAME).is_file()
+            has_legacy_annotations = current.name.startswith('prj_') and (current / 'annotations').is_dir()
+            if has_manifest or has_legacy_annotations:
+                add_candidate(current)
+
+            if depth <= 0:
+                return
+            try:
+                children = list(current.iterdir())
+            except OSError:
+                return
+            for child in children:
+                if not child.is_dir():
+                    continue
+                if child.name.startswith('.') or child.name in {'annotations', 'exports', 'cache', '__pycache__'}:
+                    continue
+                walk(child, depth - 1)
+
+        for root in roots:
+            walk(root, max_depth)
+        return candidates
+
+    def discover_existing_projects(self, roots: list[Path], *, max_depth: int = 3) -> list[dict[str, Any]]:
+        known = self._known_project_ids()
+        out: list[dict[str, Any]] = []
+        for project_dir in self._project_candidate_dirs(roots, max_depth=max_depth):
+            manifest_path = project_dir / self.PROJECT_MANIFEST_NAME
+            annotation_dir = project_dir / 'annotations'
+            if manifest_path.is_file():
+                manifest = self._read_project_manifest(manifest_path)
+                if not manifest:
+                    continue
+                project = manifest.get('project', {})
+                project_id = str(project.get('id') or '').strip()
+                ptype = str(project.get('project_type') or 'image').strip().lower()
+                out.append(
+                    {
+                        'kind': 'manifest',
+                        'project_id': project_id,
+                        'name': str(project.get('name') or project_id),
+                        'project_type': ptype if ptype in {'image', 'video'} else 'image',
+                        'image_dir': str(project.get('image_dir') or ''),
+                        'video_path': str(project.get('video_path') or ''),
+                        'output_dir': str(project_dir),
+                        'manifest_path': str(manifest_path),
+                        'annotation_count': self._annotation_json_count(project_dir / 'annotations'),
+                        'imported': project_id in known,
+                        'requires_image_dir': False,
+                    }
+                )
+                continue
+
+            project_id = project_dir.name if project_dir.name.startswith('prj_') else ''
+            if not project_id:
+                continue
+            out.append(
+                {
+                    'kind': 'legacy',
+                    'project_id': project_id,
+                    'name': project_id,
+                    'project_type': 'image',
+                    'image_dir': '',
+                    'video_path': '',
+                    'output_dir': str(project_dir),
+                    'manifest_path': '',
+                    'annotation_count': self._annotation_json_count(annotation_dir),
+                    'imported': project_id in known,
+                    'requires_image_dir': True,
+                }
+            )
+        out.sort(key=lambda item: (bool(item.get('imported')), str(item.get('name') or ''), str(item.get('output_dir') or '')))
+        return out
+
+    def auto_import_manifests(self, roots: list[Path], *, max_depth: int = 3) -> dict[str, Any]:
+        imported: list[str] = []
+        skipped = 0
+        errors: list[dict[str, str]] = []
+        known = self._known_project_ids()
+        for project_dir in self._project_candidate_dirs(roots, max_depth=max_depth):
+            manifest_path = project_dir / self.PROJECT_MANIFEST_NAME
+            if not manifest_path.is_file():
+                continue
+            manifest = self._read_project_manifest(manifest_path)
+            project = manifest.get('project', {}) if isinstance(manifest, dict) else {}
+            project_id = str(project.get('id') or '').strip() if isinstance(project, dict) else ''
+            if not project_id or project_id in known:
+                skipped += 1
+                continue
+            try:
+                result = self.import_existing_project(manifest_path=str(manifest_path))
+                imported_id = str((result.get('project') or {}).get('id') or project_id)
+                imported.append(imported_id)
+                known.add(imported_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({'manifest_path': str(manifest_path), 'error': str(exc)})
+        return {'imported': imported, 'skipped': skipped, 'errors': errors}
+
+    def import_existing_project(
+        self,
+        *,
+        output_dir: str = '',
+        manifest_path: str = '',
+        image_dir: str = '',
+        video_path: str = '',
+        name: str = '',
+        classes_text: str = '',
+        project_type: str = '',
+    ) -> dict[str, Any]:
+        manifest: dict[str, Any] | None = None
+        manifest_file: Path | None = None
+        if str(manifest_path or '').strip():
+            manifest_file = Path(manifest_path).expanduser().resolve()
+            manifest = self._read_project_manifest(manifest_file)
+            if not manifest:
+                raise ValueError(f'invalid project manifest: {manifest_file}')
+            project_output_dir = manifest_file.parent
+        else:
+            if not str(output_dir or '').strip():
+                raise ValueError('output_dir is required')
+            project_output_dir = Path(output_dir).expanduser().resolve()
+            candidate_manifest = project_output_dir / self.PROJECT_MANIFEST_NAME
+            if candidate_manifest.is_file():
+                manifest_file = candidate_manifest
+                manifest = self._read_project_manifest(candidate_manifest)
+
+        project_output_dir = project_output_dir.expanduser().resolve()
+        if not project_output_dir.exists() or not project_output_dir.is_dir():
+            raise ValueError(f'output_dir does not exist: {project_output_dir}')
+        annotation_dir = ensure_dir(project_output_dir / 'annotations')
+        export_dir = ensure_dir(project_output_dir / 'exports')
+
+        base = manifest.get('project', {}) if isinstance(manifest, dict) and isinstance(manifest.get('project'), dict) else {}
+        project_id = str(base.get('id') or '').strip()
+        if not project_id:
+            project_id = project_output_dir.name if project_output_dir.name.startswith('prj_') else new_id('prj_')
+
+        ptype = str(project_type or base.get('project_type') or 'image').strip().lower()
+        if ptype not in {'image', 'video'}:
+            ptype = 'image'
+
+        classes = parse_classes_text(classes_text)
+        if not classes:
+            raw_classes = base.get('classes', [])
+            classes = [str(item).strip() for item in raw_classes if str(item).strip()] if isinstance(raw_classes, list) else []
+        if not classes:
+            classes = self._infer_classes_from_annotations(annotation_dir)
+
+        resolved_image_dir = ''
+        resolved_video_path = ''
+        video_name = str(base.get('video_name') or '').strip()
+        video_meta = base.get('video_meta', {}) if isinstance(base.get('video_meta'), dict) else {}
+        images: list[dict[str, Any]] = []
+
+        if ptype == 'image':
+            raw_image_dir = str(image_dir or base.get('image_dir') or '').strip()
+            if not raw_image_dir:
+                raise ValueError('image_dir is required for legacy project import')
+            image_root = Path(raw_image_dir).expanduser().resolve()
+            if not image_root.exists() or not image_root.is_dir():
+                raise ValueError(f'image_dir does not exist: {image_root}')
+            images = list_images_recursive(image_root)
+            if not images:
+                raise ValueError('no images found in image_dir')
+            for img in images:
+                image_id = str(img.get('id') or '')
+                img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
+            resolved_image_dir = str(image_root)
+        else:
+            raw_video_path = str(video_path or base.get('video_path') or '').strip()
+            if raw_video_path:
+                candidate = Path(raw_video_path).expanduser().resolve()
+                if not candidate.exists() or not candidate.is_file():
+                    raise ValueError(f'video_path does not exist: {candidate}')
+                video_meta = probe_video_info(candidate)
+                video_name = str(video_meta.get('video_name') or candidate.stem)
+                resolved_video_path = str(candidate)
+            frame_total = int(video_meta.get('num_frames') or base.get('num_images') or 0)
+            if frame_total <= 0:
+                raise ValueError('video metadata is missing num_frames; provide a valid video_path')
+            images = build_virtual_frames(video_name or 'video', frame_total)
+            for img in images:
+                image_id = str(img.get('id') or '')
+                img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
+
+        total = len(images)
+        labeled = sum(1 for img in images if self._normalize_image_status(img.get('status')) == 'labeled')
+        ts = now_ts()
+        project = {
+            'id': project_id,
+            'name': str(name or base.get('name') or project_id).strip() or project_id,
+            'project_type': ptype,
+            'image_dir': resolved_image_dir,
+            'video_path': resolved_video_path,
+            'video_name': video_name or (Path(resolved_video_path).stem if resolved_video_path else 'video'),
+            'video_meta': video_meta,
+            'save_base_dir': str(project_output_dir.parent),
+            'project_save_dir': str(project_output_dir),
+            'save_dir': str(project_output_dir),
+            'annotation_dir': str(annotation_dir),
+            'export_dir': str(export_dir),
+            'workspace_dir': str((self.projects_root / project_id).resolve()),
+            'cache_dir': str(ensure_dir(self.projects_root / project_id / 'cache').resolve()),
+            'classes': classes,
+            'images': images,
+            'num_images': total,
+            'labeled_images': labeled,
+            'unlabeled_images': max(0, total - labeled),
+            'created_at': str(base.get('created_at') or ts),
+            'updated_at': ts,
+            'locked': True,
+        }
+        project = self._normalize_project(project)
+
+        projects = self._load_projects()
+        replaced = False
+        out: list[dict[str, Any]] = []
+        for raw in projects:
+            p = self._normalize_project(raw)
+            if p.get('id') == project_id:
+                out.append(project)
+                replaced = True
+            else:
+                out.append(p)
+        if not replaced:
+            out.append(project)
+        self._save_projects(out)
+        rebuild = self.rebuild_annotation_index(project_id)
+        project = self.get_project(project_id, enrich=False, include_images=False) or project
+        self._write_project_manifest(project)
+        return {
+            'project': project,
+            'imported': not replaced,
+            'updated_existing': replaced,
+            'manifest_path': str(manifest_file or (project_output_dir / self.PROJECT_MANIFEST_NAME)),
+            'rebuild': rebuild,
+        }
+
     def list_projects(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         projects = self._load_projects()
@@ -1751,6 +2113,10 @@ class Storage:
                 self._bump_content_rev(p)
             out.append(p)
         self._save_projects(out)
+        for p in out:
+            if p.get('id') == project_id:
+                self._write_project_manifest(p)
+                break
 
         return {
             'project_id': project_id,
@@ -1956,6 +2322,7 @@ class Storage:
         projects = self._load_projects()
         projects.append(project)
         self._save_projects(projects)
+        self._write_project_manifest(project)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
 
     def refresh_project_images(self, project_id: str) -> int:
@@ -2009,6 +2376,7 @@ class Storage:
         if not updated:
             raise ValueError('project not found')
         self._save_projects(out)
+        self._write_project_manifest(updated)
         return self._prepare_project_cached(updated)
 
     def refresh_project_images(self, project_id: str) -> tuple[dict[str, Any], int]:
@@ -2070,6 +2438,7 @@ class Storage:
 
         if changed:
             self._save_projects(out)
+        self._write_project_manifest(updated)
         return self._prepare_project_cached(updated), added
 
     def delete_image(self, project_id: str, image_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2116,6 +2485,7 @@ class Storage:
 
         self._delete_project_image_db(project_id, image_id)
         self._save_projects(out)
+        self._write_project_manifest(updated)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(updated), deleted_image
 
     @staticmethod
@@ -2206,6 +2576,7 @@ class Storage:
             raise ValueError('class not found')
 
         self._save_projects(out)
+        self._write_project_manifest(updated)
         return self._prepare_project_cached(updated)
 
     # Backward compatibility: old "update classes" route now behaves as "add classes".
@@ -2257,10 +2628,14 @@ class Storage:
         workspace_dir = Path(victim['workspace_dir']).expanduser().resolve()
         project_save_dir = Path(victim['project_save_dir']).expanduser().resolve()
         ui_state_file = workspace_dir / 'ui_state.json'
+        manifest_file = project_save_dir / self.PROJECT_MANIFEST_NAME
+        workspace_manifest_file = workspace_dir / self.PROJECT_MANIFEST_NAME
 
         self._safe_rmtree(annotation_dir, source_path)
         self._safe_rmtree(export_dir, source_path)
         self._safe_unlink(ui_state_file, source_path)
+        self._safe_unlink(manifest_file, source_path)
+        self._safe_unlink(workspace_manifest_file, source_path)
         self._safe_rmtree(workspace_dir, source_path)
 
         if project_save_dir.exists() and project_save_dir.is_dir():
@@ -2323,6 +2698,7 @@ class Storage:
         self._replace_annotation_index_db(project_id, image_id, annotations)
         self._update_project_image_status_db(project_id, image_id, 'labeled' if annotations else 'unlabeled')
         self._save_projects(out)
+        self._write_project_manifest(project)
 
     def find_image(self, project: dict[str, Any], image_id: str) -> dict[str, Any] | None:
         for img in project.get('images', []):
