@@ -3209,15 +3209,47 @@ def _configured_upload_target_dir() -> Path:
     return _resolve_dataset_upload_dir(str(HOST_DATA_ROOT))
 
 
-def _auto_import_project_manifests(*, force: bool = False) -> dict[str, Any]:
+def _resolve_project_discovery_roots(scan_root: str = '') -> list[Path]:
+    raw = str(scan_root or '').strip()
+    if not raw:
+        return ALLOWED_DATA_ROOTS
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f'invalid scan_root: {exc}') from exc
+    if _data_root_for_path(resolved) is None:
+        roots_text = ', '.join(str(root) for root in ALLOWED_DATA_ROOTS)
+        raise HTTPException(status_code=400, detail=f'scan_root must be inside a mounted data root: {roots_text}')
+    if not resolved.exists() or not resolved.is_dir():
+        raise HTTPException(status_code=400, detail=f'scan_root does not exist or is not a directory: {resolved}')
+    return [resolved]
+
+
+def _project_discovery_root_info(roots: list[Path]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve()
+            out.append({
+                'path': str(resolved),
+                'exists': resolved.exists(),
+                'is_dir': resolved.is_dir(),
+            })
+        except Exception as exc:
+            out.append({'path': str(root), 'exists': False, 'is_dir': False, 'error': str(exc)})
+    return out
+
+
+def _auto_import_project_manifests(*, roots: list[Path] | None = None, force: bool = False, max_depth: int = 5) -> dict[str, Any]:
     global PROJECT_DISCOVERY_LAST_SCAN
     now = time.time()
+    scan_roots = roots or ALLOWED_DATA_ROOTS
     with PROJECT_DISCOVERY_LOCK:
         if not force and (now - PROJECT_DISCOVERY_LAST_SCAN) < PROJECT_DISCOVERY_INTERVAL_SECONDS:
             return {'imported': [], 'skipped': 0, 'errors': [], 'cached': True}
         PROJECT_DISCOVERY_LAST_SCAN = now
     try:
-        result = storage.auto_import_manifests(ALLOWED_DATA_ROOTS)
+        result = storage.auto_import_manifests(scan_roots, max_depth=max_depth)
         result['cached'] = False
         if result.get('errors'):
             logger.warning('project manifest auto-import completed with errors: %s', result.get('errors'))
@@ -5178,10 +5210,20 @@ def list_projects() -> dict[str, Any]:
 
 
 @app.get('/api/projects/discover')
-def discover_existing_projects() -> dict[str, Any]:
-    discovery = _auto_import_project_manifests(force=True)
-    candidates = storage.discover_existing_projects(ALLOWED_DATA_ROOTS)
-    return {'candidates': candidates, 'discovery': discovery}
+def discover_existing_projects(
+    scan_root: str = Query(default=''),
+    max_depth: int = Query(default=8, ge=1, le=12),
+) -> dict[str, Any]:
+    roots = _resolve_project_discovery_roots(scan_root)
+    discovery = _auto_import_project_manifests(roots=roots, force=True, max_depth=max_depth)
+    candidates = storage.discover_existing_projects(roots, max_depth=max_depth)
+    return {
+        'candidates': candidates,
+        'discovery': discovery,
+        'scan_roots': _project_discovery_root_info(roots),
+        'allowed_data_roots': [str(root) for root in ALLOWED_DATA_ROOTS],
+        'max_depth': max_depth,
+    }
 
 
 @app.post('/api/projects/import_existing')

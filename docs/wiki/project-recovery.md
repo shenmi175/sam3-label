@@ -33,6 +33,18 @@ web_auto_project.json
 项目管理页 -> 恢复已有项目 -> 扫描已有项目
 ```
 
+如果项目在某个子目录下，例如：
+
+```text
+/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg/prj_xxx
+```
+
+可以把“扫描根目录”直接填成：
+
+```text
+/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg
+```
+
 选择旧的 `prj_*` 输出目录后，填写当时创建项目使用的图片目录，然后点击“恢复项目”。
 
 恢复过程会：
@@ -75,7 +87,29 @@ curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
 
 ## 注意事项
 
+- 旧输出目录支持 `prj_xxx/annotations` 和 `prj_xxx/output/annotations` 两种结构。
 - 图片目录必须和当时创建项目时的根目录一致。image_id 由图片相对路径生成，根目录不一致可能匹配不到旧标注。
 - 输出目录必须保留 `annotations/`。
 - 如果目录在宿主机上存在但容器看不到，先用 `./deploy.sh data-root add <路径>` 挂载。
 - 删除项目会移除对应项目清单，避免下次自动扫描又把它导入回来。
+
+## 扫描不到时排查
+
+确认容器能看到目录：
+
+```bash
+sudo docker exec sam3-auto-label-web-auto-1 sh -lc \
+  'printenv WEB_AUTO_ALLOWED_DATA_ROOTS; ls -ld /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg; find /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg -maxdepth 3 -type d -name "prj_*" -print'
+```
+
+如果容器内没有这个目录，先执行：
+
+```bash
+./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
+```
+
+如果已经添加过但容器环境还是旧的，重建 `web-auto`：
+
+```bash
+sudo docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build --force-recreate web-auto
+```

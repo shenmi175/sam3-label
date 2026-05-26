@@ -97,7 +97,13 @@ export const ProjectsPage = {
           <div style="font-size: 13px; color: var(--neu-text-light); margin-bottom: 20px; line-height: 1.5;">${i18n.t('restore_project_desc')}</div>
           <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px;">
             <div style="display: grid; gap: 14px;">
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('scan_root')}</label>
+                <input type="text" id="inp-restore-scan-root" class="neu-input" placeholder="/media/.../zmb_datas/openimg" />
+                <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;">${i18n.t('scan_root_hint')}</div>
+              </div>
               <button id="btn-scan-existing-projects" class="neu-button" style="justify-self: start; color: var(--neu-text-active); font-weight: 700;">${i18n.t('scan_existing_projects')}</button>
+              <div id="existing-projects-scan-info" style="font-size: 12px; color: var(--neu-text-light); overflow-wrap: anywhere;"></div>
               <div id="existing-projects-list" style="display: grid; gap: 12px; max-height: 360px; overflow-y: auto; padding-right: 4px;">
                 <div style="padding: 18px; color: var(--neu-text-light);">${i18n.t('no_existing_projects')}</div>
               </div>
@@ -375,6 +381,8 @@ export const ProjectsPage = {
     document.getElementById('inp-restore-classes').value = '';
     document.getElementById('inp-restore-manifest-path').value = '';
     document.getElementById('inp-restore-project-type').value = '';
+    document.getElementById('inp-restore-scan-root').value = this._uploadConfig?.host_data_root || '';
+    document.getElementById('existing-projects-scan-info').textContent = '';
     this._discoveryCandidates = [];
     this.renderDiscoveryCandidates();
     modal.style.display = 'flex';
@@ -393,8 +401,17 @@ export const ProjectsPage = {
       btn.textContent = i18n.t('scanning_existing_projects');
     }
     try {
-      const data = await api.discoverProjects();
+      const scanRoot = document.getElementById('inp-restore-scan-root')?.value.trim() || '';
+      const data = await api.discoverProjects(scanRoot, 8);
       this._discoveryCandidates = data.candidates || [];
+      const info = document.getElementById('existing-projects-scan-info');
+      if (info) {
+        const roots = (data.scan_roots || []).map((item) => {
+          const suffix = item.exists && item.is_dir ? '' : ' (not found)';
+          return `${item.path}${suffix}`;
+        }).join(', ');
+        info.textContent = roots ? i18n.t('scanned_roots', {roots}) : '';
+      }
       this.renderDiscoveryCandidates();
     } catch(e) {
       showToast(e.message, 'error');

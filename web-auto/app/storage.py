@@ -1646,6 +1646,37 @@ class Storage:
         except OSError:
             return 0
 
+    @staticmethod
+    def _legacy_annotation_dir(project_dir: Path) -> Path | None:
+        candidates = [
+            project_dir / 'annotations',
+            project_dir / 'output' / 'annotations',
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+        return None
+
+    @staticmethod
+    def _existing_project_save_dir(project_dir: Path, base: dict[str, Any]) -> Path:
+        candidates: list[Path] = []
+        raw_save_dir = str(base.get('project_save_dir') or base.get('save_dir') or '').strip() if isinstance(base, dict) else ''
+        if raw_save_dir:
+            try:
+                candidates.append(Path(raw_save_dir).expanduser().resolve())
+            except Exception:
+                pass
+        candidates.append(project_dir)
+        candidates.append(project_dir / 'output')
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                continue
+            if (resolved / 'annotations').is_dir():
+                return resolved
+        return project_dir.expanduser().resolve()
+
     def _infer_classes_from_annotations(self, annotation_dir: Path, *, max_files: int = 2000) -> list[str]:
         out: list[str] = []
         seen: set[str] = set()
@@ -1690,7 +1721,7 @@ class Storage:
                 return
 
             has_manifest = (current / self.PROJECT_MANIFEST_NAME).is_file()
-            has_legacy_annotations = current.name.startswith('prj_') and (current / 'annotations').is_dir()
+            has_legacy_annotations = current.name.startswith('prj_') and self._legacy_annotation_dir(current) is not None
             if has_manifest or has_legacy_annotations:
                 add_candidate(current)
 
@@ -1716,7 +1747,6 @@ class Storage:
         out: list[dict[str, Any]] = []
         for project_dir in self._project_candidate_dirs(roots, max_depth=max_depth):
             manifest_path = project_dir / self.PROJECT_MANIFEST_NAME
-            annotation_dir = project_dir / 'annotations'
             if manifest_path.is_file():
                 manifest = self._read_project_manifest(manifest_path)
                 if not manifest:
@@ -1734,7 +1764,7 @@ class Storage:
                         'video_path': str(project.get('video_path') or ''),
                         'output_dir': str(project_dir),
                         'manifest_path': str(manifest_path),
-                        'annotation_count': self._annotation_json_count(project_dir / 'annotations'),
+                        'annotation_count': self._annotation_json_count(self._existing_project_save_dir(project_dir, project) / 'annotations'),
                         'imported': project_id in known,
                         'requires_image_dir': False,
                     }
@@ -1744,6 +1774,7 @@ class Storage:
             project_id = project_dir.name if project_dir.name.startswith('prj_') else ''
             if not project_id:
                 continue
+            legacy_annotation_dir = self._legacy_annotation_dir(project_dir) or (project_dir / 'annotations')
             out.append(
                 {
                     'kind': 'legacy',
@@ -1754,7 +1785,7 @@ class Storage:
                     'video_path': '',
                     'output_dir': str(project_dir),
                     'manifest_path': '',
-                    'annotation_count': self._annotation_json_count(annotation_dir),
+                    'annotation_count': self._annotation_json_count(legacy_annotation_dir),
                     'imported': project_id in known,
                     'requires_image_dir': True,
                 }
@@ -1814,13 +1845,14 @@ class Storage:
                 manifest_file = candidate_manifest
                 manifest = self._read_project_manifest(candidate_manifest)
 
+        base = manifest.get('project', {}) if isinstance(manifest, dict) and isinstance(manifest.get('project'), dict) else {}
         project_output_dir = project_output_dir.expanduser().resolve()
         if not project_output_dir.exists() or not project_output_dir.is_dir():
             raise ValueError(f'output_dir does not exist: {project_output_dir}')
-        annotation_dir = ensure_dir(project_output_dir / 'annotations')
-        export_dir = ensure_dir(project_output_dir / 'exports')
+        project_save_dir = ensure_dir(self._existing_project_save_dir(project_output_dir, base))
+        annotation_dir = ensure_dir(project_save_dir / 'annotations')
+        export_dir = ensure_dir(project_save_dir / 'exports')
 
-        base = manifest.get('project', {}) if isinstance(manifest, dict) and isinstance(manifest.get('project'), dict) else {}
         project_id = str(base.get('id') or '').strip()
         if not project_id:
             project_id = project_output_dir.name if project_output_dir.name.startswith('prj_') else new_id('prj_')
@@ -1884,9 +1916,9 @@ class Storage:
             'video_path': resolved_video_path,
             'video_name': video_name or (Path(resolved_video_path).stem if resolved_video_path else 'video'),
             'video_meta': video_meta,
-            'save_base_dir': str(project_output_dir.parent),
-            'project_save_dir': str(project_output_dir),
-            'save_dir': str(project_output_dir),
+            'save_base_dir': str(project_save_dir.parent),
+            'project_save_dir': str(project_save_dir),
+            'save_dir': str(project_save_dir),
             'annotation_dir': str(annotation_dir),
             'export_dir': str(export_dir),
             'workspace_dir': str((self.projects_root / project_id).resolve()),

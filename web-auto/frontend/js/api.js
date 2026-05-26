@@ -51,7 +51,13 @@ export const api = {
     });
   },
   createProject(data) { return this.request('POST', '/projects/open', data); },
-  discoverProjects() { return this.request('GET', '/projects/discover'); },
+  discoverProjects(scanRoot = '', maxDepth = 8) {
+    const params = new URLSearchParams();
+    if (scanRoot) params.set('scan_root', scanRoot);
+    if (maxDepth) params.set('max_depth', String(maxDepth));
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return this.request('GET', `/projects/discover${suffix}`);
+  },
   importExistingProject(data) { return this.request('POST', '/projects/import_existing', data); },
   deleteProject(id) { return this.request('DELETE', `/projects/${id}`); },
   
