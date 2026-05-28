@@ -27,6 +27,10 @@ export const ImageWorkspace = {
   imageListLoadSeq: 0,
   imageLoadAbortController: null,
   isImageLoading: false,
+  imageBundleCache: null,
+  imageBundlePromises: null,
+  imageBundleCacheLimit: 8,
+  imagePrefetchRadius: 3,
   gpuStatusInterval: null,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
@@ -58,6 +62,8 @@ export const ImageWorkspace = {
     this.imageListLoadSeq = 0;
     this.imageLoadAbortController = null;
     this.isImageLoading = false;
+    this.imageBundleCache = new Map();
+    this.imageBundlePromises = new Map();
     this.gpuStatusInterval = null;
     this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
@@ -469,6 +475,7 @@ export const ImageWorkspace = {
       this.imageLoadAbortController.abort();
       this.imageLoadAbortController = null;
     }
+    this.clearImageBundleCache();
     this.flushProjectUIState();
     if (this.viewer) {
       this.viewer.destroy();
@@ -918,19 +925,20 @@ export const ImageWorkspace = {
     };
 
     // Keyboard navigation: ArrowUp/Left = prev image, ArrowDown/Right = next image
-    // Debounce to avoid skipping images on fast key repeat
-    let navTimer = null;
+    let lastNavAt = 0;
     this._keyHandler = (e) => {
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const now = performance.now();
+      if (now - lastNavAt < 45) return;
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
-        clearTimeout(navTimer);
-        navTimer = setTimeout(() => this.navigateImage(-1), 120);
+        lastNavAt = now;
+        this.navigateImage(-1);
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault();
-        clearTimeout(navTimer);
-        navTimer = setTimeout(() => this.navigateImage(1), 120);
+        lastNavAt = now;
+        this.navigateImage(1);
       }
     };
     document.addEventListener('keydown', this._keyHandler);
@@ -942,7 +950,7 @@ export const ImageWorkspace = {
       return;
     }
     if (!this.images || this.images.length === 0) return;
-    const currentIndex = this.images.findIndex(img => img.id === this.selectedImageId);
+    const currentIndex = this.images.findIndex(img => String(img.id) === String(this.selectedImageId));
     const nextIndex = currentIndex + delta;
     if (nextIndex >= 0 && nextIndex < this.images.length) {
       const img = this.images[nextIndex];
@@ -1106,6 +1114,7 @@ export const ImageWorkspace = {
       this.updateActionBar();
       
       await this.loadProjectInfo(); // Refresh counts
+      this.invalidateImageBundle(this.selectedImageId);
       await this.selectImage(this.selectedImageId, this.selectedImagePath); // Refresh annotations list
       
     } catch(e) {
@@ -1351,6 +1360,7 @@ export const ImageWorkspace = {
       await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
       this.removePreview(id);
       await this.loadProjectInfo();
+      this.invalidateImageBundle(this.selectedImageId);
       await this.selectImage(this.selectedImageId, this.selectedImagePath);
     } catch(e) { alert(e.message); }
   },
@@ -1451,6 +1461,7 @@ export const ImageWorkspace = {
       }
       html += '</div>';
       listCont.innerHTML = html;
+      this.prefetchAdjacentImages(this.selectedImageId || this.images[0]?.id || '');
       this.scheduleProjectUIStateSave();
       
     } catch(e) {
@@ -1486,6 +1497,153 @@ export const ImageWorkspace = {
     if (placeholder) placeholder.style.display = visible ? 'block' : 'none';
   },
 
+  imageBundleKey(id) {
+    return `${this.projectId || ''}:${String(id || '')}`;
+  },
+
+  touchImageBundleCache(key, bundle) {
+    if (!key || !bundle) return;
+    if (!this.imageBundleCache) this.imageBundleCache = new Map();
+    this.imageBundleCache.delete(key);
+    this.imageBundleCache.set(key, bundle);
+    while (this.imageBundleCache.size > this.imageBundleCacheLimit) {
+      const oldestKey = this.imageBundleCache.keys().next().value;
+      this.imageBundleCache.delete(oldestKey);
+    }
+  },
+
+  getCachedImageBundle(id) {
+    const key = this.imageBundleKey(id);
+    const cached = this.imageBundleCache?.get(key) || null;
+    if (!cached) return null;
+    this.touchImageBundleCache(key, cached);
+    return cached;
+  },
+
+  storeImageBundle(id, relPath, image, annotations) {
+    if (!id || !image) return;
+    this.touchImageBundleCache(this.imageBundleKey(id), {
+      id: String(id),
+      relPath: relPath || '',
+      image,
+      annotations: Array.isArray(annotations) ? annotations : [],
+      cachedAt: Date.now(),
+    });
+  },
+
+  invalidateImageBundle(id) {
+    const key = this.imageBundleKey(id);
+    this.imageBundleCache?.delete(key);
+    this.imageBundlePromises?.delete(key);
+  },
+
+  clearImageBundleCache() {
+    this.imageBundleCache?.clear();
+    this.imageBundlePromises?.clear();
+  },
+
+  updateCurrentImageBundleAnnotations(annotations) {
+    const cached = this.getCachedImageBundle(this.selectedImageId);
+    if (!cached) return;
+    this.storeImageBundle(this.selectedImageId, this.selectedImagePath || cached.relPath, cached.image, annotations);
+  },
+
+  loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = async () => {
+        if (typeof img.decode === 'function') {
+          try {
+            await img.decode();
+          } catch (_) {
+            // Some browsers reject decode() after a successful load; the image is still usable.
+          }
+        }
+        resolve(img);
+      };
+      img.onerror = reject;
+      img.src = src;
+    });
+  },
+
+  async loadImageBundle(id, relPath, options = {}) {
+    const cached = this.getCachedImageBundle(id);
+    if (cached) return cached;
+
+    const key = this.imageBundleKey(id);
+    if (!this.imageBundlePromises) this.imageBundlePromises = new Map();
+    const existing = this.imageBundlePromises.get(key);
+    if (existing) return existing;
+
+    const requestOptions = options.signal ? { signal: options.signal } : {};
+    const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
+    const promise = Promise.all([
+      this.loadImageElement(imgUrl),
+      api.getAnnotations(this.projectId, id, requestOptions),
+    ]).then(([image, annsRes]) => {
+      const bundle = {
+        id: String(id),
+        relPath: relPath || '',
+        image,
+        annotations: Array.isArray(annsRes?.annotations) ? annsRes.annotations : [],
+        cachedAt: Date.now(),
+      };
+      this.touchImageBundleCache(key, bundle);
+      return bundle;
+    });
+
+    if (!options.signal) {
+      this.imageBundlePromises.set(key, promise);
+      const cleanup = () => {
+        if (this.imageBundlePromises?.get(key) === promise) {
+          this.imageBundlePromises.delete(key);
+        }
+      };
+      promise.then(cleanup, cleanup);
+    }
+
+    return promise;
+  },
+
+  commitImageBundle(bundle) {
+    if (!bundle || !this.viewer) return;
+    this.annotations = Array.isArray(bundle.annotations) ? bundle.annotations : [];
+    this.isImageLoading = false;
+    this.viewer.setPrompts([]);
+    this.viewer.setPreviews([]);
+    this.viewer.setImage(bundle.image);
+    this.viewer.setAnnotations(this.annotations);
+    this.viewer.setFocusedAnnotation(null);
+    this.setCanvasPlaceholder(false);
+    const imageStatus = document.getElementById('ws-image-status');
+    if (imageStatus) {
+      const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
+      imageStatus.innerText = `${this.selectedImagePath || bundle.relPath || bundle.id} | ${modeText}`;
+    }
+    this.renderClasses();
+    this.renderAnnotations();
+    this.scheduleProjectUIStateSave();
+  },
+
+  prefetchAdjacentImages(anchorId = this.selectedImageId) {
+    if (!anchorId || !Array.isArray(this.images) || this.images.length === 0) return;
+    const anchorIndex = this.images.findIndex((img) => String(img.id) === String(anchorId));
+    if (anchorIndex < 0) return;
+
+    const queue = [];
+    for (let step = 1; step <= this.imagePrefetchRadius; step += 1) {
+      queue.push(anchorIndex + step, anchorIndex - step);
+    }
+
+    queue.forEach((index) => {
+      const img = this.images[index];
+      if (!img?.id) return;
+      const key = this.imageBundleKey(img.id);
+      if (this.imageBundleCache?.has(key) || this.imageBundlePromises?.has(key)) return;
+      this.loadImageBundle(img.id, img.rel_path).catch(() => {});
+    });
+  },
+
   async selectImage(id, relPath, options = {}) {
     const requestSeq = ++this.imageLoadSeq;
     if (this.imageLoadAbortController) {
@@ -1498,20 +1656,33 @@ export const ImageWorkspace = {
     this.currentPrompts = [];
     this.previews = [];
     this.annotations = [];
-    this.isImageLoading = true;
+    const cachedBundle = this.getCachedImageBundle(id);
+    this.isImageLoading = !cachedBundle;
     this.focusedAnnotationId = null;
     
     if (this.viewer) {
-      this.viewer.clearImage();
       this.viewer.setPrompts([]);
       this.viewer.setPreviews([]);
-      this.viewer.setAnnotations([]);
       this.viewer.setFocusedAnnotation(null);
+      if (!cachedBundle) {
+        this.viewer.clearImage();
+        this.viewer.setAnnotations([]);
+      }
     }
     
     this.renderPreviews();
     this.updateActionBar();
     this.updateSelectedImageListState();
+
+    if (cachedBundle) {
+      this.commitImageBundle(cachedBundle);
+      if (this.imageLoadAbortController === abortController) {
+        this.imageLoadAbortController = null;
+      }
+      this.prefetchAdjacentImages(id);
+      return;
+    }
+
     this.renderAnnotations();
     
     this.setCanvasPlaceholder(true, i18n.t('loading_image_annotations'));
@@ -1522,29 +1693,14 @@ export const ImageWorkspace = {
     }
     
     try {
-      const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
-      const [loadedImage, annsRes] = await Promise.all([
-        this.viewer.loadImage(imgUrl, { commit: false }),
-        api.getAnnotations(this.projectId, id, { signal: abortController.signal }),
-      ]);
+      const bundle = await this.loadImageBundle(id, relPath, { signal: abortController.signal });
       if (this.isUnmounted || requestSeq !== this.imageLoadSeq || String(this.selectedImageId) !== String(id)) return;
-      if (!loadedImage) return;
-      this.annotations = annsRes.annotations || [];
-      this.isImageLoading = false;
-      this.viewer.setImage(loadedImage);
-      this.viewer.setAnnotations(this.annotations);
-      this.viewer.setFocusedAnnotation(null);
-      this.setCanvasPlaceholder(false);
+      if (!bundle?.image) return;
+      this.commitImageBundle(bundle);
       if (this.imageLoadAbortController === abortController) {
         this.imageLoadAbortController = null;
       }
-      if (imageStatus) {
-        const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
-        imageStatus.innerText = `${relPath || id} | ${modeText}`;
-      }
-      this.renderClasses();
-      this.renderAnnotations();
-      this.scheduleProjectUIStateSave();
+      this.prefetchAdjacentImages(id);
       
     } catch(e) {
       if (e && e.name === 'AbortError') return;
@@ -1575,6 +1731,7 @@ export const ImageWorkspace = {
       
       const res = await api.infer(payload);
       showToast(i18n.t('save_success'), "success");
+      this.invalidateImageBundle(this.selectedImageId);
       await this.selectImage(this.selectedImageId, this.selectedImagePath);
       await this.loadProjectInfo();
     } catch(e) {
@@ -1702,6 +1859,9 @@ export const ImageWorkspace = {
           setTimeout(() => bar.style.display = 'none', 3000);
           if (job.job_type === 'text_batch' && job.status === 'done') {
             this.showBatchResultModal(job);
+          }
+          if (job.status === 'done') {
+            this.clearImageBundleCache();
           }
           this.activeJobId = null;
           this.isPolling = false;
@@ -2035,6 +2195,7 @@ export const ImageWorkspace = {
     if (!this.selectedImageId) return;
     try {
       await api.saveAnnotations(this.projectId, this.selectedImageId, this.annotations);
+      this.updateCurrentImageBundleAnnotations(this.annotations);
       showToast(i18n.t('save_success'), "success");
       await this.loadProjectInfo();
     } catch(e) { showToast(e.message, "error"); }
@@ -2045,6 +2206,7 @@ export const ImageWorkspace = {
     if (!confirm("Clear all annotations on this image?")) return;
     try {
       await api.saveAnnotations(this.projectId, this.selectedImageId, []);
+      this.invalidateImageBundle(this.selectedImageId);
       await this.selectImage(this.selectedImageId, this.selectedImagePath);
       await this.loadProjectInfo();
     } catch(e) { showToast(e.message, "error"); }
@@ -2055,6 +2217,7 @@ export const ImageWorkspace = {
     try {
       const newAnns = this.annotations.filter(a => a.id !== annId);
       await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
+      this.invalidateImageBundle(this.selectedImageId);
       await this.selectImage(this.selectedImageId, this.selectedImagePath);
       await this.loadProjectInfo();
     } catch(e) { showToast(e.message, "error"); }
@@ -2176,6 +2339,7 @@ export const ImageWorkspace = {
       await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
 
       this.annotations = newAnns;
+      this.updateCurrentImageBundleAnnotations(newAnns);
       this.selectedClass = cleanClass;
       if (this.viewer) {
         this.viewer.setAnnotations(this.annotations);
@@ -2539,6 +2703,7 @@ export const ImageWorkspace = {
           const res = await api.rollbackFilterRun(this.projectId, run.run_id);
           const result = res?.result || {};
           showToast(`已回滚 ${result.restored_images || 0} 张图片`, 'success');
+          this.clearImageBundleCache();
           await this.loadProjectInfo();
           if (this.selectedImageId && this.selectedImagePath) {
             await this.selectImage(this.selectedImageId, this.selectedImagePath);
@@ -2748,6 +2913,7 @@ export const ImageWorkspace = {
                 snapshot_count: result.changed_images || 0,
               });
             }
+            this.clearImageBundleCache();
             await this.loadProjectInfo();
             if (this.selectedImageId && this.selectedImagePath) {
               await this.selectImage(this.selectedImageId, this.selectedImagePath);
