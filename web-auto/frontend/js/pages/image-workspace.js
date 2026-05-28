@@ -25,6 +25,8 @@ export const ImageWorkspace = {
   imageFilterStatus: 'all',
   imageLoadSeq: 0,
   imageListLoadSeq: 0,
+  imageLoadAbortController: null,
+  isImageLoading: false,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
   
@@ -53,6 +55,8 @@ export const ImageWorkspace = {
     this.imageFilterStatus = 'all';
     this.imageLoadSeq = 0;
     this.imageListLoadSeq = 0;
+    this.imageLoadAbortController = null;
+    this.isImageLoading = false;
     this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
     
@@ -208,7 +212,7 @@ export const ImageWorkspace = {
              <div id="canvas-container" style="flex: 1; position: relative;">
                 <div id="canvas-placeholder" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
                    <div style="font-size: 64px; opacity: 0.1; margin-bottom: 20px;">🖼️</div>
-                   <div style="font-size: 18px; font-weight: 600; color: var(--neu-text-light);">${i18n.t('select_image_prompt')}</div>
+                   <div id="canvas-placeholder-text" style="font-size: 18px; font-weight: 600; color: var(--neu-text-light);">${i18n.t('select_image_prompt')}</div>
                 </div>
 
                 <!-- Hovering Toolbar -->
@@ -440,6 +444,10 @@ export const ImageWorkspace = {
 
   unmount() {
     this.isUnmounted = true;
+    if (this.imageLoadAbortController) {
+      this.imageLoadAbortController.abort();
+      this.imageLoadAbortController = null;
+    }
     this.flushProjectUIState();
     if (this.viewer) {
       this.viewer.destroy();
@@ -1373,16 +1381,30 @@ export const ImageWorkspace = {
     });
   },
 
+  setCanvasPlaceholder(visible, text = '') {
+    const placeholder = document.getElementById('canvas-placeholder');
+    const placeholderText = document.getElementById('canvas-placeholder-text');
+    if (placeholderText) placeholderText.textContent = text || i18n.t('select_image_prompt');
+    if (placeholder) placeholder.style.display = visible ? 'block' : 'none';
+  },
+
   async selectImage(id, relPath, options = {}) {
     const requestSeq = ++this.imageLoadSeq;
+    if (this.imageLoadAbortController) {
+      this.imageLoadAbortController.abort();
+    }
+    const abortController = new AbortController();
+    this.imageLoadAbortController = abortController;
     this.selectedImageId = id;
     this.selectedImagePath = relPath;
     this.currentPrompts = [];
     this.previews = [];
     this.annotations = [];
+    this.isImageLoading = true;
     this.focusedAnnotationId = null;
     
     if (this.viewer) {
+      this.viewer.clearImage();
       this.viewer.setPrompts([]);
       this.viewer.setPreviews([]);
       this.viewer.setAnnotations([]);
@@ -1394,29 +1416,44 @@ export const ImageWorkspace = {
     this.updateSelectedImageListState();
     this.renderAnnotations();
     
-    const placeholder = document.getElementById('canvas-placeholder');
-    if (placeholder) placeholder.style.display = 'none';
+    this.setCanvasPlaceholder(true, i18n.t('loading_image_annotations'));
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
       const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
-      imageStatus.innerText = `${relPath || id} | ${modeText}`;
+      imageStatus.innerText = `${relPath || id} | ${modeText} | ${i18n.t('loading_image_annotations')}`;
     }
     
     try {
       const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
-      const [_, annsRes] = await Promise.all([
-        this.viewer.loadImage(imgUrl),
-        api.getAnnotations(this.projectId, id),
+      const [loadedImage, annsRes] = await Promise.all([
+        this.viewer.loadImage(imgUrl, { commit: false }),
+        api.getAnnotations(this.projectId, id, { signal: abortController.signal }),
       ]);
       if (this.isUnmounted || requestSeq !== this.imageLoadSeq || String(this.selectedImageId) !== String(id)) return;
+      if (!loadedImage) return;
       this.annotations = annsRes.annotations || [];
+      this.isImageLoading = false;
+      this.viewer.setImage(loadedImage);
       this.viewer.setAnnotations(this.annotations);
       this.viewer.setFocusedAnnotation(null);
+      this.setCanvasPlaceholder(false);
+      if (this.imageLoadAbortController === abortController) {
+        this.imageLoadAbortController = null;
+      }
+      if (imageStatus) {
+        const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
+        imageStatus.innerText = `${relPath || id} | ${modeText}`;
+      }
       this.renderClasses();
       this.renderAnnotations();
       this.scheduleProjectUIStateSave();
       
     } catch(e) {
+      if (e && e.name === 'AbortError') return;
+      if (this.isUnmounted || requestSeq !== this.imageLoadSeq || String(this.selectedImageId) !== String(id)) return;
+      this.isImageLoading = false;
+      this.setCanvasPlaceholder(true, i18n.t('image_load_failed'));
+      this.renderAnnotations();
       console.error("Failed to load image/annotations:", e);
     }
   },
@@ -1659,6 +1696,10 @@ export const ImageWorkspace = {
   renderAnnotations() {
     const list = document.getElementById('annotation-list-container');
     const anns = this.annotations || [];
+    if (this.isImageLoading) {
+      list.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">${i18n.t('loading_image_annotations')}</div>`;
+      return;
+    }
     if (anns.length === 0) {
       list.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>`;
       return;

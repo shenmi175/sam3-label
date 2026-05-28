@@ -1,10 +1,11 @@
 const API_BASE = '/api';
 
 export const api = {
-  async request(method, endpoint, data = null, isFormData = false) {
+  async request(method, endpoint, data = null, isFormData = false, requestOptions = {}) {
     const options = {
       method,
-      headers: {},
+      ...requestOptions,
+      headers: { ...(requestOptions.headers || {}) },
     };
     if (data && !isFormData) {
       options.headers['Content-Type'] = 'application/json';
@@ -126,7 +127,9 @@ export const api = {
     });
   },
   
-  getAnnotations(projectId, imageId) { return this.request('GET', `/projects/${projectId}/images/${imageId}/annotations`); },
+  getAnnotations(projectId, imageId, requestOptions = {}) {
+    return this.request('GET', `/projects/${projectId}/images/${imageId}/annotations`, null, false, requestOptions);
+  },
   saveAnnotations(projectId, imageId, annotations) { return this.request('POST', '/annotations/save', { project_id: projectId, image_id: imageId, annotations}); },
   appendAnnotations(projectId, imageId, annotations) { return this.request('POST', '/annotations/append', { project_id: projectId, image_id: imageId, annotations}); },
   

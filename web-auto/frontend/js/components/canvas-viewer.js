@@ -133,8 +133,41 @@ export class CanvasViewer {
     this.syncCanvasSize();
     this.draw();
   }
+
+  clearImage() {
+    this.imageLoadToken++;
+    this.image = null;
+    this.annotations = [];
+    this.previews = [];
+    this.prompts = [];
+    this.focusedAnnotationId = null;
+    this.isPanning = false;
+    this.isDrawingBox = false;
+    this.boxStart = null;
+    this.boxEnd = null;
+    if (this.fitFrame) {
+      cancelAnimationFrame(this.fitFrame);
+      this.fitFrame = null;
+    }
+    this.draw();
+  }
+
+  setImage(img) {
+    if (!img) return false;
+    this.image = img;
+    this.isPanning = false;
+    this.isDrawingBox = false;
+    this.boxStart = null;
+    this.boxEnd = null;
+    this.fitMode = true;
+    this.syncCanvasSize();
+    this.fitToScreen();
+    this.scheduleFitToScreen();
+    return true;
+  }
   
-  async loadImage(src) {
+  async loadImage(src, options = {}) {
+    const commit = options.commit !== false;
     const token = ++this.imageLoadToken;
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -143,16 +176,12 @@ export class CanvasViewer {
           resolve(false);
           return;
         }
-        this.image = img;
-        this.isPanning = false;
-        this.isDrawingBox = false;
-        this.boxStart = null;
-        this.boxEnd = null;
-        this.fitMode = true;
-        this.syncCanvasSize();
-        this.fitToScreen();
-        this.scheduleFitToScreen();
-        resolve(true);
+        if (commit) {
+          this.setImage(img);
+          resolve(true);
+        } else {
+          resolve(img);
+        }
       };
       img.onerror = (error) => {
         if (token !== this.imageLoadToken) {
