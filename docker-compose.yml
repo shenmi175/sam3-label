@@ -27,7 +27,7 @@ services:
       context: .
       dockerfile: docker/sam3-api.Dockerfile
       args:
-        SAM3_API_BASE_IMAGE: ${SAM3_API_BASE_IMAGE:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}
+        SAM3_API_BASE_IMAGE: ${SAM3_API_BASE_IMAGE:-pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime}
     image: sam3-api:local
     restart: unless-stopped
     shm_size: ${SAM3_API_SHM_SIZE:-8gb}

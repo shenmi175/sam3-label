@@ -262,6 +262,10 @@ default_upload_target_dir() {
   printf '%s/uploads' "$host_root"
 }
 
+default_sam3_api_base_image() {
+  printf '%s' "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
+}
+
 canonical_dir() {
   local value="$1"
   value="$(project_path "$value")"
@@ -549,6 +553,12 @@ ensure_env() {
       ;;
   esac
 
+  local base_image
+  base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
+  if [[ -z "$base_image" || "$base_image" == "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" ]]; then
+    set_env_var SAM3_API_BASE_IMAGE "$(default_sam3_api_base_image)"
+  fi
+
   local access_mode
   access_mode="$(get_env_var SAM3_ACCESS_MODE || true)"
   if [[ -n "$ACCESS_MODE_OVERRIDE" ]]; then
@@ -811,7 +821,7 @@ required_images() {
     printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
   fi
   printf '%s\n' "python:3.11-slim"
-  printf '%s\n' "${base_image:-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime}"
+  printf '%s\n' "${base_image:-$(default_sam3_api_base_image)}"
 }
 
 docker_has_nvidia_runtime() {

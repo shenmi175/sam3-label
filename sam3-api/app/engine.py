@@ -39,6 +39,9 @@ class Sam3InferenceEngine:
         self._api_find_target_cls = None
         self._api_batched_meta_cls = None
         self._api_convert_my_tensors = None
+        self._cuda_autocast_dtype = torch.bfloat16
+        self._cuda_autocast_context = None
+        self._cuda_autocast_context_entered = False
 
     @property
     def loaded(self) -> bool:
@@ -72,6 +75,8 @@ class Sam3InferenceEngine:
         project_root_str = str(self.settings.project_root)
         if project_root_str not in sys.path:
             sys.path.insert(0, project_root_str)
+
+        self._enter_official_cuda_precision_context()
 
         try:
             from sam3.model.sam3_image_processor import Sam3Processor
@@ -138,9 +143,42 @@ class Sam3InferenceEngine:
             self._rebuild_processor(use_size)
         return self._processor
 
+    def _uses_cuda(self) -> bool:
+        return str(self.settings.device).startswith("cuda") and torch.cuda.is_available()
+
+    def _select_official_cuda_autocast_dtype(self):
+        if not self._uses_cuda():
+            return torch.bfloat16
+        try:
+            if not torch.cuda.is_bf16_supported():
+                return torch.float16
+        except Exception:  # noqa: BLE001
+            pass
+        return torch.bfloat16
+
+    def _enter_official_cuda_precision_context(self) -> None:
+        if not self._uses_cuda() or self._cuda_autocast_context_entered:
+            return
+
+        self._cuda_autocast_dtype = self._select_official_cuda_autocast_dtype()
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        # Official SAM3 image examples enter a CUDA autocast context before model build.
+        self._cuda_autocast_context = torch.autocast(
+            device_type="cuda",
+            dtype=self._cuda_autocast_dtype,
+        )
+        self._cuda_autocast_context.__enter__()
+        self._cuda_autocast_context_entered = True
+        logger.info(
+            "enabled SAM3 official CUDA autocast context: dtype=%s",
+            self._cuda_autocast_dtype,
+        )
+
     def _precision_context(self):
-        if str(self.settings.device).startswith("cuda") and torch.cuda.is_available():
-            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        if self._uses_cuda():
+            # Autocast is thread-local; request worker threads need the same official mode.
+            return torch.autocast(device_type="cuda", dtype=self._cuda_autocast_dtype)
         return nullcontext()
 
     @staticmethod
