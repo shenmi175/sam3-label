@@ -5,7 +5,7 @@ function clampThreshold(value) {
 
 function clampBatchSize(value) {
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : 10;
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : 1;
 }
 
 export const store = {

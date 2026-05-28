@@ -27,6 +27,7 @@ export const ImageWorkspace = {
   imageListLoadSeq: 0,
   imageLoadAbortController: null,
   isImageLoading: false,
+  gpuStatusInterval: null,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
   
@@ -57,13 +58,14 @@ export const ImageWorkspace = {
     this.imageListLoadSeq = 0;
     this.imageLoadAbortController = null;
     this.isImageLoading = false;
+    this.gpuStatusInterval = null;
     this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
     
     container.innerHTML = `
       <div class="workspace-layout" style="display: flex; height: 100%; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0; box-sizing: border-box;">
         <!-- 1. Top Navigation Bar -->
-        <div class="neu-box" style="height: 56px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); box-sizing: border-box;">
+        <div class="neu-box" style="height: 56px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); box-sizing: border-box; position: relative;">
           <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
             <span style="font-size: 18px;">⬅️</span>
             <div style="display: flex; flex-direction: column; max-width: 280px;">
@@ -73,6 +75,24 @@ export const ImageWorkspace = {
                 <span>•</span>
                 <span id="ws-pj-type">${i18n.t('image_project')}</span>
               </div>
+            </div>
+          </div>
+
+          <div id="gpu-status-widget" class="neu-box" title="GPU status" style="position: absolute; left: 50%; top: 10px; transform: translateX(-50%); width: 360px; height: 36px; border-radius: 10px; padding: 6px 12px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; box-shadow: var(--neu-inset-sm); background: var(--neu-bg);">
+            <span id="gpu-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; flex-shrink: 0;"></span>
+            <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;">
+              <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); width: 28px;">GPU</span>
+              <div style="height: 6px; flex: 1; min-width: 48px; background: rgba(0,0,0,0.08); border-radius: 999px; overflow: hidden;">
+                <div id="gpu-util-fill" style="width: 0%; height: 100%; background: #10b981;"></div>
+              </div>
+              <span id="gpu-util-text" style="width: 34px; text-align: right; font-size: 10px; font-weight: 800; color: var(--neu-text); font-variant-numeric: tabular-nums;">--</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex: 1.2; min-width: 0;">
+              <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); width: 32px;">显存</span>
+              <div style="height: 6px; flex: 1; min-width: 48px; background: rgba(0,0,0,0.08); border-radius: 999px; overflow: hidden;">
+                <div id="gpu-mem-fill" style="width: 0%; height: 100%; background: #3b82f6;"></div>
+              </div>
+              <span id="gpu-mem-text" style="width: 78px; text-align: right; font-size: 10px; font-weight: 800; color: var(--neu-text); font-variant-numeric: tabular-nums;">--</span>
             </div>
           </div>
           
@@ -310,6 +330,7 @@ export const ImageWorkspace = {
     await this.loadImages();
     await this.restoreSelectedImage();
     this.startHealthCheck();
+    this.startGpuStatusPolling();
   },
 
   initializeLayoutControls() {
@@ -454,6 +475,7 @@ export const ImageWorkspace = {
       this.viewer = null;
     }
     if (this.healthInterval) clearInterval(this.healthInterval);
+    if (this.gpuStatusInterval) clearInterval(this.gpuStatusInterval);
     if (this.filterJobTimer) clearTimeout(this.filterJobTimer);
     if (this.uiStateSaveTimer) {
       clearTimeout(this.uiStateSaveTimer);
@@ -626,6 +648,82 @@ export const ImageWorkspace = {
     check();
     this.healthInterval = setInterval(check, 10000);
   },
+
+  formatGpuMemory(mb) {
+    const value = Number(mb || 0);
+    if (!Number.isFinite(value) || value <= 0) return '--';
+    if (value >= 1024) return `${(value / 1024).toFixed(value >= 10240 ? 0 : 1)}G`;
+    return `${Math.round(value)}M`;
+  },
+
+  setGpuWidgetUnavailable(message = 'GPU unavailable') {
+    const dot = document.getElementById('gpu-status-dot');
+    const utilFill = document.getElementById('gpu-util-fill');
+    const memFill = document.getElementById('gpu-mem-fill');
+    const utilText = document.getElementById('gpu-util-text');
+    const memText = document.getElementById('gpu-mem-text');
+    const widget = document.getElementById('gpu-status-widget');
+    if (dot) dot.style.background = '#94a3b8';
+    if (utilFill) utilFill.style.width = '0%';
+    if (memFill) memFill.style.width = '0%';
+    if (utilText) utilText.textContent = '--';
+    if (memText) memText.textContent = '--';
+    if (widget) widget.title = message;
+  },
+
+  renderGpuWidget(status) {
+    const gpu = status?.result?.gpu || status?.gpu || {};
+    const summary = gpu.summary || {};
+    const gpus = Array.isArray(gpu.gpus) ? gpu.gpus : [];
+    if (!gpu.available || gpus.length === 0) {
+      this.setGpuWidgetUnavailable('sam3-api GPU status unavailable');
+      return;
+    }
+
+    const gpuUtilRaw = summary.gpu_utilization_percent;
+    const gpuUtil = Number.isFinite(Number(gpuUtilRaw)) ? Math.max(0, Math.min(100, Number(gpuUtilRaw))) : null;
+    const memUsed = Number(summary.memory_used_mb || 0);
+    const memTotal = Number(summary.memory_total_mb || 0);
+    const memPctRaw = Number(summary.memory_utilization_percent);
+    const memPct = Number.isFinite(memPctRaw) ? Math.max(0, Math.min(100, memPctRaw)) : 0;
+    const dot = document.getElementById('gpu-status-dot');
+    const utilFill = document.getElementById('gpu-util-fill');
+    const memFill = document.getElementById('gpu-mem-fill');
+    const utilText = document.getElementById('gpu-util-text');
+    const memText = document.getElementById('gpu-mem-text');
+    const widget = document.getElementById('gpu-status-widget');
+    if (dot) dot.style.background = memPct >= 90 ? '#ef4444' : (memPct >= 75 ? '#f59e0b' : '#10b981');
+    if (utilFill) utilFill.style.width = gpuUtil === null ? '0%' : `${gpuUtil.toFixed(0)}%`;
+    if (memFill) memFill.style.width = `${memPct.toFixed(0)}%`;
+    if (utilText) utilText.textContent = gpuUtil === null ? '--' : `${gpuUtil.toFixed(0)}%`;
+    if (memText) memText.textContent = `${this.formatGpuMemory(memUsed)}/${this.formatGpuMemory(memTotal)}`;
+    if (widget) {
+      const lines = gpus.map((item) => {
+        const util = item.gpu_utilization_percent === null || item.gpu_utilization_percent === undefined
+          ? '--'
+          : `${Number(item.gpu_utilization_percent).toFixed(0)}%`;
+        return `GPU${item.index} ${item.name}: ${util}, ${this.formatGpuMemory(item.memory_used_mb)}/${this.formatGpuMemory(item.memory_total_mb)}`;
+      });
+      widget.title = lines.join('\n');
+    }
+  },
+
+  startGpuStatusPolling() {
+    if (this.gpuStatusInterval) clearInterval(this.gpuStatusInterval);
+    const poll = async () => {
+      try {
+        const status = await api.getSam3Status(store.state.config.sam3ApiUrl);
+        if (this.isUnmounted) return;
+        this.renderGpuWidget(status);
+      } catch (err) {
+        if (this.isUnmounted) return;
+        this.setGpuWidgetUnavailable(String(err?.message || err || 'GPU status unavailable'));
+      }
+    };
+    poll();
+    this.gpuStatusInterval = setInterval(poll, 3000);
+  },
+
   bindEvents() {
     // Top Operation Bar
     const sam3UrlInp = document.getElementById('inp-sam3-url');

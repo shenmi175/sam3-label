@@ -48,6 +48,7 @@ class HealthOut(BaseModel):
     video_model_loaded: bool = False
     device: str
     checkpoint_path: str
+    gpu: Optional[dict[str, Any]] = None
 
 
 class VideoSessionStartIn(BaseModel):

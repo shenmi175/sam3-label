@@ -138,6 +138,10 @@ export const api = {
   
   // Samplers & Inference
   testSam3(apiUrl) { return this.request('POST', '/sam3/health', { api_base_url: apiUrl }); },
+  getSam3Status(apiUrl = '') {
+    const suffix = apiUrl ? `?api_base_url=${encodeURIComponent(apiUrl)}` : '';
+    return this.request('GET', `/sam3/status${suffix}`);
+  },
   
   infer(data) { return this.request('POST', '/infer', data); },
   inferExample(data) { return this.request('POST', '/infer/example_preview', data); },

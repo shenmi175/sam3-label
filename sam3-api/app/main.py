@@ -2,6 +2,7 @@ import json
 import logging
 import hmac
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -132,6 +133,82 @@ def _format_exc_message(exc: BaseException) -> str:
     return text or type(exc).__name__
 
 
+def _gpu_status() -> dict:
+    gpus: list[dict] = []
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        for line in proc.stdout.splitlines():
+            parts = [item.strip() for item in line.split(",")]
+            if len(parts) < 6:
+                continue
+            index, name, util, used, total, free = parts[:6]
+            used_mb = float(used)
+            total_mb = float(total)
+            gpus.append(
+                {
+                    "index": int(index),
+                    "name": name,
+                    "gpu_utilization_percent": float(util),
+                    "memory_used_mb": used_mb,
+                    "memory_total_mb": total_mb,
+                    "memory_free_mb": float(free),
+                    "memory_utilization_percent": (used_mb * 100.0 / total_mb) if total_mb > 0 else 0.0,
+                }
+            )
+    except Exception:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                for idx in range(torch.cuda.device_count()):
+                    with torch.cuda.device(idx):
+                        free_bytes, total_bytes = torch.cuda.mem_get_info()
+                    total_mb = float(total_bytes) / 1024.0 / 1024.0
+                    free_mb = float(free_bytes) / 1024.0 / 1024.0
+                    used_mb = max(0.0, total_mb - free_mb)
+                    gpus.append(
+                        {
+                            "index": idx,
+                            "name": torch.cuda.get_device_name(idx),
+                            "gpu_utilization_percent": None,
+                            "memory_used_mb": used_mb,
+                            "memory_total_mb": total_mb,
+                            "memory_free_mb": free_mb,
+                            "memory_utilization_percent": (used_mb * 100.0 / total_mb) if total_mb > 0 else 0.0,
+                        }
+                    )
+        except Exception:
+            gpus = []
+
+    total_mem = sum(float(item.get("memory_total_mb") or 0.0) for item in gpus)
+    used_mem = sum(float(item.get("memory_used_mb") or 0.0) for item in gpus)
+    util_values = [
+        float(item["gpu_utilization_percent"])
+        for item in gpus
+        if item.get("gpu_utilization_percent") is not None
+    ]
+    return {
+        "available": bool(gpus),
+        "gpus": gpus,
+        "summary": {
+            "gpu_utilization_percent": max(util_values) if util_values else None,
+            "memory_used_mb": used_mem,
+            "memory_total_mb": total_mem,
+            "memory_utilization_percent": (used_mem * 100.0 / total_mem) if total_mem > 0 else None,
+        },
+    }
+
+
 def _normalize_image_engine_input_size(
     engine: Sam3InferenceEngine,
     input_size: object,
@@ -242,6 +319,7 @@ def create_app() -> FastAPI:
             "video_model_loaded": video_engine.loaded,
             "device": settings.device,
             "checkpoint_path": str(settings.checkpoint_path),
+            "gpu": _gpu_status(),
         }
 
     @app.post("/v1/warmup")

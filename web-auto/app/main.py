@@ -5876,6 +5876,16 @@ def sam3_health(payload: HealthApiIn) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get('/api/sam3/status')
+def sam3_status(api_base_url: Optional[str] = Query(default=None)) -> dict[str, Any]:
+    target_url = str(api_base_url or _effective_sam3_api_base_url()).strip() or DEFAULT_API_BASE_URL
+    try:
+        result = sam3.health(target_url)
+        return {'ok': True, 'api_base_url': target_url, 'result': result}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post('/api/filter/intelligent/preview')
 def preview_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
     project = _get_project_or_404(payload.project_id)
