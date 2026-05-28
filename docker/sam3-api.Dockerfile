@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/cache/huggingface \
     TORCH_HOME=/cache/torch \
-    PYTHONPATH=/app/sam3-api
+    PYTHONPATH=/app/sam3-api:/app
 
 WORKDIR /app
 
@@ -20,6 +20,9 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/sam3-api-runtime-requirements.txt
 
 COPY sam3-api /app/sam3-api
+COPY sam3 /app/sam3
+
+RUN python -c "import sam3; from app.engine import Sam3InferenceEngine; print('sam3-api runtime imports ok')"
 
 WORKDIR /app/sam3-api
 EXPOSE 8001
