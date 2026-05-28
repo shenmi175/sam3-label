@@ -19,6 +19,8 @@ http://服务器IP:8000
 
 如果旧 `.env` 里还保留 `SAM3_API_BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`，运行 `./deploy.sh update --direct` 会自动更新为官方对齐的默认镜像。
 
+PyTorch 2.10 镜像的系统 Python 启用了 PEP 668 限制，`sam3-api` 会在镜像内使用 `/opt/venv` 安装项目依赖，并继承基础镜像自带的 torch/torchvision。
+
 ## 更新
 
 ```bash
