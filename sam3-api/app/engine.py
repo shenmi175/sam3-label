@@ -138,6 +138,11 @@ class Sam3InferenceEngine:
             self._rebuild_processor(use_size)
         return self._processor
 
+    def _precision_context(self):
+        if str(self.settings.device).startswith("cuda") and torch.cuda.is_available():
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return nullcontext()
+
     @staticmethod
     def _xyxy_to_cxcywh_norm(
         x1: float,
@@ -481,7 +486,7 @@ class Sam3InferenceEngine:
             input_size,
             default=self._default_processor_resolution,
         )
-        with self._infer_lock:
+        with self._infer_lock, self._precision_context():
             if self._model is None or self._api_copy_to_device is None:
                 raise RuntimeError("SAM3 official batch inference helpers are not initialized")
 
@@ -569,7 +574,7 @@ class Sam3InferenceEngine:
 
         start = time.perf_counter()
 
-        with self._infer_lock:
+        with self._infer_lock, self._precision_context():
             state: dict[str, Any] = {}
             processor = self._get_processor_for_size(input_size)
             processor.set_confidence_threshold(float(threshold))
@@ -604,7 +609,7 @@ class Sam3InferenceEngine:
             elif mode_norm in {"points", "point", "boxes", "box"}:
                 if prompt_norm:
                     # Optional text hint. If empty, processor uses "visual".
-                    state = self._processor.set_text_prompt(prompt_norm, state=state)
+                    state = processor.set_text_prompt(prompt_norm, state=state)
 
                 if mode_norm in {"points", "point"}:
                     if not points:
