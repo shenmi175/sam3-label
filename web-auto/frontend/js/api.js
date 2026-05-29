@@ -147,6 +147,12 @@ export const api = {
     const suffix = apiUrl ? `?api_base_url=${encodeURIComponent(apiUrl)}` : '';
     return this.request('GET', `/sam3/status${suffix}`);
   },
+  getServicesStatus() { return this.request('GET', '/services/status'); },
+  controlService(service, action) { return this.request('POST', `/services/${encodeURIComponent(service)}/${encodeURIComponent(action)}`); },
+  getServiceLogs(service, tail = 120) { return this.request('GET', `/services/${encodeURIComponent(service)}/logs?tail=${tail}`); },
+  getSapiensStatus() { return this.request('GET', '/sapiens/status'); },
+  downloadSapiensCheckpoint() { return this.request('POST', '/sapiens/checkpoint/download'); },
+  getSapiensCheckpointDownload(jobId) { return this.request('GET', `/sapiens/checkpoint/download/${encodeURIComponent(jobId)}`); },
   
   infer(data) { return this.request('POST', '/infer', data); },
   inferExample(data) { return this.request('POST', '/infer/example_preview', data); },

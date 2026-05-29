@@ -3,3 +3,8 @@ services:
     gpus: all
     environment:
       SAM3_API_DEVICE: cuda
+
+  sapiens-api:
+    gpus: all
+    environment:
+      SAPIENS_DEVICE: cuda:0

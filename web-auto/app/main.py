@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -39,6 +40,10 @@ DEFAULT_UPLOAD_TARGET_DIR = Path(
 ).expanduser().resolve()
 APP_CONFIG_FILE = DATA_DIR / 'global_config.json'
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
+DEFAULT_SAPIENS_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL', 'http://sapiens-api:8010').strip() or 'http://sapiens-api:8010'
+SAPIENS_API_TOKEN = os.getenv('WEB_AUTO_SAPIENS_API_TOKEN', '').strip()
+OPS_API_BASE_URL = os.getenv('WEB_AUTO_OPS_API_BASE_URL', 'http://ops-api:8020').strip().rstrip('/')
+OPS_API_TOKEN = os.getenv('WEB_AUTO_OPS_API_TOKEN', '').strip()
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
 MAX_PENDING_IMAGE_IDS_IN_JOB_STATE = 200
 
@@ -3191,6 +3196,80 @@ def _effective_sam3_api_base_url() -> str:
     return DEFAULT_API_BASE_URL
 
 
+def _ops_headers() -> dict[str, str]:
+    headers = {'Accept': 'application/json'}
+    if OPS_API_TOKEN:
+        headers['Authorization'] = f'Bearer {OPS_API_TOKEN}'
+    return headers
+
+
+def _ops_request(method: str, path: str, payload: Optional[dict[str, Any]] = None, timeout: float = 10.0) -> dict[str, Any]:
+    if not OPS_API_BASE_URL:
+        raise RuntimeError('ops-api is not configured')
+    url = OPS_API_BASE_URL + '/' + path.lstrip('/')
+    try:
+        response = requests.request(
+            method.upper(),
+            url,
+            json=payload,
+            headers=_ops_headers(),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f'ops-api request failed: {exc}') from exc
+    try:
+        data = response.json() if response.text else {}
+    except Exception:
+        data = {'raw': response.text[:400]}
+    if not response.ok:
+        detail = data.get('detail') if isinstance(data, dict) else None
+        raise RuntimeError(f'ops-api HTTP {response.status_code}: {detail or data}')
+    return data if isinstance(data, dict) else {}
+
+
+def _sapiens_headers() -> dict[str, str]:
+    headers = {'Accept': 'application/json'}
+    if SAPIENS_API_TOKEN:
+        headers['Authorization'] = f'Bearer {SAPIENS_API_TOKEN}'
+    return headers
+
+
+def _sapiens_request(method: str, path: str, payload: Optional[dict[str, Any]] = None, timeout: float = 10.0) -> dict[str, Any]:
+    base_url = DEFAULT_SAPIENS_API_BASE_URL.rstrip('/')
+    url = base_url + '/' + path.lstrip('/')
+    try:
+        response = requests.request(
+            method.upper(),
+            url,
+            json=payload,
+            headers=_sapiens_headers(),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f'sapiens-api request failed: {exc}') from exc
+    try:
+        data = response.json() if response.text else {}
+    except Exception:
+        data = {'raw': response.text[:400]}
+    if not response.ok:
+        detail = data.get('detail') if isinstance(data, dict) else None
+        raise RuntimeError(f'sapiens-api HTTP {response.status_code}: {detail or data}')
+    return data if isinstance(data, dict) else {}
+
+
+def _service_management_unavailable(error: str) -> dict[str, Any]:
+    return {
+        'ok': False,
+        'ops_available': False,
+        'error': error,
+        'services': [
+            {'service': 'sam3-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart sam3-api'},
+            {'service': 'sapiens-api', 'status': 'unknown', 'manage_command': './deploy.sh sapiens enable'},
+            {'service': 'caddy', 'status': 'unknown', 'manage_command': './deploy.sh install --proxy'},
+        ],
+    }
+
+
 def _cache_dir_info() -> dict[str, Any]:
     return {
         'cache_dir': str(CURRENT_DATA_DIR),
@@ -3271,6 +3350,8 @@ def _global_config_info() -> dict[str, Any]:
         'upload_target_dir': str(upload_dir),
         'sam3_api_base_url': _effective_sam3_api_base_url(),
         'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
+        'sapiens_api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
+        'ops_api_configured': bool(OPS_API_BASE_URL),
         'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
         'auth_enabled': AUTH_ENABLED,
         'session_ttl_seconds': SESSION_TTL_SECONDS,
@@ -5130,6 +5211,8 @@ def get_default_config() -> dict[str, Any]:
     return {
         'sam3_api_base_url': _effective_sam3_api_base_url(),
         'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
+        'sapiens_api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
+        'ops_api_configured': bool(OPS_API_BASE_URL),
         'data_dir': str(CURRENT_DATA_DIR),
         'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
     }
@@ -5774,6 +5857,70 @@ def sam3_health(payload: HealthApiIn) -> dict[str, Any]:
     try:
         result = sam3.health(payload.api_base_url)
         return {'ok': True, 'result': result}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get('/api/services/status')
+def services_status() -> dict[str, Any]:
+    try:
+        result = _ops_request('GET', '/v1/services', timeout=8.0)
+        result['ok'] = True
+        result['ops_available'] = True
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return _service_management_unavailable(str(exc))
+
+
+@app.post('/api/services/{service}/{action}')
+def control_service(service: str, action: str) -> dict[str, Any]:
+    clean_service = str(service or '').strip()
+    clean_action = str(action or '').strip().lower()
+    if clean_service == 'web-auto':
+        raise HTTPException(status_code=400, detail='web-auto cannot be controlled from the web UI')
+    if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
+        raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
+    if clean_action not in {'start', 'stop', 'restart'}:
+        raise HTTPException(status_code=400, detail='action must be start, stop, or restart')
+    try:
+        return _ops_request('POST', f'/v1/services/{clean_service}/{clean_action}', timeout=35.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get('/api/services/{service}/logs')
+def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) -> dict[str, Any]:
+    clean_service = str(service or '').strip()
+    if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
+        raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
+    try:
+        return _ops_request('GET', f'/v1/services/{clean_service}/logs?tail={tail}', timeout=12.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get('/api/sapiens/status')
+def sapiens_status() -> dict[str, Any]:
+    try:
+        health_data = _sapiens_request('GET', '/health', timeout=8.0)
+        checkpoint_data = _sapiens_request('GET', '/v1/checkpoints/status', timeout=8.0)
+        return {'ok': True, 'health': health_data, 'checkpoint': checkpoint_data}
+    except Exception as exc:  # noqa: BLE001
+        return {'ok': False, 'error': str(exc), 'api_base_url': DEFAULT_SAPIENS_API_BASE_URL}
+
+
+@app.post('/api/sapiens/checkpoint/download')
+def sapiens_checkpoint_download() -> dict[str, Any]:
+    try:
+        return _sapiens_request('POST', '/v1/checkpoints/download', {}, timeout=12.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get('/api/sapiens/checkpoint/download/{job_id}')
+def sapiens_checkpoint_download_status(job_id: str) -> dict[str, Any]:
+    try:
+        return _sapiens_request('GET', f'/v1/checkpoints/download/{job_id}', timeout=8.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

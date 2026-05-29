@@ -13,7 +13,9 @@ docker-compose.mounts.yml
 **/venv
 web-auto/data
 sam3-api/data
+sapiens-api/data
 /sam3_checkpoints
+/sapiens_checkpoints
 /datasets
 /outputs
 *.log

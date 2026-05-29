@@ -46,6 +46,8 @@ cd ~/zmb_work/sam3
 ./deploy.sh data-root add /path/to/data-root --default
 ```
 
+项目管理页面另有“模型服务”区域，可管理 `sam3-api`、`sapiens-api` 和可选 `caddy` 容器。`sapiens-api` 使用独立容器和独立 checkpoint 目录，详见 [Sapiens2 服务](sapiens2-service.md)。
+
 ## 登录管理
 
 用于修改当前管理员密码。修改后会清除当前登录会话，需要重新登录。

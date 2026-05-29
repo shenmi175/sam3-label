@@ -14,6 +14,12 @@ export const ProjectsPage = {
   _cachedProjects: [],
   _hasProjectCache: false,
   _lastHealthState: null,
+  _serviceStatus: null,
+  _sapiensStatus: null,
+  _serviceTimer: null,
+  _sapiensDownloadJobId: '',
+  _sapiensDownloadStarted: false,
+  _sapiensDownloadTimer: null,
 
   async render(container) {
     this.container = container;
@@ -43,6 +49,18 @@ export const ProjectsPage = {
         </div>
 
         <div style="padding: 30px 40px; flex: 1; min-height: 0; overflow-y: auto;">
+          <div id="model-services-panel" class="neu-card" style="padding: 18px; margin-bottom: 24px; display: grid; gap: 14px;">
+            <div style="display:flex; justify-content:space-between; gap: 12px; align-items:center; flex-wrap: wrap;">
+              <div>
+                <h2 style="margin:0; font-size: 18px;">${i18n.t('model_services')}</h2>
+                <div style="font-size: 12px; color: var(--neu-text-light); margin-top: 4px;">${i18n.t('model_services_hint')}</div>
+              </div>
+              <button id="btn-refresh-services" class="neu-button" style="padding: 8px 14px;">${i18n.t('refresh')}</button>
+            </div>
+            <div id="model-services-list" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px;">
+              <div style="color: var(--neu-text-light); font-size: 13px;">${i18n.t('loading_services')}</div>
+            </div>
+          </div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; gap: 16px;">
             <h2 style="margin:0; font-size: 20px;">${i18n.t('project_list')}</h2>
             <div id="pj-count-label" style="font-size: 13px; color: var(--neu-text-light);">${i18n.t('total_projects', {count: '<span id="pj-count">0</span>'})}</div>
@@ -185,12 +203,17 @@ export const ProjectsPage = {
     this.loadProjects({ showLoading: !this._hasProjectCache });
     this.checkHealth();
     this.loadUploadConfig();
+    this.loadServices();
   },
 
   unmount() {
     this.container = null;
     if (this._healthTimer) clearInterval(this._healthTimer);
     this._healthTimer = null;
+    if (this._serviceTimer) clearInterval(this._serviceTimer);
+    this._serviceTimer = null;
+    if (this._sapiensDownloadTimer) clearInterval(this._sapiensDownloadTimer);
+    this._sapiensDownloadTimer = null;
     if (this._activeUploadXhr) this._activeUploadXhr.abort();
   },
 
@@ -260,6 +283,7 @@ export const ProjectsPage = {
     btnSubmitNew.onclick = () => this.submitProject();
     btnSet.onclick = () => router.navigate('/settings');
     btnDatasetUpload.onclick = () => this.showDatasetUpload();
+    document.getElementById('btn-refresh-services').onclick = () => this.loadServices({ force: true });
     document.getElementById('btn-close-restore-project').onclick = () => this.closeRestoreModal();
     document.getElementById('btn-cancel-restore-project').onclick = () => this.closeRestoreModal();
     document.getElementById('btn-scan-existing-projects').onclick = () => this.scanExistingProjects();
@@ -293,6 +317,207 @@ export const ProjectsPage = {
       dropZone.style.background = 'transparent';
       this.setDatasetFiles(e.dataTransfer.files);
     };
+  },
+
+  async loadServices(options = {}) {
+    if (!this.container) return;
+    try {
+      const [servicesResult, sapiensResult] = await Promise.allSettled([
+        api.getServicesStatus(),
+        api.getSapiensStatus(),
+      ]);
+      this._serviceStatus = servicesResult.status === 'fulfilled'
+        ? servicesResult.value
+        : { ok: false, error: servicesResult.reason?.message || 'service status failed', services: [] };
+      this._sapiensStatus = sapiensResult.status === 'fulfilled'
+        ? sapiensResult.value
+        : { ok: false, error: sapiensResult.reason?.message || 'sapiens status failed' };
+      this.renderServicePanel();
+      this.autoStartSapiensDownload();
+    } catch(e) {
+      showToast(e.message, 'error');
+    }
+    if (!this._serviceTimer) {
+      this._serviceTimer = setInterval(() => this.loadServices(), 5000);
+    }
+  },
+
+  serviceByName(name) {
+    const services = this._serviceStatus?.services || [];
+    return services.find((item) => item.service === name) || { service: name, status: 'unknown', containers: [] };
+  },
+
+  isServiceRunning(name) {
+    return this.serviceByName(name).status === 'running';
+  },
+
+  renderServicePanel() {
+    const list = document.getElementById('model-services-list');
+    if (!list) return;
+    const names = ['sam3-api', 'sapiens-api', 'caddy'];
+    list.innerHTML = names.map((name) => this.renderServiceCard(name)).join('');
+  },
+
+  renderServiceCard(name) {
+    const service = this.serviceByName(name);
+    const status = String(service.status || 'unknown');
+    const isRunning = status === 'running';
+    const isMissing = status === 'not_created';
+    const operation = service.operation || null;
+    const opRunning = operation && ['queued', 'running'].includes(String(operation.status || ''));
+    const color = isRunning ? '#10b981' : (isMissing || status === 'creating' ? '#f59e0b' : '#ef4444');
+    const command = service.manage_command || (name === 'sapiens-api' ? './deploy.sh sapiens enable' : `./deploy.sh services start ${name}`);
+    const title = name === 'sapiens-api' ? 'sapiens-api (Sapiens2-5B)' : name;
+    const actionButtons = opRunning
+      ? `<button class="neu-button" disabled style="padding: 6px 10px;">${i18n.t('creating_service')}</button>`
+      : isMissing
+      ? `<button class="neu-button" onclick="window.projectsPage.controlService('${this.jsString(name)}', 'start')" style="padding: 6px 10px; color: var(--neu-text-active); font-weight:700;">${i18n.t(name === 'sapiens-api' ? 'enable_service' : 'start')}</button>
+         <button class="neu-button" onclick="window.projectsPage.copyText('${this.jsString(command)}')" style="padding: 6px 10px;">${i18n.t('copy_command')}</button>`
+      : `
+        <button class="neu-button" onclick="window.projectsPage.controlService('${this.jsString(name)}', '${isRunning ? 'stop' : 'start'}')" style="padding: 6px 10px;">${isRunning ? i18n.t('stop') : i18n.t('start')}</button>
+        <button class="neu-button" onclick="window.projectsPage.controlService('${this.jsString(name)}', 'restart')" style="padding: 6px 10px;">${i18n.t('restart')}</button>
+      `;
+    const sapiensBlock = name === 'sapiens-api' ? this.renderSapiensCheckpointBlock(isRunning) : '';
+    const operationBlock = operation ? this.renderServiceOperation(operation) : '';
+    return `
+      <div class="neu-box" style="padding: 14px; box-shadow: var(--neu-inset); display: grid; gap: 12px; min-width: 0;">
+        <div style="display:flex; justify-content:space-between; gap: 12px; align-items:flex-start;">
+          <div style="min-width:0;">
+            <div style="font-weight:800; overflow-wrap:anywhere;">${this.escapeHtml(title)}</div>
+            <div style="font-size:12px; color: var(--neu-text-light); margin-top:4px;">${this.escapeHtml(status)}</div>
+          </div>
+          <span style="width: 10px; height: 10px; border-radius: 50%; background:${color}; margin-top: 4px; flex:0 0 auto;"></span>
+        </div>
+        ${isMissing ? `<div style="font-size:12px; color: var(--neu-text-light); overflow-wrap:anywhere;">${this.escapeHtml(command)}</div>` : ''}
+        ${operationBlock}
+        ${sapiensBlock}
+        <div style="display:flex; gap: 8px; flex-wrap: wrap;">${actionButtons}</div>
+      </div>
+    `;
+  },
+
+  renderServiceOperation(operation) {
+    const status = String(operation.status || '');
+    const phase = String(operation.phase || '');
+    const logs = Array.isArray(operation.logs) ? operation.logs.slice(-4).join('\n') : '';
+    const color = status === 'failed' ? '#ef4444' : (status === 'completed' ? '#10b981' : 'var(--neu-text-active)');
+    return `
+      <div style="display:grid; gap: 6px; font-size: 12px;">
+        <div style="color:${color}; font-weight:700;">${this.escapeHtml(status || 'operation')} ${phase ? `· ${this.escapeHtml(phase)}` : ''}</div>
+        ${logs ? `<pre style="margin:0; white-space:pre-wrap; max-height:92px; overflow:auto; font-size:11px; color:var(--neu-text-light); background:rgba(0,0,0,0.04); padding:8px; border-radius:6px;">${this.escapeHtml(logs)}</pre>` : ''}
+      </div>
+    `;
+  },
+
+  renderSapiensCheckpointBlock(isRunning) {
+    const status = this._sapiensStatus || {};
+    if (!isRunning) {
+      return `<div style="font-size:12px; color: var(--neu-text-light);">${i18n.t('sapiens_enable_first')}</div>`;
+    }
+    if (!status.ok) {
+      return `<div style="font-size:12px; color:#ef4444; overflow-wrap:anywhere;">${this.escapeHtml(status.error || i18n.t('backend_offline'))}</div>`;
+    }
+    const checkpoint = status.checkpoint || {};
+    const exists = Boolean(checkpoint.checkpoint_exists);
+    const job = checkpoint.download_job || null;
+    if (exists) {
+      return `<div style="font-size:12px; color:#10b981; overflow-wrap:anywhere;">${i18n.t('sapiens_checkpoint_ready')}: ${this.escapeHtml(checkpoint.checkpoint_path || '')}</div>`;
+    }
+    const percent = Number(job?.percent || 0);
+    const jobStatus = String(job?.status || '');
+    const downloaded = this.formatBytes(job?.downloaded_bytes || checkpoint.partial_size_bytes || 0);
+    const total = Number(job?.total_bytes || 0) > 0 ? this.formatBytes(job.total_bytes) : '--';
+    return `
+      <div style="display:grid; gap: 8px;">
+        <div style="font-size:12px; color:#f59e0b; overflow-wrap:anywhere;">${i18n.t('sapiens_checkpoint_missing')}: ${this.escapeHtml(checkpoint.checkpoint_path || '')}</div>
+        <div style="width:100%; height:8px; border-radius:999px; overflow:hidden; background:rgba(0,0,0,0.08); box-shadow:var(--neu-inset);">
+          <div style="width:${Math.max(0, Math.min(100, percent))}%; height:100%; background:var(--neu-text-active); transition:width .2s ease;"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--neu-text-light);">
+          <span>${jobStatus || i18n.t('waiting_download')}</span>
+          <span>${percent.toFixed(percent > 0 ? 1 : 0)}% · ${downloaded} / ${total}</span>
+        </div>
+        <button class="neu-button" onclick="window.projectsPage.startSapiensDownload()" style="padding:6px 10px; justify-self:start;">${i18n.t('download_sapiens_model')}</button>
+      </div>
+    `;
+  },
+
+  async controlService(service, action) {
+    try {
+      await api.controlService(service, action);
+      showToast(i18n.t('service_action_sent'));
+      await this.loadServices({ force: true });
+    } catch(e) {
+      showToast(e.message, 'error');
+    }
+  },
+
+  async copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(i18n.t('command_copied'));
+    } catch(e) {
+      showToast(i18n.t('copy_failed'), 'error');
+    }
+  },
+
+  autoStartSapiensDownload() {
+    const checkpoint = this._sapiensStatus?.checkpoint || {};
+    const job = checkpoint.download_job || null;
+    if (job?.job_id && ['queued', 'running'].includes(String(job.status || ''))) {
+      this._sapiensDownloadJobId = job.job_id;
+      this.ensureSapiensDownloadPolling();
+      return;
+    }
+    if (!this.isServiceRunning('sapiens-api') || !this._sapiensStatus?.ok || checkpoint.checkpoint_exists || this._sapiensDownloadStarted) {
+      return;
+    }
+    this.startSapiensDownload();
+  },
+
+  async startSapiensDownload() {
+    try {
+      this._sapiensDownloadStarted = true;
+      const data = await api.downloadSapiensCheckpoint();
+      const job = data.job || {};
+      this._sapiensDownloadJobId = job.job_id || '';
+      if (this._sapiensStatus?.checkpoint) this._sapiensStatus.checkpoint.download_job = job;
+      this.renderServicePanel();
+      this.ensureSapiensDownloadPolling();
+      showToast(i18n.t('sapiens_download_started'));
+    } catch(e) {
+      showToast(e.message, 'error');
+    }
+  },
+
+  ensureSapiensDownloadPolling() {
+    if (this._sapiensDownloadTimer || !this._sapiensDownloadJobId) return;
+    this._sapiensDownloadTimer = setInterval(() => this.pollSapiensDownload(), 1000);
+    this.pollSapiensDownload();
+  },
+
+  async pollSapiensDownload() {
+    if (!this._sapiensDownloadJobId) return;
+    try {
+      const data = await api.getSapiensCheckpointDownload(this._sapiensDownloadJobId);
+      const job = data.job || {};
+      if (this._sapiensStatus?.checkpoint) this._sapiensStatus.checkpoint.download_job = job;
+      this.renderServicePanel();
+      if (['completed', 'failed'].includes(String(job.status || ''))) {
+        clearInterval(this._sapiensDownloadTimer);
+        this._sapiensDownloadTimer = null;
+        if (job.status === 'completed') {
+          showToast(i18n.t('sapiens_download_done'));
+          await this.loadServices({ force: true });
+        } else {
+          showToast(job.error || i18n.t('sapiens_download_failed'), 'error');
+        }
+      }
+    } catch(e) {
+      clearInterval(this._sapiensDownloadTimer);
+      this._sapiensDownloadTimer = null;
+      showToast(e.message, 'error');
+    }
   },
 
   async submitProject() {

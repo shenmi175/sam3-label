@@ -36,6 +36,8 @@ Commands:
   stop               Stop and remove containers, preserving data.
   status             Show container status.
   logs [service]     Follow logs for all services or one service.
+  services           Manage model/runtime containers with Docker Compose.
+  sapiens            Enable, disable, or inspect optional sapiens-api.
   doctor             Run DNS, port, HTTPS, and Caddy diagnostics.
   reset-admin [pass] Reset web-auto admin password and recreate web-auto.
   data-root          Manage extra host data roots mounted into web-auto.
@@ -72,6 +74,10 @@ Examples:
   ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
   ./deploy.sh data-root remove /media/enabot/disk/zmb_datas
   ./deploy.sh logs caddy
+  ./deploy.sh services status
+  ./deploy.sh services restart sam3-api
+  ./deploy.sh sapiens enable
+  ./deploy.sh sapiens status
   ./deploy.sh doctor
 EOF
 }
@@ -266,6 +272,10 @@ default_sam3_api_base_image() {
   printf '%s' "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
 }
 
+default_sapiens_api_base_image() {
+  printf '%s' "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
+}
+
 canonical_dir() {
   local value="$1"
   value="$(project_path "$value")"
@@ -377,6 +387,12 @@ lines = [
     "  web-auto:",
     "    volumes:",
 ]
+for root in extra:
+    lines.append(f"      - {dq(root + ':' + root + ':rw')}")
+lines.extend([
+    "  sapiens-api:",
+    "    volumes:",
+])
 for root in extra:
     lines.append(f"      - {dq(root + ':' + root + ':rw')}")
 out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -517,6 +533,22 @@ ensure_env() {
     info "Generated SAM3_API_TOKEN in .env"
   fi
 
+  local sapiens_token ops_token
+  sapiens_token="$(get_env_var SAPIENS_API_TOKEN || true)"
+  if [[ -z "${sapiens_token//[[:space:]]/}" ]]; then
+    sapiens_token="$(generate_token)"
+    set_env_var SAPIENS_API_TOKEN "$sapiens_token"
+    info "Generated SAPIENS_API_TOKEN in .env"
+  fi
+  ops_token="$(get_env_var OPS_API_TOKEN || true)"
+  if [[ -z "${ops_token//[[:space:]]/}" ]]; then
+    ops_token="$(generate_token)"
+    set_env_var OPS_API_TOKEN "$ops_token"
+    info "Generated OPS_API_TOKEN in .env"
+  fi
+  [[ -n "$(get_env_var OPS_ALLOWED_SERVICES || true)" ]] || set_env_var OPS_ALLOWED_SERVICES "sam3-api,sapiens-api,caddy"
+  set_env_var OPS_HOST_PROJECT_ROOT "$ROOT_DIR"
+
   local admin_user admin_password
   admin_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
   admin_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
@@ -543,10 +575,12 @@ ensure_env() {
     gpu)
       set_env_var SAM3_DEPLOY_PROFILE "gpu"
       set_env_var SAM3_API_DEVICE "cuda"
+      [[ -n "$(get_env_var SAPIENS_DEVICE || true)" ]] || set_env_var SAPIENS_DEVICE "cuda:0"
       ;;
     cpu)
       set_env_var SAM3_DEPLOY_PROFILE "cpu"
       set_env_var SAM3_API_DEVICE "cpu"
+      set_env_var SAPIENS_DEVICE "cpu"
       ;;
     *)
       die "Invalid SAM3_DEPLOY_PROFILE: $profile. Use gpu or cpu."
@@ -558,6 +592,20 @@ ensure_env() {
   if [[ -z "$base_image" || "$base_image" == "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" ]]; then
     set_env_var SAM3_API_BASE_IMAGE "$(default_sam3_api_base_image)"
   fi
+
+  local sapiens_base_image sapiens_enabled sapiens_model
+  sapiens_base_image="$(get_env_var SAPIENS_API_BASE_IMAGE || true)"
+  if [[ -z "$sapiens_base_image" || "$sapiens_base_image" == "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" ]]; then
+    set_env_var SAPIENS_API_BASE_IMAGE "$(default_sapiens_api_base_image)"
+  fi
+  sapiens_enabled="$(get_env_var SAPIENS_ENABLED || true)"
+  [[ -n "$sapiens_enabled" ]] || set_env_var SAPIENS_ENABLED "0"
+  sapiens_model="$(get_env_var SAPIENS_MODEL_NAME || true)"
+  if [[ "$sapiens_model" != "sapiens2_5b" ]]; then
+    set_env_var SAPIENS_MODEL_NAME "sapiens2_5b"
+  fi
+  [[ -n "$(get_env_var SAPIENS_API_DATA_DIR || true)" ]] || set_env_var SAPIENS_API_DATA_DIR "./sapiens-api/data"
+  [[ -n "$(get_env_var SAPIENS_CHECKPOINT_ROOT || true)" ]] || set_env_var SAPIENS_CHECKPOINT_ROOT "./sapiens_checkpoints"
 
   local access_mode
   access_mode="$(get_env_var SAM3_ACCESS_MODE || true)"
@@ -707,14 +755,18 @@ if changed:
 PY
   fi
 
-  local web_data sam_data ckpt_dir
+  local web_data sam_data ckpt_dir sapiens_data sapiens_ckpt
   web_data="$(get_env_var WEB_AUTO_DATA_DIR || true)"
   sam_data="$(get_env_var SAM3_API_DATA_DIR || true)"
   ckpt_dir="$(get_env_var SAM3_CHECKPOINT_DIR || true)"
+  sapiens_data="$(get_env_var SAPIENS_API_DATA_DIR || true)"
+  sapiens_ckpt="$(get_env_var SAPIENS_CHECKPOINT_ROOT || true)"
   mkdir -p \
     "$(project_path "${web_data:-./web-auto/data}")" \
     "$(project_path "${sam_data:-./sam3-api/data}")" \
     "$(project_path "${ckpt_dir:-./sam3_checkpoints}")" \
+    "$(project_path "${sapiens_data:-./sapiens-api/data}")" \
+    "$(project_path "${sapiens_ckpt:-./sapiens_checkpoints}")" \
     "$host_root" \
     "$upload_target"
 }
@@ -735,6 +787,12 @@ using_proxy_mode() {
   [[ "$(effective_access_mode)" == "proxy" ]]
 }
 
+sapiens_enabled() {
+  local enabled
+  enabled="$(get_env_var SAPIENS_ENABLED || true)"
+  [[ "${enabled,,}" =~ ^(1|true|yes|on)$ ]]
+}
+
 compose_args() {
   printf '%s\0' -f docker-compose.yml
   if [[ -f "$MOUNTS_COMPOSE_FILE" ]]; then
@@ -742,6 +800,9 @@ compose_args() {
   fi
   if using_proxy_mode; then
     printf '%s\0' --profile proxy
+  fi
+  if sapiens_enabled; then
+    printf '%s\0' --profile sapiens
   fi
   if [[ "$(effective_profile)" == "gpu" ]]; then
     printf '%s\0' -f docker-compose.gpu.yml
@@ -764,6 +825,10 @@ compose_env_defaults() {
   export ACME_EMAIL="${ACME_EMAIL:-${value:-status@example.org}}"
   value="$(get_env_var SAM3_API_TOKEN || true)"
   export SAM3_API_TOKEN="${SAM3_API_TOKEN:-${value:-status-token}}"
+  value="$(get_env_var SAPIENS_API_TOKEN || true)"
+  export SAPIENS_API_TOKEN="${SAPIENS_API_TOKEN:-${value:-status-sapiens-token}}"
+  value="$(get_env_var OPS_API_TOKEN || true)"
+  export OPS_API_TOKEN="${OPS_API_TOKEN:-${value:-status-ops-token}}"
   value="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
   export WEB_AUTO_ADMIN_PASSWORD="${WEB_AUTO_ADMIN_PASSWORD:-${value:-status-password}}"
 }
@@ -814,14 +879,18 @@ PY
 }
 
 required_images() {
-  local caddy_tag base_image
+  local caddy_tag base_image sapiens_base_image
   caddy_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
   base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
+  sapiens_base_image="$(get_env_var SAPIENS_API_BASE_IMAGE || true)"
   if using_proxy_mode; then
     printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
   fi
   printf '%s\n' "python:3.11-slim"
   printf '%s\n' "${base_image:-$(default_sam3_api_base_image)}"
+  if sapiens_enabled; then
+    printf '%s\n' "${sapiens_base_image:-$(default_sapiens_api_base_image)}"
+  fi
 }
 
 docker_has_nvidia_runtime() {
@@ -832,6 +901,18 @@ docker_has_nvidia_runtime() {
     in_runtimes && /(^|[[:space:]])nvidia([[:space:]]|$)/ { found = 1 }
     END { exit found ? 0 : 1 }
   '
+}
+
+ensure_sapiens_submodule() {
+  if [[ ! -d "$ROOT_DIR/.git" ]]; then
+    return 0
+  fi
+  if [[ -f "$ROOT_DIR/external/sapiens2/pyproject.toml" ]]; then
+    return 0
+  fi
+  require_command git
+  info "Initializing Sapiens2 submodule"
+  (cd "$ROOT_DIR" && git submodule update --init --recursive external/sapiens2)
 }
 
 gpu_preflight() {
@@ -1149,9 +1230,13 @@ web-auto login:
 sam3-api is internal only:
   http://sam3-api:8001
 
+sapiens-api:
+  Optional, internal only. Enable with: ./deploy.sh sapiens enable
+
 Useful commands:
   ./deploy.sh status
   ./deploy.sh logs web-auto
+  ./deploy.sh services status
 EOF
   if using_proxy_mode; then
     cat <<EOF
@@ -1237,6 +1322,7 @@ cmd_install() {
     FORCE_CONFIG_PROMPT=1
   fi
   ensure_env "$PROFILE_OVERRIDE"
+  sapiens_enabled && ensure_sapiens_submodule
   if [[ -z "$MIRROR_URL" && is_interactive ]]; then
     if prompt_yes_no "Configure a Docker Hub registry mirror now" "n"; then
       MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
@@ -1268,6 +1354,7 @@ cmd_update() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown update option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
+  sapiens_enabled && ensure_sapiens_submodule
   if using_proxy_mode; then
     validate_domain_dns
   fi
@@ -1305,6 +1392,7 @@ cmd_start() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
+  sapiens_enabled && ensure_sapiens_submodule
   if using_proxy_mode; then
     validate_domain_dns
   fi
@@ -1521,8 +1609,12 @@ rewrite_allowed_roots() {
 recreate_web_auto_after_mount_change() {
   compose_env_defaults
   select_docker
-  info "Recreating web-auto so Docker picks up data-root mounts"
-  compose up -d --force-recreate web-auto
+  local services=(web-auto)
+  if sapiens_enabled; then
+    services+=(sapiens-api)
+  fi
+  info "Recreating ${services[*]} so Docker picks up data-root mounts"
+  compose up -d --force-recreate "${services[@]}"
   wait_for_direct_http || true
 }
 
@@ -1743,6 +1835,156 @@ cmd_gpu_install() {
   gpu_status_report
 }
 
+services_usage() {
+  cat <<'EOF'
+Usage:
+  ./deploy.sh services status
+  ./deploy.sh services start <sam3-api|sapiens-api|caddy>
+  ./deploy.sh services stop <sam3-api|sapiens-api|caddy>
+  ./deploy.sh services restart <sam3-api|sapiens-api|caddy>
+  ./deploy.sh services logs <sam3-api|sapiens-api|caddy>
+
+Notes:
+  - web-auto is intentionally not managed here to avoid killing the UI from the UI.
+  - Enable sapiens-api before starting it:
+      ./deploy.sh sapiens enable
+EOF
+}
+
+cmd_services() {
+  local subcommand="${1:-status}"
+  shift || true
+  case "$subcommand" in
+    status|ps)
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      compose ps
+      ;;
+    start|stop|restart)
+      local service="${1:-}"
+      [[ -n "$service" ]] || die "services $subcommand requires a service name."
+      case "$service" in
+        sam3-api|sapiens-api|caddy) ;;
+        web-auto) die "web-auto is not controlled by services; use './deploy.sh restart web-auto' from the server." ;;
+        *) die "Unsupported service: $service" ;;
+      esac
+      ensure_env ""
+      if [[ "$service" == "sapiens-api" && "$subcommand" == "start" ]] && ! sapiens_enabled; then
+        die "sapiens-api is not enabled. Run './deploy.sh sapiens enable' first."
+      fi
+      compose_env_defaults
+      select_docker
+      compose "$subcommand" "$service"
+      compose ps
+      ;;
+    logs)
+      local service="${1:-}"
+      [[ -n "$service" ]] || die "services logs requires a service name."
+      case "$service" in
+        sam3-api|sapiens-api|caddy) ;;
+        *) die "Unsupported service: $service" ;;
+      esac
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      compose logs -f --tail=200 "$service"
+      ;;
+    help|-h|--help|"")
+      services_usage
+      ;;
+    *)
+      services_usage
+      die "Unknown services command: $subcommand"
+      ;;
+  esac
+}
+
+sapiens_usage() {
+  cat <<'EOF'
+Usage:
+  ./deploy.sh sapiens enable [--gpu|--cpu] [--skip-pull] [--skip-gpu-check]
+  ./deploy.sh sapiens disable
+  ./deploy.sh sapiens status
+  ./deploy.sh sapiens logs
+
+Checkpoint layout:
+  SAPIENS_CHECKPOINT_ROOT/seg/sapiens2_5b_seg.safetensors
+
+The default model is sapiens2_5b. web-auto can start the official checkpoint
+download and show progress after sapiens-api is enabled.
+EOF
+}
+
+cmd_sapiens() {
+  local subcommand="${1:-status}"
+  shift || true
+  case "$subcommand" in
+    enable)
+      parse_common_options "$@"
+      [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown sapiens enable option: ${POSITIONAL[*]}"
+      ensure_env "$PROFILE_OVERRIDE"
+      set_env_var SAPIENS_ENABLED "1"
+      if [[ "$(effective_profile)" == "gpu" ]]; then
+        set_env_var SAPIENS_DEVICE "cuda:0"
+      else
+        set_env_var SAPIENS_DEVICE "cpu"
+      fi
+      ensure_sapiens_submodule
+      select_docker
+      [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
+      [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
+      if [[ "$SKIP_PULL" -eq 0 ]]; then
+        pull_required_images || warn "Pre-pull failed; continuing with compose build so Docker can retry."
+      fi
+      info "Building and starting sapiens-api"
+      compose up -d --build ops-api sapiens-api
+      compose ps sapiens-api
+      local ckpt_root model_name ckpt_file
+      ckpt_root="$(project_path "$(get_env_var SAPIENS_CHECKPOINT_ROOT || true)")"
+      ckpt_root="${ckpt_root%/}"
+      if [[ "$ckpt_root" == "$ROOT_DIR" ]]; then
+        ckpt_root="$(project_path ./sapiens_checkpoints)"
+      fi
+      model_name="$(get_env_var SAPIENS_MODEL_NAME || true)"
+      model_name="${model_name:-sapiens2_5b}"
+      ckpt_file="$ckpt_root/seg/${model_name}_seg.safetensors"
+      if [[ ! -f "$ckpt_file" ]]; then
+        warn "Sapiens2 checkpoint is not present yet: $ckpt_file"
+        warn "Open the web-auto project page; it will start the official Sapiens2-5B download and show progress."
+      fi
+      ;;
+    disable)
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      compose stop sapiens-api || true
+      set_env_var SAPIENS_ENABLED "0"
+      info "sapiens-api disabled in .env. Existing container is stopped, data is preserved."
+      compose ps || true
+      ;;
+    status|ps)
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      compose ps sapiens-api || true
+      ;;
+    logs)
+      ensure_env ""
+      compose_env_defaults
+      select_docker
+      compose logs -f --tail=200 sapiens-api
+      ;;
+    help|-h|--help|"")
+      sapiens_usage
+      ;;
+    *)
+      sapiens_usage
+      die "Unknown sapiens command: $subcommand"
+      ;;
+  esac
+}
+
 cmd_uninstall() {
   "$ROOT_DIR/scripts/uninstall.sh" "$@"
 }
@@ -1768,6 +2010,8 @@ main() {
     stop|down) cmd_stop "$@" ;;
     status|ps) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
+    services) cmd_services "$@" ;;
+    sapiens) cmd_sapiens "$@" ;;
     doctor) cmd_doctor "$@" ;;
     reset-admin) cmd_reset_admin "$@" ;;
     data-root) cmd_data_root "$@" ;;
