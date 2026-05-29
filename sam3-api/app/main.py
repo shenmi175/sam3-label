@@ -3,6 +3,8 @@ import logging
 import hmac
 import os
 import subprocess
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -29,6 +31,12 @@ from app.schemas import (
 from app.utils import load_image_from_bytes
 
 logger = logging.getLogger("sam3_api")
+
+_GPU_STATUS_LOCK = threading.Lock()
+_GPU_STATUS_CACHE: dict | None = None
+_GPU_STATUS_CACHE_MONO_TS = 0.0
+_GPU_STATUS_CACHE_TTL_SECONDS = float(os.getenv("SAM3_API_GPU_STATUS_CACHE_TTL_SECONDS", "3"))
+_GPU_STATUS_STALE_SECONDS = float(os.getenv("SAM3_API_GPU_STATUS_STALE_SECONDS", "120"))
 
 
 def _configured_api_token() -> str:
@@ -133,7 +141,16 @@ def _format_exc_message(exc: BaseException) -> str:
     return text or type(exc).__name__
 
 
-def _gpu_status() -> dict:
+def _decorate_gpu_status(status: dict, *, monotonic_ts: float, stale: bool, error: str = "") -> dict:
+    result = dict(status or {})
+    result["stale"] = stale
+    result["age_seconds"] = max(0.0, time.monotonic() - monotonic_ts)
+    if error:
+        result["error"] = error
+    return result
+
+
+def _probe_gpu_status() -> dict:
     gpus: list[dict] = []
     try:
         proc = subprocess.run(
@@ -207,6 +224,33 @@ def _gpu_status() -> dict:
             "memory_utilization_percent": (used_mem * 100.0 / total_mem) if total_mem > 0 else None,
         },
     }
+
+
+def _gpu_status() -> dict:
+    global _GPU_STATUS_CACHE
+    global _GPU_STATUS_CACHE_MONO_TS
+
+    now = time.monotonic()
+    with _GPU_STATUS_LOCK:
+        if _GPU_STATUS_CACHE and (now - _GPU_STATUS_CACHE_MONO_TS) <= _GPU_STATUS_CACHE_TTL_SECONDS:
+            return _decorate_gpu_status(_GPU_STATUS_CACHE, monotonic_ts=_GPU_STATUS_CACHE_MONO_TS, stale=False)
+
+        status = _probe_gpu_status()
+        probed_at = time.monotonic()
+        if status.get("available"):
+            _GPU_STATUS_CACHE = status
+            _GPU_STATUS_CACHE_MONO_TS = probed_at
+            return _decorate_gpu_status(status, monotonic_ts=probed_at, stale=False)
+
+        if _GPU_STATUS_CACHE and (probed_at - _GPU_STATUS_CACHE_MONO_TS) <= _GPU_STATUS_STALE_SECONDS:
+            return _decorate_gpu_status(
+                _GPU_STATUS_CACHE,
+                monotonic_ts=_GPU_STATUS_CACHE_MONO_TS,
+                stale=True,
+                error="latest GPU probe failed; showing last known status",
+            )
+
+        return _decorate_gpu_status(status, monotonic_ts=probed_at, stale=False)
 
 
 def _normalize_image_engine_input_size(

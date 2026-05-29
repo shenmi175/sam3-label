@@ -32,6 +32,7 @@ export const ImageWorkspace = {
   imageBundleCacheLimit: 8,
   imagePrefetchRadius: 3,
   gpuStatusInterval: null,
+  gpuStatusFailures: 0,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
   
@@ -65,6 +66,7 @@ export const ImageWorkspace = {
     this.imageBundleCache = new Map();
     this.imageBundlePromises = new Map();
     this.gpuStatusInterval = null;
+    this.gpuStatusFailures = 0;
     this.batchResultShownForJobId = '';
     window.currentWorkspace = this;
     
@@ -678,6 +680,13 @@ export const ImageWorkspace = {
     if (widget) widget.title = message;
   },
 
+  markGpuWidgetStale(message = 'GPU status refresh delayed') {
+    const dot = document.getElementById('gpu-status-dot');
+    const widget = document.getElementById('gpu-status-widget');
+    if (dot) dot.style.background = '#f59e0b';
+    if (widget) widget.title = message;
+  },
+
   renderGpuWidget(status) {
     const gpu = status?.result?.gpu || status?.gpu || {};
     const summary = gpu.summary || {};
@@ -693,13 +702,15 @@ export const ImageWorkspace = {
     const memTotal = Number(summary.memory_total_mb || 0);
     const memPctRaw = Number(summary.memory_utilization_percent);
     const memPct = Number.isFinite(memPctRaw) ? Math.max(0, Math.min(100, memPctRaw)) : 0;
+    const stale = Boolean(gpu.stale);
+    const age = Number(gpu.age_seconds || 0);
     const dot = document.getElementById('gpu-status-dot');
     const utilFill = document.getElementById('gpu-util-fill');
     const memFill = document.getElementById('gpu-mem-fill');
     const utilText = document.getElementById('gpu-util-text');
     const memText = document.getElementById('gpu-mem-text');
     const widget = document.getElementById('gpu-status-widget');
-    if (dot) dot.style.background = memPct >= 90 ? '#ef4444' : (memPct >= 75 ? '#f59e0b' : '#10b981');
+    if (dot) dot.style.background = stale ? '#f59e0b' : (memPct >= 90 ? '#ef4444' : (memPct >= 75 ? '#f59e0b' : '#10b981'));
     if (utilFill) utilFill.style.width = gpuUtil === null ? '0%' : `${gpuUtil.toFixed(0)}%`;
     if (memFill) memFill.style.width = `${memPct.toFixed(0)}%`;
     if (utilText) utilText.textContent = gpuUtil === null ? '--' : `${gpuUtil.toFixed(0)}%`;
@@ -711,7 +722,7 @@ export const ImageWorkspace = {
           : `${Number(item.gpu_utilization_percent).toFixed(0)}%`;
         return `GPU${item.index} ${item.name}: ${util}, ${this.formatGpuMemory(item.memory_used_mb)}/${this.formatGpuMemory(item.memory_total_mb)}`;
       });
-      widget.title = lines.join('\n');
+      widget.title = `${stale ? `GPU status is stale (${age.toFixed(0)}s old)\n` : ''}${lines.join('\n')}`;
     }
   },
 
@@ -721,14 +732,21 @@ export const ImageWorkspace = {
       try {
         const status = await api.getSam3Status(store.state.config.sam3ApiUrl);
         if (this.isUnmounted) return;
+        this.gpuStatusFailures = 0;
         this.renderGpuWidget(status);
       } catch (err) {
         if (this.isUnmounted) return;
-        this.setGpuWidgetUnavailable(String(err?.message || err || 'GPU status unavailable'));
+        this.gpuStatusFailures = (this.gpuStatusFailures || 0) + 1;
+        const message = String(err?.message || err || 'GPU status unavailable');
+        if (this.gpuStatusFailures >= 3) {
+          this.setGpuWidgetUnavailable(message);
+        } else {
+          this.markGpuWidgetStale(message);
+        }
       }
     };
     poll();
-    this.gpuStatusInterval = setInterval(poll, 3000);
+    this.gpuStatusInterval = setInterval(poll, 5000);
   },
 
   bindEvents() {
