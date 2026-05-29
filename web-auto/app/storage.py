@@ -1436,7 +1436,7 @@ class Storage:
         workspace_dir = ensure_dir(self.projects_root / pid)
 
         project_type = str(q.get('project_type') or 'image').strip().lower()
-        if project_type not in {'image', 'video'}:
+        if project_type not in {'image', 'pose', 'video'}:
             project_type = 'image'
 
         image_dir = self._safe_resolve(str(q.get('image_dir') or ''))
@@ -1761,7 +1761,7 @@ class Storage:
                         'kind': 'manifest',
                         'project_id': project_id,
                         'name': str(project.get('name') or project_id),
-                        'project_type': 'image',
+                        'project_type': ptype if ptype in {'image', 'pose'} else 'image',
                         'image_dir': str(project.get('image_dir') or ''),
                         'video_path': str(project.get('video_path') or ''),
                         'output_dir': str(project_dir),
@@ -1864,8 +1864,8 @@ class Storage:
             project_id = project_output_dir.name if project_output_dir.name.startswith('prj_') else new_id('prj_')
 
         ptype = str(project_type or base.get('project_type') or 'image').strip().lower()
-        if ptype != 'image':
-            raise ValueError('video annotation has been removed; image projects only')
+        if ptype not in {'image', 'pose'}:
+            raise ValueError('video annotation has been removed; supported project types: image, pose')
 
         classes = parse_classes_text(classes_text)
         if not classes:
@@ -1880,7 +1880,7 @@ class Storage:
         video_meta = base.get('video_meta', {}) if isinstance(base.get('video_meta'), dict) else {}
         images: list[dict[str, Any]] = []
 
-        if ptype == 'image':
+        if ptype in {'image', 'pose'}:
             raw_image_dir = str(image_dir or base.get('image_dir') or '').strip()
             if not raw_image_dir:
                 raise ValueError('image_dir is required for legacy project import')
@@ -1975,7 +1975,7 @@ class Storage:
             normalized.append(ep)
             if ep != raw:
                 changed = True
-            if str(ep.get('project_type') or 'image').strip().lower() != 'image':
+            if str(ep.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
                 continue
             out.append(
                 {
@@ -2301,7 +2301,7 @@ class Storage:
         video_name = ''
         video_meta: dict[str, Any] = {}
 
-        if ptype == 'image':
+        if ptype in {'image', 'pose'}:
             image_root = Path(image_dir).expanduser().resolve()
             if not image_root.exists() or not image_root.is_dir():
                 raise ValueError(f'image_dir does not exist: {image_root}')
@@ -2366,7 +2366,7 @@ class Storage:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
             return 0
-        if project.get('project_type') != 'image':
+        if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
             return 0
         image_dir = Path(project['image_dir'])
         if not image_dir.exists():
@@ -2426,8 +2426,8 @@ class Storage:
         for raw in projects:
             p = self._normalize_project(raw)
             if p.get('id') == project_id:
-                if str(p.get('project_type') or 'image').strip().lower() != 'image':
-                    raise ValueError('only image project is supported')
+                if str(p.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+                    raise ValueError('only image or pose project is supported')
 
                 image_root = Path(str(p.get('image_dir') or '')).expanduser().resolve()
                 if not image_root.exists() or not image_root.is_dir():
@@ -2462,7 +2462,7 @@ class Storage:
                     changed = True
 
                 if changed:
-                    self._insert_project_images_db(project_id, 'image', pending_insert, start_index=len(existing))
+                    self._insert_project_images_db(project_id, str(p.get('project_type') or 'image'), pending_insert, start_index=len(existing))
                     p['num_images'] = max(0, int(p.get('num_images', 0) or 0) + int(added))
                     p['unlabeled_images'] = max(0, int(p.get('unlabeled_images', 0) or 0) + int(added))
                     self._bump_content_rev(p)
@@ -2487,8 +2487,8 @@ class Storage:
         for raw in projects:
             p = self._normalize_project(raw)
             if p.get('id') == project_id:
-                if str(p.get('project_type') or 'image').strip().lower() != 'image':
-                    raise ValueError('only image project is supported')
+                if str(p.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+                    raise ValueError('only image or pose project is supported')
                 if deleted_image is None:
                     raise ValueError('image not found')
                 was_labeled = self._normalize_image_status(deleted_image.get('status')) == 'labeled'
@@ -2546,8 +2546,8 @@ class Storage:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
             raise ValueError('project not found')
-        if str(project.get('project_type') or 'image').strip().lower() != 'image':
-            raise ValueError('only image project is supported')
+        if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+            raise ValueError('only image or pose project is supported')
 
         image_root = Path(str(project.get('image_dir') or '')).expanduser().resolve()
         if not image_root.exists() or not image_root.is_dir():

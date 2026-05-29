@@ -546,7 +546,7 @@ async def require_web_auto_session(request: Request, call_next):
 
 class OpenProjectIn(BaseModel):
     name: str = ''
-    project_type: str = Field(default='image', pattern='^image$')
+    project_type: str = Field(default='image', pattern='^(image|pose)$')
     image_dir: str = ''
     save_dir: Optional[str] = None
     classes_text: str = ''
@@ -626,6 +626,14 @@ class AppendAnnIn(BaseModel):
     project_id: str
     image_id: str
     annotations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PoseInferIn(BaseModel):
+    project_id: str
+    image_id: str
+    bbox_threshold: float = 0.3
+    nms_threshold: float = 0.3
+    keypoint_threshold: float = 0.3
 
 
 class ExportIn(BaseModel):
@@ -3257,6 +3265,36 @@ def _sapiens_request(method: str, path: str, payload: Optional[dict[str, Any]] =
     return data if isinstance(data, dict) else {}
 
 
+def _sapiens_file_request(
+    path: str,
+    *,
+    file_path: Path,
+    fields: Optional[dict[str, Any]] = None,
+    timeout: float = 300.0,
+) -> dict[str, Any]:
+    base_url = DEFAULT_SAPIENS_API_BASE_URL.rstrip('/')
+    url = base_url + '/' + path.lstrip('/')
+    try:
+        with file_path.open('rb') as f:
+            response = requests.post(
+                url,
+                files={'file': (file_path.name, f, mimetypes.guess_type(str(file_path))[0] or 'application/octet-stream')},
+                data={key: str(value) for key, value in (fields or {}).items()},
+                headers=_sapiens_headers(),
+                timeout=timeout,
+            )
+    except requests.RequestException as exc:
+        raise RuntimeError(f'sapiens-api request failed: {exc}') from exc
+    try:
+        data = response.json() if response.text else {}
+    except Exception:
+        data = {'raw': response.text[:400]}
+    if not response.ok:
+        detail = data.get('detail') if isinstance(data, dict) else None
+        raise RuntimeError(f'sapiens-api HTTP {response.status_code}: {detail or data}')
+    return data if isinstance(data, dict) else {}
+
+
 def _service_management_unavailable(error: str) -> dict[str, Any]:
     return {
         'ok': False,
@@ -5293,7 +5331,10 @@ def list_projects(auto_discover: bool = Query(default=False)) -> dict[str, Any]:
         if auto_discover
         else {'imported': [], 'skipped': 0, 'errors': [], 'cached': True, 'auto_discover': False}
     )
-    projects = [p for p in storage.list_projects() if str(p.get('project_type') or 'image').strip().lower() == 'image']
+    projects = [
+        p for p in storage.list_projects()
+        if str(p.get('project_type') or 'image').strip().lower() in {'image', 'pose'}
+    ]
     return {'projects': projects, 'discovery': discovery}
 
 
@@ -5316,7 +5357,8 @@ def discover_existing_projects(
 
 @app.post('/api/projects/import_existing')
 def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
-    if str(payload.project_type or 'image').strip().lower() not in {'', 'image'}:
+    project_type = str(payload.project_type or 'image').strip().lower()
+    if project_type not in {'', 'image', 'pose'}:
         _raise_video_annotation_removed()
     try:
         result = storage.import_existing_project(
@@ -5325,7 +5367,7 @@ def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
             image_dir=payload.image_dir,
             name=payload.name,
             classes_text=payload.classes_text,
-            project_type='image',
+            project_type=project_type or 'image',
         )
         return result
     except ValueError as exc:
@@ -5335,7 +5377,7 @@ def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
 @app.get('/api/projects/{project_id}')
 def get_project(project_id: str, include_images: bool = Query(default=True)) -> dict[str, Any]:
     project = _get_project_or_404(project_id, enrich=False, include_images=bool(include_images))
-    if str(project.get('project_type') or 'image').strip().lower() != 'image':
+    if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
         raise HTTPException(status_code=404, detail='project not found')
     return {'project': project}
 
@@ -5343,10 +5385,14 @@ def get_project(project_id: str, include_images: bool = Query(default=True)) -> 
 @app.post('/api/projects/open')
 def open_project(payload: OpenProjectIn) -> dict[str, Any]:
     try:
+        project_type = str(payload.project_type or 'image').strip().lower()
+        classes_text = payload.classes_text
+        if project_type == 'pose' and not str(classes_text or '').strip():
+            classes_text = 'person_pose'
         logger.info(
             'open project name=%s type=%s image_dir=%s save_dir=%s',
             payload.name,
-            payload.project_type,
+            project_type,
             payload.image_dir,
             payload.save_dir,
         )
@@ -5354,8 +5400,8 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
             name=payload.name,
             image_dir=payload.image_dir,
             save_dir=payload.save_dir,
-            classes_text=payload.classes_text,
-            project_type='image',
+            classes_text=classes_text,
+            project_type=project_type,
         )
         logger.info(
             'open project done id=%s type=%s images=%s classes=%s',
@@ -5435,8 +5481,8 @@ async def upload_project_image(project_id: str, file: UploadFile = File(...)) ->
     if not project:
         raise HTTPException(status_code=404, detail='project not found')
 
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='only image projects support uploads')
+    if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+        raise HTTPException(status_code=400, detail='only image or pose projects support uploads')
 
     image_dir = Path(project['image_dir'])
     if not image_dir.exists():
@@ -5572,8 +5618,8 @@ def import_project_images(project_id: str, payload: ImportImagesIn) -> dict[str,
 @app.post('/api/projects/{project_id}/images/upload')
 async def upload_project_images(project_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
     project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='only image project is supported')
+    if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+        raise HTTPException(status_code=400, detail='only image or pose project is supported')
     image_root = Path(str(project.get('image_dir') or '')).expanduser().resolve()
     if not image_root.exists() or not image_root.is_dir():
         raise HTTPException(status_code=400, detail=f'image_dir does not exist: {image_root}')
@@ -5903,8 +5949,14 @@ def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) ->
 def sapiens_status() -> dict[str, Any]:
     try:
         health_data = _sapiens_request('GET', '/health', timeout=8.0)
-        checkpoint_data = _sapiens_request('GET', '/v1/checkpoints/status', timeout=8.0)
-        return {'ok': True, 'health': health_data, 'checkpoint': checkpoint_data}
+        pose_data = _sapiens_request('GET', '/v1/pose/status', timeout=8.0)
+        return {
+            'ok': True,
+            'health': health_data,
+            'pose': pose_data,
+            'checkpoint': pose_data.get('checkpoint', {}),
+            'api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
+        }
     except Exception as exc:  # noqa: BLE001
         return {'ok': False, 'error': str(exc), 'api_base_url': DEFAULT_SAPIENS_API_BASE_URL}
 
@@ -5912,7 +5964,7 @@ def sapiens_status() -> dict[str, Any]:
 @app.post('/api/sapiens/checkpoint/download')
 def sapiens_checkpoint_download() -> dict[str, Any]:
     try:
-        return _sapiens_request('POST', '/v1/checkpoints/download', {}, timeout=12.0)
+        return _sapiens_request('POST', '/v1/pose/checkpoints/download', {}, timeout=12.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5920,7 +5972,65 @@ def sapiens_checkpoint_download() -> dict[str, Any]:
 @app.get('/api/sapiens/checkpoint/download/{job_id}')
 def sapiens_checkpoint_download_status(job_id: str) -> dict[str, Any]:
     try:
-        return _sapiens_request('GET', f'/v1/checkpoints/download/{job_id}', timeout=8.0)
+        return _sapiens_request('GET', f'/v1/pose/checkpoints/download/{job_id}', timeout=8.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _pose_annotations_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    links = result.get('skeleton_links') if isinstance(result.get('skeleton_links'), list) else []
+    annotations: list[dict[str, Any]] = []
+    instances = result.get('instances', []) if isinstance(result.get('instances'), list) else []
+    for raw in instances:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item['id'] = new_id('pose_')
+        item['type'] = 'pose'
+        item['label'] = str(item.get('label') or item.get('class_name') or 'person_pose')
+        item['class_name'] = str(item.get('class_name') or item.get('label') or 'person_pose')
+        if links and not isinstance(item.get('skeleton_links'), list):
+            item['skeleton_links'] = links
+        annotations.append(item)
+    return annotations
+
+
+@app.post('/api/pose/infer')
+def infer_pose(payload: PoseInferIn) -> dict[str, Any]:
+    project = _get_project_or_404(payload.project_id, include_images=False)
+    if str(project.get('project_type') or 'image').strip().lower() != 'pose':
+        raise HTTPException(status_code=400, detail='only pose project is supported')
+    image = _get_image_or_404(project, payload.image_id)
+    abs_path_raw = str(image.get('abs_path') or '').strip()
+    if not abs_path_raw:
+        raise HTTPException(status_code=404, detail='image file not found')
+    image_path = Path(abs_path_raw).expanduser().resolve()
+    if not image_path.exists() or not image_path.is_file():
+        raise HTTPException(status_code=404, detail=f'image file not found: {image_path}')
+    try:
+        result = _sapiens_file_request(
+            '/v1/pose/infer',
+            file_path=image_path,
+            fields={
+                'bbox_threshold': max(0.0, min(1.0, float(payload.bbox_threshold))),
+                'nms_threshold': max(0.0, min(1.0, float(payload.nms_threshold))),
+                'keypoint_threshold': max(0.0, min(1.0, float(payload.keypoint_threshold))),
+            },
+            timeout=600.0,
+        )
+        annotations = _pose_annotations_from_result(result)
+        storage.save_annotations(payload.project_id, payload.image_id, annotations)
+        saved = storage.load_annotations(payload.project_id, payload.image_id)
+        return {
+            'project_id': payload.project_id,
+            'image_id': payload.image_id,
+            'num_instances': len(saved),
+            'annotations': saved,
+            'saved_annotations': saved,
+            'raw': result,
+        }
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

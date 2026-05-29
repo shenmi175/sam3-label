@@ -153,6 +153,7 @@ export const api = {
   getSapiensStatus() { return this.request('GET', '/sapiens/status'); },
   downloadSapiensCheckpoint() { return this.request('POST', '/sapiens/checkpoint/download'); },
   getSapiensCheckpointDownload(jobId) { return this.request('GET', `/sapiens/checkpoint/download/${encodeURIComponent(jobId)}`); },
+  inferPose(data) { return this.request('POST', '/pose/infer', data); },
   
   infer(data) { return this.request('POST', '/infer', data); },
   inferExample(data) { return this.request('POST', '/infer/example_preview', data); },

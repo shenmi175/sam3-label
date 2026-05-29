@@ -77,6 +77,13 @@ export const ProjectsPage = {
           <h2 style="margin: 0 0 22px; font-size: 20px;">${i18n.t('new_project')}</h2>
           <div style="display: grid; gap: 16px;">
             <div>
+              <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_type')}</label>
+              <select id="inp-pj-type" class="neu-input">
+                <option value="image">${i18n.t('image_annotation_project')}</option>
+                <option value="pose">${i18n.t('pose_annotation_project')}</option>
+              </select>
+            </div>
+            <div>
               <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_name')}</label>
               <input type="text" id="inp-pj-name" class="neu-input" placeholder="${i18n.t('project_name')}" />
             </div>
@@ -288,6 +295,7 @@ export const ProjectsPage = {
     document.getElementById('btn-cancel-restore-project').onclick = () => this.closeRestoreModal();
     document.getElementById('btn-scan-existing-projects').onclick = () => this.scanExistingProjects();
     document.getElementById('btn-submit-restore-project').onclick = () => this.importExistingProject();
+    document.getElementById('inp-pj-type').onchange = () => this.applyProjectTypeDefaults();
 
     const folderInput = document.getElementById('inp-dataset-folder');
     const filesInput = document.getElementById('inp-dataset-files');
@@ -367,7 +375,7 @@ export const ProjectsPage = {
     const opRunning = operation && ['queued', 'running'].includes(String(operation.status || ''));
     const color = isRunning ? '#10b981' : (isMissing || status === 'creating' ? '#f59e0b' : '#ef4444');
     const command = service.manage_command || (name === 'sapiens-api' ? './deploy.sh sapiens enable' : `./deploy.sh services start ${name}`);
-    const title = name === 'sapiens-api' ? 'sapiens-api (Sapiens2-5B)' : name;
+    const title = name === 'sapiens-api' ? 'sapiens-api (Sapiens2-5B Pose)' : name;
     const actionButtons = opRunning
       ? `<button class="neu-button" disabled style="padding: 6px 10px;">${i18n.t('creating_service')}</button>`
       : isMissing
@@ -418,7 +426,7 @@ export const ProjectsPage = {
       return `<div style="font-size:12px; color:#ef4444; overflow-wrap:anywhere;">${this.escapeHtml(status.error || i18n.t('backend_offline'))}</div>`;
     }
     const checkpoint = status.checkpoint || {};
-    const exists = Boolean(checkpoint.checkpoint_exists);
+    const exists = Boolean(checkpoint.checkpoint_exists) && Boolean(checkpoint.detector_exists);
     const job = checkpoint.download_job || null;
     if (exists) {
       return `<div style="font-size:12px; color:#10b981; overflow-wrap:anywhere;">${i18n.t('sapiens_checkpoint_ready')}: ${this.escapeHtml(checkpoint.checkpoint_path || '')}</div>`;
@@ -429,7 +437,7 @@ export const ProjectsPage = {
     const total = Number(job?.total_bytes || 0) > 0 ? this.formatBytes(job.total_bytes) : '--';
     return `
       <div style="display:grid; gap: 8px;">
-        <div style="font-size:12px; color:#f59e0b; overflow-wrap:anywhere;">${i18n.t('sapiens_checkpoint_missing')}: ${this.escapeHtml(checkpoint.checkpoint_path || '')}</div>
+        <div style="font-size:12px; color:#f59e0b; overflow-wrap:anywhere;">${i18n.t('sapiens_checkpoint_missing')}: ${this.escapeHtml(checkpoint.checkpoint_path || '')}<br>${this.escapeHtml(checkpoint.detector_path || '')}</div>
         <div style="width:100%; height:8px; border-radius:999px; overflow:hidden; background:rgba(0,0,0,0.08); box-shadow:var(--neu-inset);">
           <div style="width:${Math.max(0, Math.min(100, percent))}%; height:100%; background:var(--neu-text-active); transition:width .2s ease;"></div>
         </div>
@@ -469,7 +477,7 @@ export const ProjectsPage = {
       this.ensureSapiensDownloadPolling();
       return;
     }
-    if (!this.isServiceRunning('sapiens-api') || !this._sapiensStatus?.ok || checkpoint.checkpoint_exists || this._sapiensDownloadStarted) {
+    if (!this.isServiceRunning('sapiens-api') || !this._sapiensStatus?.ok || (checkpoint.checkpoint_exists && checkpoint.detector_exists) || this._sapiensDownloadStarted) {
       return;
     }
     this.startSapiensDownload();
@@ -523,9 +531,10 @@ export const ProjectsPage = {
   async submitProject() {
     const btnSubmitNew = document.getElementById('btn-submit-new');
     try {
+      const projectType = document.getElementById('inp-pj-type').value || 'image';
       const payload = {
         name: document.getElementById('inp-pj-name').value,
-        project_type: 'image',
+        project_type: projectType,
         image_dir: document.getElementById('inp-pj-imgdir').value,
         classes_text: document.getElementById('inp-pj-classes').value.replace(/\r\n?/g, '\n'),
       };
@@ -548,19 +557,36 @@ export const ProjectsPage = {
   },
 
   clearCreateForm() {
+    document.getElementById('inp-pj-type').value = 'image';
     document.getElementById('inp-pj-name').value = '';
     document.getElementById('inp-pj-imgdir').value = '';
     document.getElementById('inp-pj-classes').value = '';
     document.getElementById('inp-pj-savedir').value = '';
+    this.applyProjectTypeDefaults();
   },
 
   openCreateModal(prefill = {}) {
     const modal = document.getElementById('modal-create-project');
     if (!modal) return;
+    if (prefill.project_type) document.getElementById('inp-pj-type').value = prefill.project_type;
     if (prefill.name) document.getElementById('inp-pj-name').value = prefill.name;
     if (prefill.image_dir) document.getElementById('inp-pj-imgdir').value = prefill.image_dir;
+    this.applyProjectTypeDefaults();
     modal.style.display = 'flex';
     setTimeout(() => document.getElementById('inp-pj-name')?.focus(), 0);
+  },
+
+  applyProjectTypeDefaults() {
+    const type = document.getElementById('inp-pj-type')?.value || 'image';
+    const classes = document.getElementById('inp-pj-classes');
+    if (!classes) return;
+    if (type === 'pose') {
+      classes.placeholder = 'person_pose';
+      if (!classes.value.trim()) classes.value = 'person_pose';
+    } else {
+      classes.placeholder = 'cat\ndog\nperson face';
+      if (classes.value.trim() === 'person_pose') classes.value = '';
+    }
   },
 
   closeCreateModal() {
@@ -876,7 +902,7 @@ export const ProjectsPage = {
     const listCont = document.getElementById('projects-list-container');
     const countSpan = document.getElementById('pj-count');
     if (!listCont) return;
-    projects = projects.filter(p => (p.project_type || 'image') === 'image');
+    projects = projects.filter(p => ['image', 'pose'].includes(p.project_type || 'image'));
     if (countSpan) countSpan.textContent = projects.length;
 
     if (projects.length === 0) {
@@ -885,7 +911,8 @@ export const ProjectsPage = {
     }
 
     listCont.innerHTML = projects.map(p => {
-      const typeLabel = i18n.t('image_project');
+      const projectType = String(p.project_type || 'image');
+      const typeLabel = projectType === 'pose' ? i18n.t('pose_project') : i18n.t('image_project');
       const total = p.num_images;
       const labeled = p.labeled_images || 0;
       const progress = total > 0 ? Math.round((labeled / total) * 100) : 0;
@@ -894,6 +921,7 @@ export const ProjectsPage = {
       const projectId = this.escapeHtml(p.id || '');
       const jsId = this.escapeHtml(this.jsString(p.id || ''));
       const jsPath = this.escapeHtml(this.jsString(sourcePath));
+      const jsType = this.escapeHtml(this.jsString(projectType));
       const sourcePathHtml = this.escapeHtml(sourcePath);
 
       return `
@@ -901,7 +929,7 @@ export const ProjectsPage = {
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
               <div style="display: flex; gap: 16px; align-items: center; min-width: 0;">
                 <div class="neu-box" style="width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: var(--neu-inset); flex: 0 0 auto;">
-                  🖼️
+                  ${projectType === 'pose' ? '⌁' : '▣'}
                 </div>
                 <div style="min-width: 0;">
                   <h3 style="margin: 0; font-size: 18px; overflow-wrap: anywhere;">${projectName}</h3>
@@ -909,7 +937,7 @@ export const ProjectsPage = {
                 </div>
               </div>
               <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
-                <button class="neu-button" onclick="window.projectsPage.openProject('${jsId}')" style="color: var(--neu-text-active); font-weight:600;">${i18n.t('open_btn')}</button>
+                <button class="neu-button" onclick="window.projectsPage.openProject('${jsId}', '${jsType}')" style="color: var(--neu-text-active); font-weight:600;">${i18n.t('open_btn')}</button>
                 <button class="neu-button" onclick="window.projectsPage.showDatasetUpload('${jsPath}', '${jsId}')">${i18n.t('add_data_btn')}</button>
                 <button class="neu-button" onclick="window.projectsPage.deleteProject('${jsId}')" style="color: #e53e3e;">${i18n.t('delete_btn')}</button>
               </div>
@@ -961,8 +989,9 @@ export const ProjectsPage = {
     return Number.isNaN(d.getTime()) ? raw : d.toLocaleString();
   },
 
-  openProject(id) {
-    router.navigate(`/project/image/${id}`);
+  openProject(id, projectType = 'image') {
+    const type = String(projectType || 'image');
+    router.navigate(type === 'pose' ? `/project/pose/${id}` : `/project/image/${id}`);
   },
 
   async deleteProject(id) {

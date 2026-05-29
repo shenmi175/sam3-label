@@ -42,7 +42,7 @@ cd ~/zmb_work/sam3
 - 写入 `.env` 的 `WEB_AUTO_ALLOWED_DATA_ROOTS`。
 - 生成 `docker-compose.mounts.yml`。
 - 重建 `web-auto` 容器，让 Docker 挂载生效。
-- 如果 `sapiens-api` 已启用，也会把同一数据根目录挂载到 `sapiens-api`，方便后续人体分割任务读取同一批图片。
+- 如果 `sapiens-api` 已启用，也会把同一数据根目录挂载到 `sapiens-api`，方便后续姿态估计任务读取同一批图片。
 
 如果想指定精确的默认上传目录：
 

@@ -36,7 +36,7 @@ sudo docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --buil
 
 ## 可选 Sapiens2-5B
 
-Sapiens2 人体部件分割使用独立 `sapiens-api` 容器。推荐在 web-auto 项目管理页的“模型服务”区域点击“启用”，页面会显示构建、启动和模型下载进度。
+Sapiens2 姿态估计使用独立 `sapiens-api` 容器。推荐在 web-auto 项目管理页的“模型服务”区域点击“启用”，页面会显示构建、启动和模型下载进度。
 
 服务器命令仍可作为兜底方式：
 
@@ -45,7 +45,7 @@ cd ~/zmb_work/sam3
 ./deploy.sh sapiens enable
 ```
 
-如果 `sapiens2_5b_seg.safetensors` 不存在，页面会自动启动下载并显示进度。
+如果 `sapiens2_5b_pose.safetensors` 或 DETR 人体检测器不存在，页面会自动启动下载并显示进度。
 
 常用命令：
 

@@ -23,7 +23,7 @@ RUN python -m venv --system-site-packages "$VIRTUAL_ENV" \
     && "$VIRTUAL_ENV/bin/python" -m pip install -r /tmp/sapiens-api-requirements.txt
 
 COPY sapiens-api /app/sapiens-api
-RUN python -c "from app.engine import SapiensSegmentationEngine; print('sapiens-api imports ok')"
+RUN python -c "from app.engine import SapiensSegmentationEngine; from app.pose_engine import SapiensPoseEngine; print('sapiens-api imports ok')"
 
 WORKDIR /app/sapiens-api
 EXPOSE 8010

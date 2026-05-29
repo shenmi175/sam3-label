@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.engine import MODEL_DOWNLOAD_URLS, SUPPORTED_SEG_MODELS, engine
+from app.pose_engine import POSE_DETECTOR_REPO_ID, POSE_MODEL_DOWNLOAD_URL, pose_engine
 
 
 def _configured_api_token() -> str:
@@ -74,7 +75,7 @@ class CheckpointDownloadIn(BaseModel):
     model_name: str = ""
 
 
-app = FastAPI(title="sapiens-api", version="1.0", description="Internal Sapiens2 segmentation API")
+app = FastAPI(title="sapiens-api", version="1.1", description="Internal Sapiens2 segmentation and pose API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -105,6 +106,7 @@ _DOWNLOAD_BY_MODEL: dict[str, str] = {}
 @app.get("/health")
 def health() -> dict[str, Any]:
     status = engine.status()
+    status["pose"] = pose_engine.status()
     status["token_required"] = bool(_configured_api_token())
     status["allowed_data_roots"] = [str(root) for root in _allowed_roots()]
     return status
@@ -250,6 +252,163 @@ def get_checkpoint_download(job_id: str) -> dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail="download job not found")
     return {"job": job}
+
+
+def _pose_checkpoint_status() -> dict[str, Any]:
+    status = pose_engine.checkpoint_status()
+    job_id = _DOWNLOAD_BY_MODEL.get("pose:sapiens2_5b", "")
+    job = _DOWNLOADS.get(job_id) if job_id else None
+    status["download_job"] = job
+    return status
+
+
+@app.get("/v1/pose/status")
+def pose_status() -> dict[str, Any]:
+    status = pose_engine.status()
+    status["checkpoint"] = _pose_checkpoint_status()
+    return status
+
+
+def _download_pose_assets(job_id: str) -> None:
+    cfg = pose_engine._build_config()
+    target = cfg.checkpoint_path
+    tmp = target.with_suffix(target.suffix + ".part")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cfg.detector_dir.mkdir(parents=True, exist_ok=True)
+    token = os.getenv("HF_TOKEN", "").strip() or os.getenv("HUGGINGFACE_HUB_TOKEN", "").strip()
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    downloaded = tmp.stat().st_size if tmp.exists() else 0
+    if downloaded > 0:
+        headers["Range"] = f"bytes={downloaded}-"
+    _set_download(
+        job_id,
+        status="running",
+        task="pose",
+        model_name=cfg.model_name,
+        url=POSE_MODEL_DOWNLOAD_URL,
+        checkpoint_path=str(target),
+        detector_repo_id=POSE_DETECTOR_REPO_ID,
+        detector_path=str(cfg.detector_dir),
+        phase="pose_checkpoint",
+        downloaded_bytes=downloaded,
+        total_bytes=0,
+        percent=0.0,
+        error="",
+    )
+    try:
+        if not target.exists():
+            with requests.get(POSE_MODEL_DOWNLOAD_URL, headers=headers, stream=True, allow_redirects=True, timeout=(20, 120)) as response:
+                if response.status_code not in {200, 206}:
+                    raise RuntimeError(f"pose checkpoint download HTTP {response.status_code}: {response.text[:300]}")
+                if response.status_code == 200:
+                    downloaded = 0
+                    mode = "wb"
+                else:
+                    mode = "ab"
+                content_length = int(response.headers.get("content-length") or 0)
+                total = downloaded + content_length if response.status_code == 206 else content_length
+                _set_download(job_id, downloaded_bytes=downloaded, total_bytes=total)
+                last_update = 0.0
+                with tmp.open(mode) as f:
+                    for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        now = time.monotonic()
+                        if now - last_update >= 0.5:
+                            base_percent = (downloaded * 90.0 / total) if total > 0 else 0.0
+                            _set_download(
+                                job_id,
+                                downloaded_bytes=downloaded,
+                                total_bytes=total,
+                                percent=round(base_percent, 2),
+                            )
+                            last_update = now
+                os.replace(tmp, target)
+
+        if not pose_engine._detector_exists(cfg.detector_dir):
+            _set_download(job_id, phase="detector", percent=92.0)
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=POSE_DETECTOR_REPO_ID,
+                local_dir=str(cfg.detector_dir),
+                token=token or None,
+                resume_download=True,
+            )
+
+        _set_download(
+            job_id,
+            status="completed",
+            phase="completed",
+            downloaded_bytes=target.stat().st_size,
+            total_bytes=target.stat().st_size,
+            percent=100.0,
+            finished_at=time.time(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _set_download(job_id, status="failed", error=str(exc))
+
+
+@app.post("/v1/pose/checkpoints/download")
+def start_pose_checkpoint_download() -> dict[str, Any]:
+    status = _pose_checkpoint_status()
+    if status["checkpoint_exists"] and status["detector_exists"]:
+        return {"job": {"status": "completed", "percent": 100.0, **status}, "checkpoint": status}
+
+    with _DOWNLOADS_LOCK:
+        key = "pose:sapiens2_5b"
+        existing_id = _DOWNLOAD_BY_MODEL.get(key)
+        existing = _DOWNLOADS.get(existing_id or "")
+        if existing and existing.get("status") in {"queued", "running"}:
+            return {"job": existing, "checkpoint": status}
+        job_id = f"sapiens_pose_{uuid.uuid4().hex[:12]}"
+        _DOWNLOAD_BY_MODEL[key] = job_id
+        _DOWNLOADS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "task": "pose",
+            "model_name": status["model_name"],
+            "checkpoint_path": status["checkpoint_path"],
+            "detector_path": status["detector_path"],
+            "downloaded_bytes": 0,
+            "total_bytes": 0,
+            "percent": 0.0,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+    thread = threading.Thread(target=_download_pose_assets, args=(job_id,), daemon=True)
+    thread.start()
+    return {"job": _DOWNLOADS[job_id], "checkpoint": status}
+
+
+@app.get("/v1/pose/checkpoints/download/{job_id}")
+def get_pose_checkpoint_download(job_id: str) -> dict[str, Any]:
+    return get_checkpoint_download(job_id)
+
+
+@app.post("/v1/pose/infer")
+async def infer_pose(
+    file: UploadFile = File(...),
+    bbox_threshold: float = Form(default=0.3),
+    nms_threshold: float = Form(default=0.3),
+    keypoint_threshold: float = Form(default=0.3),
+) -> dict[str, Any]:
+    try:
+        payload = await file.read()
+        if not payload:
+            raise ValueError("empty image file")
+        return pose_engine.infer_image(
+            payload,
+            bbox_threshold=bbox_threshold,
+            nms_threshold=nms_threshold,
+            keypoint_threshold=keypoint_threshold,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"pose inference failed: {exc}") from exc
 
 
 @app.post("/v1/seg/infer")

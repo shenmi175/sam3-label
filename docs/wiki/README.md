@@ -16,5 +16,5 @@
 - `sam3-api` 只在 Docker 内部网络暴露，不映射宿主机端口。
 - 数据集目录由 `deploy.sh data-root` 管理 Docker 挂载。
 - web 页面只选择已挂载目录内的上传目标，不直接管理 Docker。
-- `sapiens-api` 作为可选独立容器运行，Sapiens2-5B checkpoint 缺失时由项目管理页触发下载并显示进度。
+- `sapiens-api` 作为可选独立容器运行，Sapiens2-5B 姿态模型和 DETR 检测器缺失时由项目管理页触发下载并显示进度。
 - 项目输出目录写入 `web_auto_project.json`，索引丢失后可从挂载目录恢复。
