@@ -199,8 +199,16 @@ export class CanvasViewer {
     this.draw();
   }
 
-  setFocusedAnnotation(annotationId = null) {
+  setFocusedAnnotation(annotationId = null, options = {}) {
     this.focusedAnnotationId = annotationId || null;
+    if (options.draw !== false) this.draw();
+  }
+
+  focusAnnotation(annotationId = null, bbox = null) {
+    this.focusedAnnotationId = annotationId || null;
+    if (annotationId && bbox) {
+      this.centerTransformOnBbox(bbox);
+    }
     this.draw();
   }
 
@@ -518,7 +526,7 @@ export class CanvasViewer {
      return `hsl(${hue}, 75%, 50%)`;
   }
 
-  centerOn(bbox) {
+  centerTransformOnBbox(bbox) {
     if (!this.image || !Array.isArray(bbox) || bbox.length !== 4) return;
     const [x1, y1, x2, y2] = bbox.map(v => Number(v || 0));
     const cx = (x1 + x2) / 2;
@@ -526,6 +534,11 @@ export class CanvasViewer {
     this.transform.x = (this.canvas.width / 2) - (cx * this.transform.scale);
     this.transform.y = (this.canvas.height / 2) - (cy * this.transform.scale);
     this.fitMode = false;
+    return true;
+  }
+
+  centerOn(bbox) {
+    if (!this.centerTransformOnBbox(bbox)) return;
     this.draw();
   }
 }

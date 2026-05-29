@@ -1995,23 +1995,40 @@ export const ImageWorkspace = {
       </div>
       `;
     }).join('')}`;
-    list.querySelectorAll('.ann-edit-class-btn').forEach((btn) => {
-      btn.onclick = (e) => {
+    list.onclick = (e) => {
+      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+      if (!target) return;
+
+      const editBtn = target.closest('.ann-edit-class-btn');
+      if (editBtn) {
         e.stopPropagation();
-        this.editAnnotationClass(btn.dataset.annId || '');
-      };
-    });
-    list.querySelectorAll('.ann-delete-btn').forEach((btn) => {
-      btn.onclick = (e) => {
+        this.editAnnotationClass(editBtn.dataset.annId || '');
+        return;
+      }
+
+      const deleteBtn = target.closest('.ann-delete-btn');
+      if (deleteBtn) {
         e.stopPropagation();
-        this.deleteAnnotation(btn.dataset.annId || '');
-      };
-    });
-    list.querySelectorAll('.ann-item-focus').forEach((item) => {
-      item.onclick = (e) => {
-        if (e.target.closest('button')) return;
+        this.deleteAnnotation(deleteBtn.dataset.annId || '');
+        return;
+      }
+
+      const item = target.closest('.ann-item-focus');
+      if (item && list.contains(item)) {
         this.toggleAnnotationFocus(item.dataset.annId || '');
-      };
+      }
+    };
+  },
+
+  updateAnnotationFocusListState() {
+    const list = document.getElementById('annotation-list-container');
+    if (!list) return;
+    const focusedId = String(this.focusedAnnotationId || '');
+    list.querySelectorAll('.ann-item-focus').forEach((item) => {
+      const isFocused = String(item.dataset.annId || '') === focusedId && focusedId !== '';
+      item.style.background = isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)';
+      item.style.boxShadow = isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)';
+      item.setAttribute('aria-selected', isFocused ? 'true' : 'false');
     });
   },
 
@@ -2169,18 +2186,31 @@ export const ImageWorkspace = {
   toggleAnnotationFocus(annId) {
     const nextId = String(this.focusedAnnotationId || '') === String(annId || '') ? null : annId;
     this.focusedAnnotationId = nextId;
-    if (this.viewer) this.viewer.setFocusedAnnotation(nextId);
-    if (nextId) {
-      const ann = (this.annotations || []).find((item) => String(item?.id || '') === String(nextId));
-      if (ann?.bbox && this.viewer) this.viewer.centerOn(ann.bbox);
+    if (this.viewer) {
+      const ann = nextId
+        ? (this.annotations || []).find((item) => String(item?.id || '') === String(nextId))
+        : null;
+      const bbox = ann?.bbox || ann?.box || null;
+      if (typeof this.viewer.focusAnnotation === 'function') {
+        this.viewer.focusAnnotation(nextId, bbox);
+      } else {
+        this.viewer.setFocusedAnnotation(nextId);
+        if (nextId && bbox) this.viewer.centerOn(bbox);
+      }
     }
-    this.renderAnnotations();
+    this.updateAnnotationFocusListState();
+    this.scheduleProjectUIStateSave();
   },
 
   clearAnnotationFocus() {
     this.focusedAnnotationId = null;
-    if (this.viewer) this.viewer.setFocusedAnnotation(null);
-    this.renderAnnotations();
+    if (this.viewer && typeof this.viewer.focusAnnotation === 'function') {
+      this.viewer.focusAnnotation(null, null);
+    } else if (this.viewer) {
+      this.viewer.setFocusedAnnotation(null);
+    }
+    this.updateAnnotationFocusListState();
+    this.scheduleProjectUIStateSave();
   },
 
   getSelectedClassesForInference() {
