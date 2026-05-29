@@ -43,16 +43,10 @@ export const TaskManager = {
     if (!projectId) return;
 
     try {
-      const workspace = window.currentWorkspace || {};
-      const projectType = workspace.projectMeta?.project_type || workspace.project?.project_type || '';
-      const isVideo = projectType === 'video';
-      
-      // Parallel poll
       const promises = [
         api.getInferActiveJob(projectId),
         api.getFilterActiveJob(projectId)
       ];
-      if (isVideo) promises.push(api.getVideoJob(projectId));
       
       const results = await Promise.allSettled(promises);
       
@@ -60,7 +54,7 @@ export const TaskManager = {
       results.forEach(res => {
          const job = res.status === 'fulfilled' ? res.value?.job : null;
          if (job && job.status && job.status !== 'done' && job.status !== 'error') {
-            newActive.set(job.job_id || job.project_id || 'video', job);
+            newActive.set(job.job_id || job.project_id || 'job', job);
          }
       });
       
@@ -124,8 +118,6 @@ export const TaskManager = {
       if (type.includes('filter')) {
          // Filter doesn't have an explicit stop in doc, but infer does
          console.warn('Filter job cannot be stopped manually per API docs currently.');
-      } else if (type === 'video') {
-         await api.stopVideoJob(projectId);
       } else {
          await api.stopInferJob(projectId);
       }
@@ -140,11 +132,7 @@ export const TaskManager = {
   
   async resumeJob(jobId, type, projectId) {
     try {
-      if (type === 'video') {
-         await api.resumeVideoJob({project_id: projectId});
-      } else {
-         await api.resumeInferJob({project_id: projectId});
-      }
+      await api.resumeInferJob({project_id: projectId});
       this.pollActiveJobs();
     } catch(e) { alert(e.message); }
   }

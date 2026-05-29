@@ -11,11 +11,8 @@ export const i18n = {
     // Project Page
     new_project: '创建新项目',
     project_name: '项目名称',
-    project_type: '项目类型',
     image_project: '图片项目 (Images)',
-    video_project: '视频项目 (Video)',
     image_dir: '图片目录',
-    video_path: '视频文件路径',
     initial_classes: '初始类别 (支持逗号/换行)',
     save_dir: '输出目录 (选填)',
     create_btn: '创建项目',
@@ -250,11 +247,8 @@ export const i18n = {
     // Project Page
     new_project: 'Create New Project',
     project_name: 'Project Name',
-    project_type: 'Project Type',
     image_project: 'Image Project',
-    video_project: 'Video Project',
     image_dir: 'Image Directory',
-    video_path: 'Video Path',
     initial_classes: 'Initial Classes (Comma or Newline)',
     save_dir: 'Output Directory (Optional)',
     create_btn: 'Create Project',

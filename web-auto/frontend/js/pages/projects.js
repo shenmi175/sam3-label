@@ -62,20 +62,9 @@ export const ProjectsPage = {
               <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_name')}</label>
               <input type="text" id="inp-pj-name" class="neu-input" placeholder="${i18n.t('project_name')}" />
             </div>
-            <div>
-              <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('project_type')}</label>
-              <select id="inp-pj-type" class="neu-input">
-                <option value="image">${i18n.t('image_project')}</option>
-                <option value="video">${i18n.t('video_project')}</option>
-              </select>
-            </div>
             <div id="dir-image-wrapper">
               <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('image_dir')}</label>
               <input type="text" id="inp-pj-imgdir" class="neu-input" placeholder="/absolute/path/to/images" />
-            </div>
-            <div id="dir-video-wrapper" style="display: none;">
-              <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('video_path')}</label>
-              <input type="text" id="inp-pj-vidpath" class="neu-input" placeholder="/absolute/path/to/video.mp4" />
             </div>
             <div>
               <label style="display:block; margin-bottom: 8px; font-size: 13px; font-weight: 600;">${i18n.t('initial_classes')}</label>
@@ -242,9 +231,6 @@ export const ProjectsPage = {
     const btnRestore = document.getElementById('btn-restore-project');
     const btnDatasetUpload = document.getElementById('btn-dataset-upload');
     const btnSubmitNew = document.getElementById('btn-submit-new');
-    const typeSelect = document.getElementById('inp-pj-type');
-    const imgWrapper = document.getElementById('dir-image-wrapper');
-    const vidWrapper = document.getElementById('dir-video-wrapper');
 
     const updateThemeIcon = () => {
        const icon = document.getElementById('theme-icon');
@@ -265,16 +251,6 @@ export const ProjectsPage = {
         await api.logout();
       } catch(e) {}
       window.location.href = '/login';
-    };
-
-    typeSelect.onchange = (e) => {
-      if(e.target.value === 'image') {
-        imgWrapper.style.display = 'block';
-        vidWrapper.style.display = 'none';
-      } else {
-        imgWrapper.style.display = 'none';
-        vidWrapper.style.display = 'block';
-      }
     };
 
     btnCreate.onclick = () => this.openCreateModal();
@@ -321,21 +297,15 @@ export const ProjectsPage = {
 
   async submitProject() {
     const btnSubmitNew = document.getElementById('btn-submit-new');
-    const typeSelect = document.getElementById('inp-pj-type');
     try {
       const payload = {
         name: document.getElementById('inp-pj-name').value,
-        project_type: typeSelect.value,
+        project_type: 'image',
+        image_dir: document.getElementById('inp-pj-imgdir').value,
         classes_text: document.getElementById('inp-pj-classes').value.replace(/\r\n?/g, '\n'),
       };
       const saveDir = document.getElementById('inp-pj-savedir').value.trim();
       if (saveDir) payload.save_dir = saveDir;
-
-      if (payload.project_type === 'image') {
-        payload.image_dir = document.getElementById('inp-pj-imgdir').value;
-      } else {
-        payload.video_path = document.getElementById('inp-pj-vidpath').value;
-      }
 
       btnSubmitNew.textContent = i18n.t('creating');
       btnSubmitNew.disabled = true;
@@ -355,24 +325,15 @@ export const ProjectsPage = {
   clearCreateForm() {
     document.getElementById('inp-pj-name').value = '';
     document.getElementById('inp-pj-imgdir').value = '';
-    document.getElementById('inp-pj-vidpath').value = '';
     document.getElementById('inp-pj-classes').value = '';
     document.getElementById('inp-pj-savedir').value = '';
-    document.getElementById('inp-pj-type').value = 'image';
-    document.getElementById('dir-image-wrapper').style.display = 'block';
-    document.getElementById('dir-video-wrapper').style.display = 'none';
   },
 
   openCreateModal(prefill = {}) {
     const modal = document.getElementById('modal-create-project');
     if (!modal) return;
-    const type = prefill.project_type || 'image';
-    document.getElementById('inp-pj-type').value = type;
-    document.getElementById('dir-image-wrapper').style.display = type === 'image' ? 'block' : 'none';
-    document.getElementById('dir-video-wrapper').style.display = type === 'video' ? 'block' : 'none';
     if (prefill.name) document.getElementById('inp-pj-name').value = prefill.name;
     if (prefill.image_dir) document.getElementById('inp-pj-imgdir').value = prefill.image_dir;
-    if (prefill.video_path) document.getElementById('inp-pj-vidpath').value = prefill.video_path;
     modal.style.display = 'flex';
     setTimeout(() => document.getElementById('inp-pj-name')?.focus(), 0);
   },
@@ -690,6 +651,7 @@ export const ProjectsPage = {
     const listCont = document.getElementById('projects-list-container');
     const countSpan = document.getElementById('pj-count');
     if (!listCont) return;
+    projects = projects.filter(p => (p.project_type || 'image') === 'image');
     if (countSpan) countSpan.textContent = projects.length;
 
     if (projects.length === 0) {
@@ -698,16 +660,14 @@ export const ProjectsPage = {
     }
 
     listCont.innerHTML = projects.map(p => {
-      const isVideo = p.project_type === 'video';
-      const typeLabel = isVideo ? i18n.t('video_project') : i18n.t('image_project');
-      const total = isVideo ? p.num_frames : p.num_images;
+      const typeLabel = i18n.t('image_project');
+      const total = p.num_images;
       const labeled = p.labeled_images || 0;
       const progress = total > 0 ? Math.round((labeled / total) * 100) : 0;
-      const sourcePath = String(p.image_dir || p.video_path || '');
+      const sourcePath = String(p.image_dir || '');
       const projectName = this.escapeHtml(p.name || '');
       const projectId = this.escapeHtml(p.id || '');
       const jsId = this.escapeHtml(this.jsString(p.id || ''));
-      const jsType = this.escapeHtml(this.jsString(p.project_type || ''));
       const jsPath = this.escapeHtml(this.jsString(sourcePath));
       const sourcePathHtml = this.escapeHtml(sourcePath);
 
@@ -716,7 +676,7 @@ export const ProjectsPage = {
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
               <div style="display: flex; gap: 16px; align-items: center; min-width: 0;">
                 <div class="neu-box" style="width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: var(--neu-inset); flex: 0 0 auto;">
-                  ${isVideo ? '🎬' : '🖼️'}
+                  🖼️
                 </div>
                 <div style="min-width: 0;">
                   <h3 style="margin: 0; font-size: 18px; overflow-wrap: anywhere;">${projectName}</h3>
@@ -724,8 +684,8 @@ export const ProjectsPage = {
                 </div>
               </div>
               <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
-                <button class="neu-button" onclick="window.projectsPage.openProject('${jsId}', '${jsType}')" style="color: var(--neu-text-active); font-weight:600;">${i18n.t('open_btn')}</button>
-                ${!isVideo ? `<button class="neu-button" onclick="window.projectsPage.showDatasetUpload('${jsPath}', '${jsId}')">${i18n.t('add_data_btn')}</button>` : ''}
+                <button class="neu-button" onclick="window.projectsPage.openProject('${jsId}')" style="color: var(--neu-text-active); font-weight:600;">${i18n.t('open_btn')}</button>
+                <button class="neu-button" onclick="window.projectsPage.showDatasetUpload('${jsPath}', '${jsId}')">${i18n.t('add_data_btn')}</button>
                 <button class="neu-button" onclick="window.projectsPage.deleteProject('${jsId}')" style="color: #e53e3e;">${i18n.t('delete_btn')}</button>
               </div>
             </div>
@@ -776,9 +736,8 @@ export const ProjectsPage = {
     return Number.isNaN(d.getTime()) ? raw : d.toLocaleString();
   },
 
-  openProject(id, type) {
-    if (type === 'image') router.navigate(`/project/image/${id}`);
-    else router.navigate(`/project/video/${id}`);
+  openProject(id) {
+    router.navigate(`/project/image/${id}`);
   },
 
   async deleteProject(id) {

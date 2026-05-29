@@ -128,6 +128,11 @@ storage = Storage(_initial_storage_dir())
 sam3 = Sam3Client(timeout_sec=180)
 CURRENT_DATA_DIR = Path(storage.base_dir)
 
+
+def _raise_video_annotation_removed() -> None:
+    raise HTTPException(status_code=410, detail='video annotation has been removed; image projects only')
+
+
 VIDEO_JOB_LOCK = threading.Lock()
 VIDEO_JOB_THREADS: dict[str, dict[str, Any]] = {}
 INFER_JOB_LOCK = threading.Lock()
@@ -536,9 +541,8 @@ async def require_web_auto_session(request: Request, call_next):
 
 class OpenProjectIn(BaseModel):
     name: str = ''
-    project_type: str = Field(default='image', pattern='^(image|video)$')
+    project_type: str = Field(default='image', pattern='^image$')
     image_dir: str = ''
-    video_path: str = ''
     save_dir: Optional[str] = None
     classes_text: str = ''
 
@@ -555,7 +559,6 @@ class ImportExistingProjectIn(BaseModel):
     output_dir: str = ''
     manifest_path: str = ''
     image_dir: str = ''
-    video_path: str = ''
     name: str = ''
     classes_text: str = ''
     project_type: str = ''
@@ -5017,7 +5020,6 @@ def _run_infer_batch_example(
 @app.on_event('startup')
 def on_startup() -> None:
     AUTH_STORE.ensure_admin_from_env()
-    _recover_video_states_on_startup()
     return None
 
 
@@ -5208,7 +5210,8 @@ def list_projects(auto_discover: bool = Query(default=False)) -> dict[str, Any]:
         if auto_discover
         else {'imported': [], 'skipped': 0, 'errors': [], 'cached': True, 'auto_discover': False}
     )
-    return {'projects': storage.list_projects(), 'discovery': discovery}
+    projects = [p for p in storage.list_projects() if str(p.get('project_type') or 'image').strip().lower() == 'image']
+    return {'projects': projects, 'discovery': discovery}
 
 
 @app.get('/api/projects/discover')
@@ -5230,15 +5233,16 @@ def discover_existing_projects(
 
 @app.post('/api/projects/import_existing')
 def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
+    if str(payload.project_type or 'image').strip().lower() not in {'', 'image'}:
+        _raise_video_annotation_removed()
     try:
         result = storage.import_existing_project(
             output_dir=payload.output_dir,
             manifest_path=payload.manifest_path,
             image_dir=payload.image_dir,
-            video_path=payload.video_path,
             name=payload.name,
             classes_text=payload.classes_text,
-            project_type=payload.project_type,
+            project_type='image',
         )
         return result
     except ValueError as exc:
@@ -5248,6 +5252,8 @@ def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
 @app.get('/api/projects/{project_id}')
 def get_project(project_id: str, include_images: bool = Query(default=True)) -> dict[str, Any]:
     project = _get_project_or_404(project_id, enrich=False, include_images=bool(include_images))
+    if str(project.get('project_type') or 'image').strip().lower() != 'image':
+        raise HTTPException(status_code=404, detail='project not found')
     return {'project': project}
 
 
@@ -5255,11 +5261,10 @@ def get_project(project_id: str, include_images: bool = Query(default=True)) -> 
 def open_project(payload: OpenProjectIn) -> dict[str, Any]:
     try:
         logger.info(
-            'open project name=%s type=%s image_dir=%s video_path=%s save_dir=%s',
+            'open project name=%s type=%s image_dir=%s save_dir=%s',
             payload.name,
             payload.project_type,
             payload.image_dir,
-            payload.video_path,
             payload.save_dir,
         )
         project = storage.create_project(
@@ -5267,8 +5272,7 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
             image_dir=payload.image_dir,
             save_dir=payload.save_dir,
             classes_text=payload.classes_text,
-            project_type=payload.project_type,
-            video_path=payload.video_path,
+            project_type='image',
         )
         logger.info(
             'open project done id=%s type=%s images=%s classes=%s',
@@ -5543,107 +5547,6 @@ def delete_class(project_id: str, class_name: str) -> dict[str, Any]:
         msg = str(exc)
         code = 404 if msg == 'project not found' else 400
         raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.get('/api/projects/{project_id}/video/file')
-def get_video_file(project_id: str, request: Request) -> Response:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    if project.get('project_type') != 'video':
-        raise HTTPException(status_code=400, detail='project is not video type')
-    try:
-        video_path = _resolve_project_video_file(project)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    file_size = int(video_path.stat().st_size)
-    media_type = mimetypes.guess_type(str(video_path))[0] or 'video/mp4'
-    headers = {'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache'}
-    range_header = str(request.headers.get('range') or '').strip()
-    if not range_header:
-        return FileResponse(str(video_path), media_type=media_type, filename=video_path.name, headers=headers)
-
-    try:
-        start, end = _parse_range_header(range_header, file_size)
-    except ValueError as exc:
-        raise HTTPException(status_code=416, detail=str(exc)) from exc
-
-    headers.update(
-        {
-            'Content-Range': f'bytes {start}-{end}/{file_size}',
-            'Content-Length': str((end - start) + 1),
-        }
-    )
-    return StreamingResponse(
-        _iter_file_range(video_path, start, end),
-        status_code=206,
-        media_type=media_type,
-        headers=headers,
-    )
-
-
-@app.get('/api/projects/{project_id}/video/stream')
-def get_video_stream(project_id: str, request: Request) -> Response:
-    return get_video_file(project_id, request)
-
-
-@app.get('/api/projects/{project_id}/video/frame/{frame_index}')
-def get_video_frame(project_id: str, frame_index: int) -> Response:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    if project.get('project_type') != 'video':
-        raise HTTPException(status_code=400, detail='project is not video type')
-    try:
-        video_path = _resolve_project_video_file(project)
-        jpeg = _read_video_frame_jpeg(str(video_path), frame_index)
-        return Response(content=jpeg, media_type='image/jpeg', headers={'Cache-Control': 'no-cache'})
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get('/api/projects/{project_id}/video/annotations')
-def get_video_annotations(project_id: str) -> dict[str, Any]:
-    payload = _build_video_annotations_payload(project_id)
-    try:
-        path = storage.video_annotation_json_path(project_id)
-    except ValueError:
-        path = Path('')
-    return {
-        'annotations': payload,
-        'annotation_json_path': str(path) if str(path) else '',
-    }
-
-
-@app.post('/api/projects/{project_id}/video/annotations/save')
-def save_video_annotations(project_id: str, payload: VideoAnnotationsSaveIn) -> dict[str, Any]:
-    if str(payload.project_id or '').strip() != str(project_id or '').strip():
-        raise HTTPException(status_code=400, detail='project_id in path/body mismatch')
-    out = _save_video_annotations_payload(payload)
-    try:
-        path = storage.video_annotation_json_path(project_id)
-    except ValueError:
-        path = Path('')
-    return {
-        'ok': True,
-        'annotations': out,
-        'annotation_json_path': str(path) if str(path) else '',
-    }
-
-
-@app.post('/api/projects/{project_id}/video/transcode_h264')
-def transcode_video_h264(project_id: str) -> dict[str, Any]:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    if project.get('project_type') != 'video':
-        raise HTTPException(status_code=400, detail='project is not video type')
-    try:
-        video_path = _resolve_project_video_file(project)
-        out = _transcode_video_h264_inplace(video_path)
-        refreshed = _get_project_or_404(project_id, enrich=False, include_images=False)
-        return {'ok': True, 'project': refreshed, 'video': out}
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get('/api/projects/{project_id}/images/{image_id}/file')
@@ -6104,20 +6007,11 @@ def set_ui_state(payload: UIStateIn) -> dict[str, Any]:
 @app.post('/api/export')
 def export_project(payload: ExportIn) -> dict[str, Any]:
     project = _get_project_or_404(payload.project_id)
+    if project.get('project_type') == 'video':
+        _raise_video_annotation_removed()
+
     images = project.get('images', [])
     all_annotations = storage.all_annotations(payload.project_id)
-
-    if project.get('project_type') == 'video':
-        if str(payload.format).lower() != 'json':
-            raise HTTPException(status_code=400, detail='video project only supports json export')
-        out_dir = _resolve_output_dir(project, payload.output_dir)
-        out = export_video_json(
-            project=project,
-            images=images,
-            all_annotations=all_annotations,
-            output_dir=out_dir,
-        )
-        return {'ok': True, 'output': str(out)}
 
     include_bbox = bool(payload.include_bbox)
     include_mask = bool(payload.include_mask)
@@ -6161,142 +6055,6 @@ def export_project(payload: ExportIn) -> dict[str, Any]:
 
     return {'ok': True, 'output': str(out)}
 
-
-@app.get('/api/video/jobs/{project_id}')
-def get_video_job(project_id: str) -> dict[str, Any]:
-    return {'job': _get_video_state(project_id)}
-
-
-@app.post('/api/video/jobs/start')
-def start_video_job(payload: VideoJobStartIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id)
-    if project.get('project_type') != 'video':
-        raise HTTPException(status_code=400, detail='project is not video type')
-
-    state = _video_default_state(project)
-    state.update(
-        {
-            'status': 'queued',
-            'mode': str(payload.mode or 'keyframe').strip().lower(),
-            'classes': [str(x).strip() for x in payload.classes if str(x).strip()],
-            'prompt_mode': str(payload.prompt_mode or 'text').strip().lower(),
-            'prompt_frame_index': int(payload.prompt_frame_index if payload.prompt_frame_index is not None else payload.start_frame_index),
-            'active_class': str(payload.active_class or '').strip(),
-            'prompt_points': payload.points,
-            'prompt_boxes': payload.boxes,
-            'api_base_url': str(payload.api_base_url or DEFAULT_API_BASE_URL).strip(),
-            'threshold': float(payload.threshold),
-            'imgsz': max(128, int(payload.imgsz or 0)),
-            'segment_size_frames': int(payload.segment_size_frames),
-            'start_frame_index': int(payload.start_frame_index),
-            'end_frame_index': int(payload.end_frame_index if payload.end_frame_index is not None else max(len(project.get('images', [])) - 1, 0)),
-            'next_frame_index': int(payload.start_frame_index),
-            'current_frame_index': -1,
-            'processed_frames': 0,
-            'progress_pct': 0.0,
-            'elapsed_ms': 0.0,
-            'avg_frame_ms': 0.0,
-            'fps': 0.0,
-            'started_at': '',
-            'ended_at': '',
-            'last_error': '',
-            'session_id': '',
-            'prompt_added': False,
-            'updated_at': now_ts(),
-        }
-    )
-    storage.set_video_job_state(payload.project_id, state)
-    try:
-        _spawn_video_worker(payload.project_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {'job': _get_video_state(payload.project_id)}
-
-
-@app.post('/api/video/jobs/pause')
-@app.post('/api/video/jobs/stop')
-def pause_video_job(payload: VideoJobControlIn) -> dict[str, Any]:
-    state = _get_video_state(payload.project_id)
-    if not _pause_video_worker(payload.project_id):
-        return {'job': state}
-    state['status'] = 'pausing'
-    state['updated_at'] = now_ts()
-    storage.set_video_job_state(payload.project_id, state)
-    return {'job': _get_video_state(payload.project_id)}
-
-
-@app.post('/api/video/jobs/resume')
-def resume_video_job(payload: VideoJobResumeIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id)
-    if project.get('project_type') != 'video':
-        raise HTTPException(status_code=400, detail='project is not video type')
-    state = storage.get_video_job_state(payload.project_id)
-    if not state:
-        state = _video_default_state(project)
-
-    before_signature = {
-        'api_base_url': str(state.get('api_base_url') or DEFAULT_API_BASE_URL).strip(),
-        'threshold': float(state.get('threshold') or 0.5),
-        'imgsz': max(128, int(state.get('imgsz') or 640)),
-        'prompt_mode': str(state.get('prompt_mode') or 'text').strip().lower(),
-        'prompt_frame_index': int(state.get('prompt_frame_index') or 0),
-        'active_class': str(state.get('active_class') or '').strip(),
-        'classes': [str(x).strip() for x in state.get('classes', []) if str(x).strip()],
-        'prompt_boxes': _normalize_prompt_boxes(state.get('prompt_boxes', [])),
-    }
-
-    overrides = payload.model_dump(exclude_unset=True, exclude_none=True)
-    if 'classes' in overrides:
-        state['classes'] = [str(x).strip() for x in overrides.get('classes', []) if str(x).strip()]
-    if 'segment_size_frames' in overrides:
-        state['segment_size_frames'] = _normalize_segment_size(overrides.get('segment_size_frames'))
-    if 'threshold' in overrides:
-        state['threshold'] = float(overrides.get('threshold'))
-    if 'imgsz' in overrides:
-        state['imgsz'] = max(128, int(overrides.get('imgsz') or 0))
-    if 'api_base_url' in overrides:
-        state['api_base_url'] = str(overrides.get('api_base_url') or '').strip() or DEFAULT_API_BASE_URL
-    if 'prompt_mode' in overrides:
-        state['prompt_mode'] = str(overrides.get('prompt_mode') or 'text').strip().lower()
-    if 'prompt_frame_index' in overrides:
-        state['prompt_frame_index'] = max(0, int(overrides.get('prompt_frame_index') or 0))
-    if 'active_class' in overrides:
-        state['active_class'] = str(overrides.get('active_class') or '').strip()
-    if 'boxes' in overrides:
-        state['prompt_boxes'] = overrides.get('boxes') or []
-        state['prompt_points'] = []
-
-    if str(state.get('prompt_mode') or 'text').strip().lower() == 'boxes':
-        active = str(state.get('active_class') or '').strip()
-        if active:
-            state['classes'] = [active]
-    else:
-        state['active_class'] = ''
-
-    after_signature = {
-        'api_base_url': str(state.get('api_base_url') or DEFAULT_API_BASE_URL).strip(),
-        'threshold': float(state.get('threshold') or 0.5),
-        'imgsz': max(128, int(state.get('imgsz') or 640)),
-        'prompt_mode': str(state.get('prompt_mode') or 'text').strip().lower(),
-        'prompt_frame_index': int(state.get('prompt_frame_index') or 0),
-        'active_class': str(state.get('active_class') or '').strip(),
-        'classes': [str(x).strip() for x in state.get('classes', []) if str(x).strip()],
-        'prompt_boxes': _normalize_prompt_boxes(state.get('prompt_boxes', [])),
-    }
-
-    if before_signature != after_signature:
-        state['session_id'] = ''
-        state['prompt_added'] = False
-
-    state['status'] = 'queued'
-    state['last_error'] = ''
-    state['updated_at'] = now_ts()
-    storage.set_video_job_state(payload.project_id, state)
-    try:
-        _spawn_video_worker(payload.project_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {'job': _get_video_state(payload.project_id)}
 
 def create_app() -> FastAPI:
     return app

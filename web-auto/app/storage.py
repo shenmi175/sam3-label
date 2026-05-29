@@ -1754,12 +1754,14 @@ class Storage:
                 project = manifest.get('project', {})
                 project_id = str(project.get('id') or '').strip()
                 ptype = str(project.get('project_type') or 'image').strip().lower()
+                if ptype == 'video':
+                    continue
                 out.append(
                     {
                         'kind': 'manifest',
                         'project_id': project_id,
                         'name': str(project.get('name') or project_id),
-                        'project_type': ptype if ptype in {'image', 'video'} else 'image',
+                        'project_type': 'image',
                         'image_dir': str(project.get('image_dir') or ''),
                         'video_path': str(project.get('video_path') or ''),
                         'output_dir': str(project_dir),
@@ -1804,6 +1806,10 @@ class Storage:
                 continue
             manifest = self._read_project_manifest(manifest_path)
             project = manifest.get('project', {}) if isinstance(manifest, dict) else {}
+            ptype = str(project.get('project_type') or 'image').strip().lower() if isinstance(project, dict) else 'image'
+            if ptype == 'video':
+                skipped += 1
+                continue
             project_id = str(project.get('id') or '').strip() if isinstance(project, dict) else ''
             if not project_id or project_id in known:
                 skipped += 1
@@ -1858,8 +1864,8 @@ class Storage:
             project_id = project_output_dir.name if project_output_dir.name.startswith('prj_') else new_id('prj_')
 
         ptype = str(project_type or base.get('project_type') or 'image').strip().lower()
-        if ptype not in {'image', 'video'}:
-            ptype = 'image'
+        if ptype != 'image':
+            raise ValueError('video annotation has been removed; image projects only')
 
         classes = parse_classes_text(classes_text)
         if not classes:
@@ -1969,6 +1975,8 @@ class Storage:
             normalized.append(ep)
             if ep != raw:
                 changed = True
+            if str(ep.get('project_type') or 'image').strip().lower() != 'image':
+                continue
             out.append(
                 {
                     'id': ep['id'],
@@ -2269,8 +2277,8 @@ class Storage:
         video_path: str | None = None,
     ) -> dict[str, Any]:
         ptype = str(project_type or 'image').strip().lower()
-        if ptype not in {'image', 'video'}:
-            raise ValueError('project_type must be image or video')
+        if ptype != 'image':
+            raise ValueError('video annotation has been removed; image projects only')
 
         project_id = new_id('prj_')
         workspace_dir = ensure_dir(self.projects_root / project_id)

@@ -166,19 +166,6 @@ export const api = {
   rollbackFilterRun(projectId, runId) { return this.request('POST', `/filter/intelligent/runs/${encodeURIComponent(runId)}/rollback?project_id=${encodeURIComponent(projectId)}`); },
 
   exportProject(data) { return this.request('POST', '/export', data); },
-  
-  startVideoJob(data) { return this.request('POST', '/video/jobs/start', data); },
-  getVideoJob(projectId) { return this.request('GET', `/video/jobs/${projectId}`); },
-  stopVideoJob(projectId) { return this.request('POST', '/video/jobs/stop', {project_id: projectId}); },
-  resumeVideoJob(data) { return this.request('POST', '/video/jobs/resume', data); },
-  getVideoAnnotations(projectId) { return this.request('GET', `/projects/${projectId}/video/annotations`); },
-  saveVideoAnnotations(projectId, frames, replaceAll = true) {
-    return this.request('POST', `/projects/${projectId}/video/annotations/save`, {
-      project_id: projectId,
-      frames,
-      replace_all: replaceAll
-    });
-  },
 
   getUIState(projectId = '') {
     const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';

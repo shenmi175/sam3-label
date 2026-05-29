@@ -35,7 +35,7 @@ logger = logging.getLogger("sam3_api")
 _GPU_STATUS_LOCK = threading.Lock()
 _GPU_STATUS_CACHE: dict | None = None
 _GPU_STATUS_CACHE_MONO_TS = 0.0
-_GPU_STATUS_CACHE_TTL_SECONDS = float(os.getenv("SAM3_API_GPU_STATUS_CACHE_TTL_SECONDS", "3"))
+_GPU_STATUS_CACHE_TTL_SECONDS = float(os.getenv("SAM3_API_GPU_STATUS_CACHE_TTL_SECONDS", "1"))
 _GPU_STATUS_STALE_SECONDS = float(os.getenv("SAM3_API_GPU_STATUS_STALE_SECONDS", "120"))
 
 

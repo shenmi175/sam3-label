@@ -746,7 +746,7 @@ export const ImageWorkspace = {
       }
     };
     poll();
-    this.gpuStatusInterval = setInterval(poll, 5000);
+    this.gpuStatusInterval = setInterval(poll, 1000);
   },
 
   bindEvents() {
