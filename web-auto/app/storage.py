@@ -1965,11 +1965,10 @@ class Storage:
         normalized: list[dict[str, Any]] = []
         for raw in projects:
             p = self._normalize_project(raw)
-            normalized.append(p)
-            if p != raw:
-                changed = True
             ep = self._prepare_project_cached(p)
-            first_img = self._get_project_first_image_db(str(ep.get('id') or '')) or {}
+            normalized.append(ep)
+            if ep != raw:
+                changed = True
             out.append(
                 {
                     'id': ep['id'],
@@ -1984,8 +1983,6 @@ class Storage:
                     'num_frames': ep.get('num_frames', 0),
                     'labeled_images': ep.get('labeled_images', 0),
                     'unlabeled_images': ep.get('unlabeled_images', 0),
-                    'first_image_id': first_img.get('id', ''),
-                    'first_image_rel_path': first_img.get('rel_path', ''),
                     'created_at': ep['created_at'],
                     'updated_at': ep['updated_at'],
                 }

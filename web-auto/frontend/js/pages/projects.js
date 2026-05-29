@@ -11,6 +11,9 @@ export const ProjectsPage = {
   _datasetTargetProjectId: '',
   _uploadConfig: null,
   _discoveryCandidates: [],
+  _cachedProjects: [],
+  _hasProjectCache: false,
+  _lastHealthState: null,
 
   async render(container) {
     this.container = container;
@@ -45,7 +48,7 @@ export const ProjectsPage = {
             <div id="pj-count-label" style="font-size: 13px; color: var(--neu-text-light);">${i18n.t('total_projects', {count: '<span id="pj-count">0</span>'})}</div>
           </div>
           <div id="projects-list-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 20px;">
-             <div style="padding: 40px; text-align: center; color: var(--neu-text-light);">${i18n.t('backend_checking')}</div>
+             <div style="padding: 40px; text-align: center; color: var(--neu-text-light);">${i18n.t('loading_projects')}</div>
           </div>
         </div>
       </div>
@@ -186,7 +189,11 @@ export const ProjectsPage = {
     `;
 
     this.bindEvents();
-    this.loadProjects();
+    if (this._hasProjectCache) {
+      this.renderProjectCards(this._cachedProjects);
+    }
+    this.applyHealthState(this._lastHealthState);
+    this.loadProjects({ showLoading: !this._hasProjectCache });
     this.checkHealth();
     this.loadUploadConfig();
   },
@@ -198,27 +205,30 @@ export const ProjectsPage = {
     if (this._activeUploadXhr) this._activeUploadXhr.abort();
   },
 
-  async checkHealth() {
+  applyHealthState(state) {
     const dot = document.getElementById('health-dot');
     const text = document.getElementById('health-text');
     const headerStatus = document.getElementById('health-status-header');
     if (!dot || !text) return;
+    if (!state) return;
+    dot.style.background = state.dot;
+    text.innerText = state.text;
+    if (headerStatus) headerStatus.innerText = state.text;
+  },
+
+  async checkHealth() {
     try {
       const res = await api.getHealth();
       if (res.status === 'ok') {
-        dot.style.background = '#10b981';
-        text.innerText = i18n.t('backend_online');
-        if (headerStatus) headerStatus.innerText = i18n.t('backend_online');
+        this._lastHealthState = { dot: '#10b981', text: i18n.t('backend_online') };
       } else {
-        dot.style.background = '#fbbf24';
-        text.innerText = i18n.t('backend_error');
-        if (headerStatus) headerStatus.innerText = i18n.t('backend_error');
+        this._lastHealthState = { dot: '#fbbf24', text: i18n.t('backend_error') };
       }
     } catch(e) {
-      dot.style.background = '#ef4444';
-      text.innerText = i18n.t('backend_offline');
-      if (headerStatus) headerStatus.innerText = i18n.t('backend_offline');
+      this._lastHealthState = { dot: '#ef4444', text: i18n.t('backend_offline') };
     }
+    if (!this.container) return;
+    this.applyHealthState(this._lastHealthState);
     if (!this._healthTimer) {
       this._healthTimer = setInterval(() => this.checkHealth(), 10000);
     }
@@ -653,36 +663,55 @@ export const ProjectsPage = {
     return targetDir;
   },
 
-  async loadProjects() {
+  async loadProjects(options = {}) {
     if (!this.container) return;
     const listCont = document.getElementById('projects-list-container');
-    const countSpan = document.getElementById('pj-count');
+    if (options.showLoading && listCont) {
+      listCont.innerHTML = `<div style="grid-column: 1 / -1; padding: 48px; text-align: center; color: var(--neu-text-light);">${i18n.t('loading_projects')}</div>`;
+    }
     try {
-      const data = await api.getProjects();
+      const data = await api.getProjects({ autoDiscover: Boolean(options.autoDiscover) });
       const projects = data.projects || [];
-      countSpan.textContent = projects.length;
-
-      if (projects.length === 0) {
-        listCont.innerHTML = `<div style="grid-column: 1 / -1; padding: 48px; text-align: center; color: var(--neu-text-light);">${i18n.t('no_projects')}</div>`;
+      this._cachedProjects = projects;
+      this._hasProjectCache = true;
+      this.renderProjectCards(projects);
+    } catch (err) {
+      if (this._hasProjectCache) {
+        showToast(`Failed to refresh projects: ${err.message}`, 'error');
         return;
       }
+      if (listCont) {
+        listCont.innerHTML = `<div style="grid-column: 1 / -1; padding: 40px; text-align: center; color: #e53e3e;">Failed to load projects: ${this.escapeHtml(err.message)}</div>`;
+      }
+    }
+  },
 
-      listCont.innerHTML = projects.map(p => {
-        const isVideo = p.project_type === 'video';
-        const typeLabel = isVideo ? i18n.t('video_project') : i18n.t('image_project');
-        const total = isVideo ? p.num_frames : p.num_images;
-        const labeled = p.labeled_images || 0;
-        const progress = total > 0 ? Math.round((labeled / total) * 100) : 0;
-        const sourcePath = String(p.image_dir || p.video_path || '');
-        const projectName = this.escapeHtml(p.name || '');
-        const projectId = this.escapeHtml(p.id || '');
-        const projectType = this.escapeHtml(p.project_type || '');
-        const sourcePathHtml = this.escapeHtml(sourcePath);
-        const jsId = this.escapeHtml(this.jsString(p.id || ''));
-        const jsType = this.escapeHtml(this.jsString(p.project_type || ''));
-        const jsPath = this.escapeHtml(this.jsString(sourcePath));
+  renderProjectCards(projects = []) {
+    const listCont = document.getElementById('projects-list-container');
+    const countSpan = document.getElementById('pj-count');
+    if (!listCont) return;
+    if (countSpan) countSpan.textContent = projects.length;
 
-        return `
+    if (projects.length === 0) {
+      listCont.innerHTML = `<div style="grid-column: 1 / -1; padding: 48px; text-align: center; color: var(--neu-text-light);">${i18n.t('no_projects')}</div>`;
+      return;
+    }
+
+    listCont.innerHTML = projects.map(p => {
+      const isVideo = p.project_type === 'video';
+      const typeLabel = isVideo ? i18n.t('video_project') : i18n.t('image_project');
+      const total = isVideo ? p.num_frames : p.num_images;
+      const labeled = p.labeled_images || 0;
+      const progress = total > 0 ? Math.round((labeled / total) * 100) : 0;
+      const sourcePath = String(p.image_dir || p.video_path || '');
+      const projectName = this.escapeHtml(p.name || '');
+      const projectId = this.escapeHtml(p.id || '');
+      const jsId = this.escapeHtml(this.jsString(p.id || ''));
+      const jsType = this.escapeHtml(this.jsString(p.project_type || ''));
+      const jsPath = this.escapeHtml(this.jsString(sourcePath));
+      const sourcePathHtml = this.escapeHtml(sourcePath);
+
+      return `
           <div class="neu-card" style="padding: 22px; display: flex; flex-direction: column; gap: 16px; min-width: 0;">
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
               <div style="display: flex; gap: 16px; align-items: center; min-width: 0;">
@@ -730,11 +759,7 @@ export const ProjectsPage = {
             </div>
           </div>
         `;
-      }).join('');
-
-    } catch (err) {
-      listCont.innerHTML = `<div style="grid-column: 1 / -1; padding: 40px; text-align: center; color: #e53e3e;">Failed to load projects: ${this.escapeHtml(err.message)}</div>`;
-    }
+    }).join('');
   },
 
   safeFormatDate(value) {

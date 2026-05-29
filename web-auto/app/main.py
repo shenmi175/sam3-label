@@ -5118,7 +5118,7 @@ def health() -> dict[str, Any]:
         'status': 'ok',
         'service': 'web-auto-api',
         'mode': 'api_only',
-        'projects': len(storage.list_projects()),
+        'timestamp': now_ts(),
         'allowed_origins': ALLOWED_ORIGINS,
     }
 
@@ -5202,8 +5202,12 @@ def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
 
 
 @app.get('/api/projects')
-def list_projects() -> dict[str, Any]:
-    discovery = _auto_import_project_manifests()
+def list_projects(auto_discover: bool = Query(default=False)) -> dict[str, Any]:
+    discovery = (
+        _auto_import_project_manifests()
+        if auto_discover
+        else {'imported': [], 'skipped': 0, 'errors': [], 'cached': True, 'auto_discover': False}
+    )
     return {'projects': storage.list_projects(), 'discovery': discovery}
 
 
@@ -5276,11 +5280,6 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
         return {'project': project}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get('/api/health')
-def health_check() -> dict[str, Any]:
-    return {'status': 'ok', 'timestamp': now_ts()}
 
 
 @app.get('/api/uploads/config')

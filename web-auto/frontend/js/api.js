@@ -40,7 +40,12 @@ export const api = {
     return response.json();
   },
 
-  getProjects() { return this.request('GET', '/projects'); },
+  getProjects(options = {}) {
+    const params = new URLSearchParams();
+    if (options.autoDiscover) params.set('auto_discover', 'true');
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return this.request('GET', `/projects${suffix}`);
+  },
   getProject(id, includeImages=false) { return this.request('GET', `/projects/${id}?include_images=${includeImages}`); },
   getHealth() { return this.request('GET', '/health'); },
   getAuthStatus() { return this.request('GET', '/auth/status'); },
