@@ -66,6 +66,14 @@ export class ImageViewerV2 {
     this.staticRenderTimer = null;
     this.staticRenderState = null;
     this.staticExcludeAnnotationId = null;
+    this.annotationGeometryCache = new WeakMap();
+    this.wheelFrame = null;
+    this.pendingWheelScale = 1;
+    this.pendingWheelClientX = 0;
+    this.pendingWheelClientY = 0;
+    this.panFrame = null;
+    this.pendingPanDx = 0;
+    this.pendingPanDy = 0;
     this.drawOffsetX = 0;
     this.drawOffsetY = 0;
 
@@ -132,6 +140,8 @@ export class ImageViewerV2 {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
     if (this.staticFrame) cancelAnimationFrame(this.staticFrame);
+    if (this.wheelFrame) cancelAnimationFrame(this.wheelFrame);
+    if (this.panFrame) cancelAnimationFrame(this.panFrame);
     if (this.staticRenderTimer) clearTimeout(this.staticRenderTimer);
     if (this.viewer) {
       this.viewer.destroy();
@@ -188,8 +198,17 @@ export class ImageViewerV2 {
 
   onViewportChanged() {
     this.updateStaticTransform();
-    this.requestDraw();
+    if (this.hasLiveOverlay()) this.requestDraw();
     this.requestStaticRedraw(false);
+  }
+
+  hasLiveOverlay() {
+    return Boolean(
+      this.staticExcludeAnnotationId
+      || this.focusedAnnotationId
+      || this.activePolygonPoints.length > 0
+      || (this.isDrawingBox && this.boxStart && this.boxEnd)
+    );
   }
 
   setImageSource(tileInfo) {
@@ -229,6 +248,9 @@ export class ImageViewerV2 {
     this.activePolygonPoints = [];
     this.staticRenderState = null;
     this.staticExcludeAnnotationId = null;
+    this.pendingWheelScale = 1;
+    this.pendingPanDx = 0;
+    this.pendingPanDy = 0;
     if (this.viewer) this.viewer.close();
     if (this.staticCtx) this.staticCtx.clearRect(0, 0, this.staticCanvas.width, this.staticCanvas.height);
     this.draw();
@@ -236,12 +258,14 @@ export class ImageViewerV2 {
 
   setAnnotations(anns) {
     this.annotations = anns || [];
+    this.annotationGeometryCache = new WeakMap();
     this.requestStaticRedraw(true);
     this.requestDraw();
   }
 
   setPreviews(previews) {
     this.previews = previews || [];
+    this.annotationGeometryCache = new WeakMap();
     this.requestStaticRedraw(true);
     this.requestDraw();
   }
@@ -499,8 +523,52 @@ export class ImageViewerV2 {
       .map((p) => this.clampPoint([p[0], p[1]]));
   }
 
+  pointPairs(points) {
+    if (Array.isArray(points) && points.length > 0 && Array.isArray(points[0])) return points;
+    return this.polygonToPairs(points);
+  }
+
+  getAnnotationGeometry(ann) {
+    if (!ann || typeof ann !== 'object') return { bbox: null, polygon: [] };
+    const bboxRef = ann.bbox || ann.bbox_xyxy || ann.box || null;
+    const polygonRef = ann.polygon || null;
+    const pointsRef = ann.points || null;
+    const cached = this.annotationGeometryCache.get(ann);
+    if (
+      cached
+      && cached.bboxRef === bboxRef
+      && cached.polygonRef === polygonRef
+      && cached.pointsRef === pointsRef
+      && cached.imageWidth === this.image?.width
+      && cached.imageHeight === this.image?.height
+    ) {
+      return cached.geometry;
+    }
+
+    const polygon = this.polygonToPairs(polygonRef || pointsRef);
+    const bbox = this.normalizeBbox(bboxRef) || this.bboxFromPairs(polygon);
+    const geometry = { bbox, polygon };
+    this.annotationGeometryCache.set(ann, {
+      bboxRef,
+      polygonRef,
+      pointsRef,
+      imageWidth: this.image?.width,
+      imageHeight: this.image?.height,
+      geometry,
+    });
+    return geometry;
+  }
+
+  invalidateAnnotationGeometry(ann) {
+    if (ann && typeof ann === 'object') this.annotationGeometryCache.delete(ann);
+  }
+
   bboxFromPolygon(points) {
     const pairs = this.polygonToPairs(points);
+    return this.bboxFromPairs(pairs);
+  }
+
+  bboxFromPairs(pairs) {
     if (pairs.length === 0) return null;
     const xs = pairs.map((p) => Number(p[0] || 0));
     const ys = pairs.map((p) => Number(p[1] || 0));
@@ -508,9 +576,7 @@ export class ImageViewerV2 {
   }
 
   getAnnotationBbox(ann) {
-    const bbox = this.normalizeBbox(ann?.bbox || ann?.bbox_xyxy || ann?.box);
-    if (bbox) return bbox;
-    return this.bboxFromPolygon(ann?.polygon || ann?.points);
+    return this.getAnnotationGeometry(ann).bbox;
   }
 
   setAnnotationBbox(ann, bbox) {
@@ -519,6 +585,7 @@ export class ImageViewerV2 {
     ann.bbox = next;
     delete ann.box;
     delete ann.bbox_xyxy;
+    this.invalidateAnnotationGeometry(ann);
   }
 
   annotationVisible(ann) {
@@ -540,6 +607,15 @@ export class ImageViewerV2 {
     if (!bbox) return false;
     const [x, y] = point;
     return x >= bbox[0] && x <= bbox[2] && y >= bbox[1] && y <= bbox[3];
+  }
+
+  pointInExpandedBbox(point, bbox, tolerance = 0) {
+    if (!bbox) return false;
+    const [x, y] = point;
+    return x >= bbox[0] - tolerance
+      && x <= bbox[2] + tolerance
+      && y >= bbox[1] - tolerance
+      && y <= bbox[3] + tolerance;
   }
 
   distanceToSegment(point, a, b) {
@@ -565,7 +641,7 @@ export class ImageViewerV2 {
   }
 
   pointInPolygon(point, polygon) {
-    const pts = this.polygonToPairs(polygon);
+    const pts = this.pointPairs(polygon);
     if (pts.length < 3) return false;
     const [x, y] = point;
     let inside = false;
@@ -608,12 +684,13 @@ export class ImageViewerV2 {
       ? this.annotations.find((ann) => String(ann?.id || '') === String(this.focusedAnnotationId))
       : null;
     if (selected) {
-      const polygon = this.polygonToPairs(selected.polygon || selected.points);
-      const bbox = this.getAnnotationBbox(selected);
+      const selectedGeom = this.getAnnotationGeometry(selected);
+      const polygon = selectedGeom.polygon;
+      const bbox = selectedGeom.bbox;
       for (const handle of this.bboxHandles(bbox)) {
         if (this.distance(point, handle.point) <= tolerance) return { annotation: selected, operation: 'bbox-handle', handle: handle.name };
       }
-      if (polygon.length >= 3) {
+      if (polygon.length >= 3 && this.pointInExpandedBbox(point, bbox, tolerance)) {
         for (let i = 0; i < polygon.length; i += 1) {
           if (this.distance(point, polygon[i]) <= tolerance) return { annotation: selected, operation: 'polygon-vertex', vertexIndex: i };
         }
@@ -628,13 +705,14 @@ export class ImageViewerV2 {
     for (let i = this.annotations.length - 1; i >= 0; i -= 1) {
       const ann = this.annotations[i];
       if (!this.annotationVisible(ann)) continue;
-      const polygon = ann?.polygon || ann?.points;
-      if (this.pointInPolygon(point, polygon)) return { annotation: ann, operation: 'move' };
-      const bbox = this.getAnnotationBbox(ann);
+      const geom = this.getAnnotationGeometry(ann);
+      const polygon = geom.polygon;
+      const bbox = geom.bbox;
+      if (!this.pointInExpandedBbox(point, bbox, tolerance)) continue;
+      if (polygon.length >= 3 && this.pointInPolygon(point, polygon)) return { annotation: ann, operation: 'move' };
       if (this.pointNearBboxEdge(point, bbox, tolerance)) return { annotation: ann, operation: 'bbox-body' };
       if (this.pointInBbox(point, bbox)) {
-        const polygonPairs = this.polygonToPairs(polygon);
-        return { annotation: ann, operation: polygonPairs.length >= 3 ? 'bbox-body' : 'move' };
+        return { annotation: ann, operation: polygon.length >= 3 ? 'bbox-body' : 'move' };
       }
     }
     return null;
@@ -656,9 +734,11 @@ export class ImageViewerV2 {
       delete ann.points;
       if (originalBbox) this.setAnnotationBbox(ann, [originalBbox[0] + dx, originalBbox[1] + dy, originalBbox[2] + dx, originalBbox[3] + dy]);
       else this.setAnnotationBbox(ann, this.bboxFromPolygon(ann.polygon));
+      this.invalidateAnnotationGeometry(ann);
       return;
     }
     if (originalBbox) this.setAnnotationBbox(ann, [originalBbox[0] + dx, originalBbox[1] + dy, originalBbox[2] + dx, originalBbox[3] + dy]);
+    this.invalidateAnnotationGeometry(ann);
   }
 
   applyBboxResize(ann, original, handle, point) {
@@ -680,6 +760,7 @@ export class ImageViewerV2 {
     ann.polygon = points;
     delete ann.points;
     this.setAnnotationBbox(ann, this.bboxFromPolygon(points));
+    this.invalidateAnnotationGeometry(ann);
   }
 
   panByPixels(dx, dy) {
@@ -710,7 +791,18 @@ export class ImageViewerV2 {
     if (e.deltaMode === 1) delta *= 16;
     else if (e.deltaMode === 2) delta *= this.overlayCanvas.height || window.innerHeight || 800;
     delta = Math.max(-160, Math.min(160, delta));
-    this.zoomBy(Math.exp(-delta * 0.0015), e.clientX, e.clientY);
+    this.pendingWheelScale *= Math.exp(-delta * 0.0015);
+    this.pendingWheelClientX = e.clientX;
+    this.pendingWheelClientY = e.clientY;
+    if (this.wheelFrame) return;
+    this.wheelFrame = requestAnimationFrame(() => {
+      const scale = this.pendingWheelScale;
+      const clientX = this.pendingWheelClientX;
+      const clientY = this.pendingWheelClientY;
+      this.pendingWheelScale = 1;
+      this.wheelFrame = null;
+      this.zoomBy(scale, clientX, clientY);
+    });
   }
 
   onMouseDown(e) {
@@ -808,7 +900,18 @@ export class ImageViewerV2 {
       const dy = e.clientY - this.lastY;
       this.lastX = e.clientX;
       this.lastY = e.clientY;
-      this.panByPixels(dx, dy);
+      this.pendingPanDx += dx;
+      this.pendingPanDy += dy;
+      if (!this.panFrame) {
+        this.panFrame = requestAnimationFrame(() => {
+          const panDx = this.pendingPanDx;
+          const panDy = this.pendingPanDy;
+          this.pendingPanDx = 0;
+          this.pendingPanDy = 0;
+          this.panFrame = null;
+          this.panByPixels(panDx, panDy);
+        });
+      }
       return;
     }
     if (this.isDrawingBox) {
@@ -916,7 +1019,7 @@ export class ImageViewerV2 {
   }
 
   drawPath(points, close = true) {
-    const pairs = this.polygonToPairs(points);
+    const pairs = this.pointPairs(points);
     if (pairs.length === 0) return [];
     const screen = pairs.map((p) => this.imageToScreen(p));
     this.ctx.beginPath();
@@ -928,7 +1031,8 @@ export class ImageViewerV2 {
 
   drawAnnotation(ann, isPreview = false) {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
-    const points = ann.points || ann.polygon;
+    const geom = this.getAnnotationGeometry(ann);
+    const points = geom.polygon;
     if (this.options.showMasks && points && points.length > 2) {
       this.drawPath(points, true);
       const alpha = isPreview ? 0.45 : 0.3;
@@ -941,7 +1045,7 @@ export class ImageViewerV2 {
       this.ctx.setLineDash([]);
     }
 
-    const bbox = this.getAnnotationBbox(ann);
+    const bbox = geom.bbox;
     if (bbox) {
       const p1 = this.imageToScreen([bbox[0], bbox[1]]);
       const p2 = this.imageToScreen([bbox[2], bbox[3]]);
@@ -953,8 +1057,7 @@ export class ImageViewerV2 {
     }
 
     if (!isPreview) {
-      const polyPairs = this.polygonToPairs(points);
-      const labelPoint = bbox ? [bbox[0], bbox[1]] : (polyPairs.length > 0 ? polyPairs[0] : null);
+      const labelPoint = bbox ? [bbox[0], bbox[1]] : (points.length > 0 ? points[0] : null);
       if (labelPoint && this.imageScale() > 0.08) {
         const pos = this.imageToScreen(labelPoint);
         this.ctx.fillStyle = color;
@@ -1011,7 +1114,9 @@ export class ImageViewerV2 {
     const ann = this.annotations.find((item) => String(item?.id || '') === String(this.focusedAnnotationId));
     if (!ann) return;
     const color = ann.color || this.getColorForClass(ann.class_name);
-    const polygon = this.polygonToPairs(ann.polygon || ann.points);
+    const geom = this.getAnnotationGeometry(ann);
+    const polygon = geom.polygon;
+    const bbox = geom.bbox;
     if (polygon.length >= 3) {
       this.drawPath(polygon, true);
       this.ctx.strokeStyle = color;
@@ -1019,10 +1124,10 @@ export class ImageViewerV2 {
       this.ctx.setLineDash([6, 4]);
       this.ctx.stroke();
       this.ctx.setLineDash([]);
-      polygon.forEach((point) => this.drawHandle(point, '#ffffff'));
-      return;
+      if (this.shouldDrawPolygonVertices(polygon)) {
+        polygon.forEach((point) => this.drawHandle(point, '#ffffff'));
+      }
     }
-    const bbox = this.getAnnotationBbox(ann);
     if (!bbox) return;
     const p1 = this.imageToScreen([bbox[0], bbox[1]]);
     const p2 = this.imageToScreen([bbox[2], bbox[3]]);
@@ -1030,6 +1135,13 @@ export class ImageViewerV2 {
     this.ctx.lineWidth = 2;
     this.ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
     this.bboxHandles(bbox).forEach((handle) => this.drawHandle(handle.point, '#ffffff'));
+  }
+
+  shouldDrawPolygonVertices(polygon) {
+    if (!Array.isArray(polygon) || polygon.length === 0) return false;
+    if (polygon.length <= 80) return true;
+    if (polygon.length > 240) return false;
+    return this.imageScale() >= 0.35;
   }
 
   drawActivePolygon() {
