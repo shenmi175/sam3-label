@@ -462,16 +462,15 @@ export class CanvasViewer {
     if (selected) {
       const polygon = this.polygonToPairs(selected.polygon || selected.points);
       const bbox = this.getAnnotationBbox(selected);
+      for (const handle of this.bboxHandles(bbox)) {
+        if (this.distance(point, handle.point) <= tolerance) {
+          return { annotation: selected, operation: 'bbox-handle', handle: handle.name };
+        }
+      }
       if (polygon.length >= 3) {
         for (let i = 0; i < polygon.length; i += 1) {
           if (this.distance(point, polygon[i]) <= tolerance) {
             return { annotation: selected, operation: 'polygon-vertex', vertexIndex: i };
-          }
-        }
-      } else {
-        for (const handle of this.bboxHandles(bbox)) {
-          if (this.distance(point, handle.point) <= tolerance) {
-            return { annotation: selected, operation: 'bbox-handle', handle: handle.name };
           }
         }
       }
@@ -503,22 +502,30 @@ export class CanvasViewer {
   }
 
   applyMoveGeometry(ann, original, dx, dy) {
+    const originalBbox = original.bbox || this.getAnnotationBbox(ann);
     if (original.polygon && original.polygon.length > 0) {
       ann.polygon = original.polygon.map((p) => this.clampPoint([p[0] + dx, p[1] + dy]));
       delete ann.points;
-      const bbox = this.bboxFromPolygon(ann.polygon);
-      if (bbox) this.setAnnotationBbox(ann, bbox);
+      if (originalBbox) {
+        this.setAnnotationBbox(ann, [originalBbox[0] + dx, originalBbox[1] + dy, originalBbox[2] + dx, originalBbox[3] + dy]);
+      } else {
+        const bbox = this.bboxFromPolygon(ann.polygon);
+        if (bbox) this.setAnnotationBbox(ann, bbox);
+      }
       return;
     }
     if (original.points && original.points.length > 0) {
       ann.polygon = original.points.map((p) => this.clampPoint([p[0] + dx, p[1] + dy]));
       delete ann.points;
-      const bbox = this.bboxFromPolygon(ann.polygon);
-      if (bbox) this.setAnnotationBbox(ann, bbox);
+      if (originalBbox) {
+        this.setAnnotationBbox(ann, [originalBbox[0] + dx, originalBbox[1] + dy, originalBbox[2] + dx, originalBbox[3] + dy]);
+      } else {
+        const bbox = this.bboxFromPolygon(ann.polygon);
+        if (bbox) this.setAnnotationBbox(ann, bbox);
+      }
       return;
     }
-    const bbox = original.bbox || this.getAnnotationBbox(ann);
-    if (bbox) this.setAnnotationBbox(ann, [bbox[0] + dx, bbox[1] + dy, bbox[2] + dx, bbox[3] + dy]);
+    if (originalBbox) this.setAnnotationBbox(ann, [originalBbox[0] + dx, originalBbox[1] + dy, originalBbox[2] + dx, originalBbox[3] + dy]);
   }
 
   applyBboxResize(ann, original, handle, point) {
@@ -539,8 +546,10 @@ export class CanvasViewer {
     points[vertexIndex] = this.clampPoint(point);
     ann.polygon = points;
     delete ann.points;
-    const bbox = this.bboxFromPolygon(points);
-    if (bbox) this.setAnnotationBbox(ann, bbox);
+    if (!original.bbox) {
+      const bbox = this.bboxFromPolygon(points);
+      if (bbox) this.setAnnotationBbox(ann, bbox);
+    }
   }
   
   fitToScreen() {
@@ -684,7 +693,11 @@ export class CanvasViewer {
       const point = this.clampPoint(this.canvasToImage(e.clientX, e.clientY));
       const dx = point[0] - this.dragStart[0];
       const dy = point[1] - this.dragStart[1];
-      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) this.dragMoved = true;
+      const dragTolerance = 3 / Math.max(this.transform.scale, 0.01);
+      if (!this.dragMoved && Math.abs(dx) <= dragTolerance && Math.abs(dy) <= dragTolerance) {
+        return;
+      }
+      this.dragMoved = true;
       if (this.dragMoved && !this.dragStartedHistory) {
         if (this.onAnnotationEditStart) this.onAnnotationEditStart(this.dragAnnotation);
         this.dragStartedHistory = true;
