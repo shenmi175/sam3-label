@@ -1365,6 +1365,11 @@ cmd_update() {
   if [[ "$SKIP_GIT" -eq 0 && -d "$ROOT_DIR/.git" ]]; then
     info "Pulling latest git changes"
     (cd "$ROOT_DIR" && git pull --ff-only)
+    # Newer revisions can add required Compose variables. Re-run env repair
+    # after pulling so an update from an older script cannot stop the stack
+    # before the newly required defaults are generated.
+    ensure_env "$PROFILE_OVERRIDE"
+    sapiens_enabled && ensure_sapiens_submodule
   fi
 
   if [[ "$SKIP_PULL" -eq 0 ]]; then
