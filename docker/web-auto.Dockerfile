@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg libvips-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY web-auto/requirements.txt /tmp/web-auto-requirements.txt

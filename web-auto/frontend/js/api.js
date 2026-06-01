@@ -93,6 +93,9 @@ export const api = {
   },
   importImages(projectId, sourceDir) { return this.request('POST', `/projects/${projectId}/images/import`, {source_dir: sourceDir}); },
   deleteImage(projectId, imageId) { return this.request('DELETE', `/projects/${projectId}/images/${imageId}`); },
+  getImageTilesInfo(projectId, imageId, requestOptions = {}) {
+    return this.request('GET', `/projects/${projectId}/images/${imageId}/tiles/info`, null, false, requestOptions);
+  },
   getUploadConfig() { return this.request('GET', '/uploads/config'); },
   uploadDatasetFile({ file, targetDir, relativePath = '', overwrite = false, onProgress = null, onXhr = null }) {
     return new Promise((resolve, reject) => {

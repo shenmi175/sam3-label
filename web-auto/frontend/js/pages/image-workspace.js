@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { CanvasViewer } from '../components/canvas-viewer.js';
+import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
 import { store } from '../store.js';
 
@@ -351,7 +351,7 @@ export const ImageWorkspace = {
 
     this.initializeLayoutControls();
     
-    this.viewer = new CanvasViewer('canvas-container');
+    this.viewer = new ImageViewerV2('canvas-container');
     this.viewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
     this.viewer.onAnnotationSelected = (annId) => this.selectAnnotationFromCanvas(annId);
     this.viewer.onAnnotationEditStart = () => this.pushAnnotationHistory();
@@ -1635,12 +1635,12 @@ export const ImageWorkspace = {
     return cached;
   },
 
-  storeImageBundle(id, relPath, image, annotations) {
-    if (!id || !image) return;
+  storeImageBundle(id, relPath, imageInfo, annotations) {
+    if (!id || !imageInfo) return;
     this.touchImageBundleCache(this.imageBundleKey(id), {
       id: String(id),
       relPath: relPath || '',
-      image,
+      imageInfo,
       annotations: Array.isArray(annotations) ? annotations : [],
       cachedAt: Date.now(),
     });
@@ -1660,25 +1660,7 @@ export const ImageWorkspace = {
   updateCurrentImageBundleAnnotations(annotations) {
     const cached = this.getCachedImageBundle(this.selectedImageId);
     if (!cached) return;
-    this.storeImageBundle(this.selectedImageId, this.selectedImagePath || cached.relPath, cached.image, annotations);
-  },
-
-  loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = async () => {
-        if (typeof img.decode === 'function') {
-          try {
-            await img.decode();
-          } catch (_) {
-            // Some browsers reject decode() after a successful load; the image is still usable.
-          }
-        }
-        resolve(img);
-      };
-      img.onerror = reject;
-      img.src = src;
-    });
+    this.storeImageBundle(this.selectedImageId, this.selectedImagePath || cached.relPath, cached.imageInfo, annotations);
   },
 
   async loadImageBundle(id, relPath, options = {}) {
@@ -1691,15 +1673,14 @@ export const ImageWorkspace = {
     if (existing) return existing;
 
     const requestOptions = options.signal ? { signal: options.signal } : {};
-    const imgUrl = `/api/projects/${this.projectId}/images/${id}/file`;
     const promise = Promise.all([
-      this.loadImageElement(imgUrl),
+      api.getImageTilesInfo(this.projectId, id, requestOptions),
       api.getAnnotations(this.projectId, id, requestOptions),
-    ]).then(([image, annsRes]) => {
+    ]).then(([imageInfo, annsRes]) => {
       const bundle = {
         id: String(id),
         relPath: relPath || '',
-        image,
+        imageInfo,
         annotations: Array.isArray(annsRes?.annotations) ? annsRes.annotations : [],
         cachedAt: Date.now(),
       };
@@ -1726,7 +1707,7 @@ export const ImageWorkspace = {
     this.isImageLoading = false;
     this.viewer.setPrompts([]);
     this.viewer.setPreviews([]);
-    this.viewer.setImage(bundle.image);
+    this.viewer.setImageSource(bundle.imageInfo);
     this.viewer.setAnnotations(this.annotations);
     this.viewer.setFocusedAnnotation(null);
     this.annotationHistory = [];
@@ -1828,7 +1809,7 @@ export const ImageWorkspace = {
     try {
       const bundle = await this.loadImageBundle(id, relPath, { signal: abortController.signal });
       if (this.isUnmounted || requestSeq !== this.imageLoadSeq || String(this.selectedImageId) !== String(id)) return;
-      if (!bundle?.image) return;
+      if (!bundle?.imageInfo) return;
       this.commitImageBundle(bundle);
       if (this.imageLoadAbortController === abortController) {
         this.imageLoadAbortController = null;
