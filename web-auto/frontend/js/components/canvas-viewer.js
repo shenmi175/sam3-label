@@ -58,6 +58,7 @@ export class CanvasViewer {
     this.drawFrame = null;
     this.pendingDrawLayers = undefined;
     this.renderTransform = { ...this.transform };
+    this.renderPadding = 0;
     this.compositorFrame = null;
     this.compositorCommitTimer = null;
     this.compositorActive = false;
@@ -126,7 +127,8 @@ export class CanvasViewer {
     canvas.className = className;
     Object.assign(canvas.style, {
       position: 'absolute',
-      inset: '0',
+      left: '0',
+      top: '0',
       display: 'block',
       width: '100%',
       height: '100%',
@@ -197,19 +199,43 @@ export class CanvasViewer {
     return { width, height };
   }
 
+  getRenderPadding(width, height) {
+    if (width <= 0 || height <= 0) return 0;
+    return Math.round(Math.min(640, Math.max(256, Math.min(width, height) * 0.4)));
+  }
+
+  sizeCanvas(canvas, width, height, left = 0, top = 0) {
+    if (!canvas) return;
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.left = `${left}px`;
+    canvas.style.top = `${top}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+  }
+
   syncCanvasSize() {
     const oldWidth = this.canvas.width;
     const oldHeight = this.canvas.height;
     const { width, height } = this.getContainerSize();
+    const renderPadding = this.getRenderPadding(width, height);
+    const visualWidth = width + renderPadding * 2;
+    const visualHeight = height + renderPadding * 2;
 
     if (width <= 0 || height <= 0) return false;
-    if (this.canvas.width === width && this.canvas.height === height) return;
+    if (
+      this.canvas.width === width &&
+      this.canvas.height === height &&
+      this.imageCanvas.width === visualWidth &&
+      this.imageCanvas.height === visualHeight &&
+      this.renderPadding === renderPadding
+    ) return;
 
-    for (const canvas of [this.imageCanvas, this.maskCanvas, this.overlayCanvas, this.eventCanvas]) {
-      if (!canvas) continue;
-      canvas.width = width;
-      canvas.height = height;
+    this.renderPadding = renderPadding;
+    for (const canvas of [this.imageCanvas, this.maskCanvas, this.overlayCanvas]) {
+      this.sizeCanvas(canvas, visualWidth, visualHeight, -renderPadding, -renderPadding);
     }
+    this.sizeCanvas(this.eventCanvas, width, height, 0, 0);
 
     if (this.image && oldWidth > 0 && oldHeight > 0) {
       if (this.fitMode) {
@@ -413,12 +439,38 @@ export class CanvasViewer {
 
   applyCompositorTransform() {
     if (!this.visualRoot || !this.image) return;
+    if (!this.compositorCoversViewport()) {
+      this.commitCompositorTransform();
+      return;
+    }
     const base = this.renderTransform || this.transform;
     const baseScale = Math.max(Number(base.scale || 1), 0.000001);
     const scale = this.transform.scale / baseScale;
     const x = this.transform.x - (Number(base.x || 0) * scale);
     const y = this.transform.y - (Number(base.y || 0) * scale);
     this.visualRoot.style.transform = `translate3d(${x.toFixed(3)}px, ${y.toFixed(3)}px, 0) scale(${scale.toFixed(6)})`;
+  }
+
+  compositorCoversViewport(preloadMargin = 48) {
+    if (!this.image || !this.canvas) return true;
+    const base = this.renderTransform || this.transform;
+    const baseScale = Math.max(Number(base.scale || 1), 0.000001);
+    const scale = this.transform.scale / baseScale;
+    const x = this.transform.x - (Number(base.x || 0) * scale);
+    const y = this.transform.y - (Number(base.y || 0) * scale);
+    const width = Number(this.canvas.width || 0);
+    const height = Number(this.canvas.height || 0);
+    const padding = Number(this.renderPadding || 0);
+    const left = x - padding * scale;
+    const top = y - padding * scale;
+    const right = x + (width + padding) * scale;
+    const bottom = y + (height + padding) * scale;
+    return (
+      left <= -preloadMargin &&
+      top <= -preloadMargin &&
+      right >= width + preloadMargin &&
+      bottom >= height + preloadMargin
+    );
   }
 
   clearCompositorTransform() {
@@ -1040,7 +1092,7 @@ export class CanvasViewer {
   }
 
   applyImageTransform(ctx) {
-    ctx.translate(this.transform.x, this.transform.y);
+    ctx.translate(this.transform.x + this.renderPadding, this.transform.y + this.renderPadding);
     ctx.scale(this.transform.scale, this.transform.scale);
   }
 
