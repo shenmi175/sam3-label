@@ -21,6 +21,9 @@ export class CanvasViewer {
     this.fitMode = true;
     this.fitFrame = null;
     this.fitRetryCount = 0;
+    this.drawFrame = null;
+    this.isWheelZooming = false;
+    this.wheelZoomTimer = null;
     
     // Interaction state
     this.isPanning = false;
@@ -88,6 +91,8 @@ export class CanvasViewer {
     window.removeEventListener('keyup', this.onKeyUp);
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
+    if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
+    if (this.wheelZoomTimer) clearTimeout(this.wheelZoomTimer);
     this.canvas.remove();
   }
 
@@ -197,6 +202,11 @@ export class CanvasViewer {
       cancelAnimationFrame(this.fitFrame);
       this.fitFrame = null;
     }
+    if (this.wheelZoomTimer) {
+      clearTimeout(this.wheelZoomTimer);
+      this.wheelZoomTimer = null;
+    }
+    this.isWheelZooming = false;
     this.draw();
   }
 
@@ -248,7 +258,32 @@ export class CanvasViewer {
   
   setAnnotations(anns) {
     this.annotations = anns || [];
-    this.draw();
+    this.requestDraw();
+  }
+
+  requestDraw(options = {}) {
+    if (options.immediate) {
+      if (this.drawFrame) {
+        cancelAnimationFrame(this.drawFrame);
+        this.drawFrame = null;
+      }
+      this.draw();
+      return;
+    }
+    if (this.drawFrame) return;
+    this.drawFrame = requestAnimationFrame(() => {
+      this.drawFrame = null;
+      this.draw();
+    });
+  }
+
+  scheduleFullDrawAfterWheel() {
+    if (this.wheelZoomTimer) clearTimeout(this.wheelZoomTimer);
+    this.wheelZoomTimer = setTimeout(() => {
+      this.wheelZoomTimer = null;
+      this.isWheelZooming = false;
+      this.requestDraw();
+    }, 120);
   }
 
   setFocusedAnnotation(annotationId = null, options = {}) {
@@ -261,7 +296,7 @@ export class CanvasViewer {
     if (annotationId && bbox) {
       this.centerTransformOnBbox(bbox);
     }
-    this.draw();
+    this.requestDraw();
   }
 
   setPreviews(previews) {
@@ -618,7 +653,9 @@ export class CanvasViewer {
     this.transform.scale = newScale;
     this.fitMode = false;
     
-    this.draw();
+    this.isWheelZooming = true;
+    this.requestDraw();
+    this.scheduleFullDrawAfterWheel();
   }
   
   onMouseDown(e) {
@@ -666,7 +703,7 @@ export class CanvasViewer {
           return;
         }
         this.container.style.cursor = hit.operation === 'move' ? 'move' : 'grabbing';
-        this.draw();
+        this.requestDraw();
         return;
       }
       this.focusedAnnotationId = null;
@@ -675,7 +712,7 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.container.style.cursor = 'grabbing';
-      this.draw();
+      this.requestDraw();
       return;
     }
 
@@ -689,7 +726,7 @@ export class CanvasViewer {
         return;
       }
       this.activePolygonPoints.push([imgX, imgY]);
-      this.draw();
+      this.requestDraw();
       return;
     }
 
@@ -734,7 +771,7 @@ export class CanvasViewer {
       } else if (this.dragOperation.operation === 'polygon-vertex') {
         this.applyPolygonVertexDrag(this.dragAnnotation, this.dragOriginal, this.dragOperation.vertexIndex, point);
       }
-      this.draw();
+      this.requestDraw();
     } else if (this.isPanning) {
       const dx = e.clientX - this.lastX;
       const dy = e.clientY - this.lastY;
@@ -743,10 +780,10 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.fitMode = false;
-      this.draw();
+      this.requestDraw();
     } else if (this.isDrawingBox) {
       this.boxEnd = this.clampPoint(this.canvasToImage(e.clientX, e.clientY));
-      this.draw();
+      this.requestDraw();
     }
   }
   
@@ -763,7 +800,7 @@ export class CanvasViewer {
       this.dragStartedHistory = false;
       if (moved && this.onAnnotationUpdated) this.onAnnotationUpdated(updated, { commit: true });
       this.updateCursor();
-      this.draw();
+      this.requestDraw();
       return;
     }
 
@@ -803,12 +840,12 @@ export class CanvasViewer {
     if (bbox && this.onAnnotationCreated) {
       this.onAnnotationCreated({ polygon, bbox });
     }
-    this.draw();
+    this.requestDraw();
   }
 
   cancelManualPolygon() {
     this.activePolygonPoints = [];
-    this.draw();
+    this.requestDraw();
   }
   
   draw() {
@@ -820,6 +857,7 @@ export class CanvasViewer {
     this.ctx.scale(this.transform.scale, this.transform.scale);
     
     // Draw image
+    this.ctx.imageSmoothingEnabled = !this.isWheelZooming;
     this.ctx.drawImage(this.image, 0, 0);
     
     const visibleAnnotations = this.annotations;
@@ -880,7 +918,8 @@ export class CanvasViewer {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
     
     const points = ann.points || ann.polygon;
-    if (this.options.showMasks && points && points.length > 2) {
+    const drawMaskFill = this.options.showMasks && !this.isWheelZooming;
+    if (drawMaskFill && points && points.length > 2) {
       this.ctx.beginPath();
       if (typeof points[0] === 'number') {
         this.ctx.moveTo(points[0], points[1]);
@@ -920,7 +959,7 @@ export class CanvasViewer {
       this.ctx.setLineDash([]);
     }
     
-    if (!isPreview) {
+    if (!isPreview && !this.isWheelZooming) {
       const polyPairs = this.polygonToPairs(points);
       const labelPos = bbox ? [bbox[0], bbox[1]] : (polyPairs.length > 0 ? polyPairs[0] : null);
       if (labelPos) {
