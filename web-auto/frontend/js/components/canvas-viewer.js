@@ -22,8 +22,6 @@ export class CanvasViewer {
     this.fitFrame = null;
     this.fitRetryCount = 0;
     this.drawFrame = null;
-    this.isWheelZooming = false;
-    this.wheelZoomTimer = null;
     
     // Interaction state
     this.isPanning = false;
@@ -92,7 +90,6 @@ export class CanvasViewer {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
-    if (this.wheelZoomTimer) clearTimeout(this.wheelZoomTimer);
     this.canvas.remove();
   }
 
@@ -202,11 +199,6 @@ export class CanvasViewer {
       cancelAnimationFrame(this.fitFrame);
       this.fitFrame = null;
     }
-    if (this.wheelZoomTimer) {
-      clearTimeout(this.wheelZoomTimer);
-      this.wheelZoomTimer = null;
-    }
-    this.isWheelZooming = false;
     this.draw();
   }
 
@@ -275,15 +267,6 @@ export class CanvasViewer {
       this.drawFrame = null;
       this.draw();
     });
-  }
-
-  scheduleFullDrawAfterWheel() {
-    if (this.wheelZoomTimer) clearTimeout(this.wheelZoomTimer);
-    this.wheelZoomTimer = setTimeout(() => {
-      this.wheelZoomTimer = null;
-      this.isWheelZooming = false;
-      this.requestDraw();
-    }, 120);
   }
 
   setFocusedAnnotation(annotationId = null, options = {}) {
@@ -636,14 +619,16 @@ export class CanvasViewer {
   
   onWheel(e) {
     e.preventDefault();
-    const zoomFactor = 1.15;
-    const direction = e.deltaY < 0 ? 1 : -1;
+    let delta = Number(e.deltaY || 0);
+    if (e.deltaMode === 1) delta *= 16;
+    else if (e.deltaMode === 2) delta *= this.canvas.height || window.innerHeight || 800;
+    delta = Math.max(-120, Math.min(120, delta));
     
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     
-    const scaleChange = direction > 0 ? zoomFactor : 1 / zoomFactor;
+    const scaleChange = Math.exp(-delta * 0.0015);
     const newScale = this.transform.scale * scaleChange;
     
     if (newScale < 0.01 || newScale > 100) return;
@@ -653,9 +638,7 @@ export class CanvasViewer {
     this.transform.scale = newScale;
     this.fitMode = false;
     
-    this.isWheelZooming = true;
     this.requestDraw();
-    this.scheduleFullDrawAfterWheel();
   }
   
   onMouseDown(e) {
@@ -857,7 +840,7 @@ export class CanvasViewer {
     this.ctx.scale(this.transform.scale, this.transform.scale);
     
     // Draw image
-    this.ctx.imageSmoothingEnabled = !this.isWheelZooming;
+    this.ctx.imageSmoothingEnabled = true;
     this.ctx.drawImage(this.image, 0, 0);
     
     const visibleAnnotations = this.annotations;
@@ -918,7 +901,7 @@ export class CanvasViewer {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
     
     const points = ann.points || ann.polygon;
-    const drawMaskFill = this.options.showMasks && !this.isWheelZooming;
+    const drawMaskFill = this.options.showMasks;
     if (drawMaskFill && points && points.length > 2) {
       this.ctx.beginPath();
       if (typeof points[0] === 'number') {
@@ -959,7 +942,7 @@ export class CanvasViewer {
       this.ctx.setLineDash([]);
     }
     
-    if (!isPreview && !this.isWheelZooming) {
+    if (!isPreview) {
       const polyPairs = this.polygonToPairs(points);
       const labelPos = bbox ? [bbox[0], bbox[1]] : (polyPairs.length > 0 ? polyPairs[0] : null);
       if (labelPos) {
