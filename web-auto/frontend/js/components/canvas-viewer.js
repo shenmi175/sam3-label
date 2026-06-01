@@ -1,14 +1,30 @@
 export class CanvasViewer {
   constructor(containerId) {
     this.container = document.getElementById(containerId);
-    this.canvas = document.createElement('canvas');
-    this.ctx = this.canvas.getContext('2d');
-    
-    // Set styles to fill container
-    this.canvas.style.display = 'block';
-    this.canvas.style.width = '100%';
-    this.canvas.style.height = '100%';
-    this.container.appendChild(this.canvas);
+    const position = window.getComputedStyle(this.container).position;
+    if (!position || position === 'static') this.container.style.position = 'relative';
+
+    this.layerRoot = document.createElement('div');
+    Object.assign(this.layerRoot.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      overflow: 'hidden',
+    });
+
+    this.imageCanvas = this.createLayerCanvas('canvas-layer-image', 'none');
+    this.maskCanvas = this.createLayerCanvas('canvas-layer-mask', 'none');
+    this.overlayCanvas = this.createLayerCanvas('canvas-layer-overlay', 'auto');
+    this.canvas = this.overlayCanvas;
+    this.imageCtx = this.imageCanvas.getContext('2d');
+    this.maskCtx = this.maskCanvas.getContext('2d');
+    this.ctx = this.overlayCanvas.getContext('2d');
+
+    this.layerRoot.appendChild(this.imageCanvas);
+    this.layerRoot.appendChild(this.maskCanvas);
+    this.layerRoot.appendChild(this.overlayCanvas);
+    this.container.appendChild(this.layerRoot);
     this.container.style.cursor = 'default';
     
     // State
@@ -22,9 +38,11 @@ export class CanvasViewer {
     this.fitFrame = null;
     this.fitRetryCount = 0;
     this.drawFrame = null;
+    this.pendingDrawLayers = undefined;
     this.maskLayerCanvas = null;
     this.maskLayerKey = '';
     this.maskLayerDisabled = false;
+    this.maskLayerVersion = 0;
     
     // Interaction state
     this.isPanning = false;
@@ -80,6 +98,20 @@ export class CanvasViewer {
     
     this.onResize();
   }
+
+  createLayerCanvas(className, pointerEvents = 'none') {
+    const canvas = document.createElement('canvas');
+    canvas.className = className;
+    Object.assign(canvas.style, {
+      position: 'absolute',
+      inset: '0',
+      display: 'block',
+      width: '100%',
+      height: '100%',
+      pointerEvents,
+    });
+    return canvas;
+  }
   
   destroy() {
     window.removeEventListener('resize', this.onResize);
@@ -93,7 +125,8 @@ export class CanvasViewer {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
-    this.canvas.remove();
+    if (this.layerRoot) this.layerRoot.remove();
+    else if (this.canvas) this.canvas.remove();
   }
 
   onKeyDown(e) {
@@ -107,7 +140,7 @@ export class CanvasViewer {
         e.preventDefault();
         this.focusedAnnotationId = null;
         if (this.onAnnotationSelected) this.onAnnotationSelected(null);
-        this.draw();
+        this.draw({ image: false, mask: false, overlay: true });
         return;
       }
     }
@@ -147,8 +180,11 @@ export class CanvasViewer {
     if (width <= 0 || height <= 0) return false;
     if (this.canvas.width === width && this.canvas.height === height) return;
 
-    this.canvas.width = width;
-    this.canvas.height = height;
+    for (const canvas of [this.imageCanvas, this.maskCanvas, this.overlayCanvas]) {
+      if (!canvas) continue;
+      canvas.width = width;
+      canvas.height = height;
+    }
 
     if (this.image && oldWidth > 0 && oldHeight > 0) {
       if (this.fitMode) {
@@ -256,34 +292,52 @@ export class CanvasViewer {
   setAnnotations(anns) {
     this.annotations = anns || [];
     this.invalidateMaskLayer();
-    this.requestDraw();
+    this.requestDraw({ layers: { image: false, mask: true, overlay: true } });
   }
 
   invalidateMaskLayer(reset = false) {
     this.maskLayerKey = '';
     this.maskLayerDisabled = false;
+    this.maskLayerVersion += 1;
     if (reset) this.maskLayerCanvas = null;
   }
 
   requestDraw(options = {}) {
+    const layers = options.layers || null;
+    this.pendingDrawLayers = this.mergeDrawLayers(this.pendingDrawLayers, layers);
     if (options.immediate) {
       if (this.drawFrame) {
         cancelAnimationFrame(this.drawFrame);
         this.drawFrame = null;
       }
-      this.draw();
+      const nextLayers = this.pendingDrawLayers;
+      this.pendingDrawLayers = undefined;
+      this.draw(nextLayers || undefined);
       return;
     }
     if (this.drawFrame) return;
     this.drawFrame = requestAnimationFrame(() => {
       this.drawFrame = null;
-      this.draw();
+      const nextLayers = this.pendingDrawLayers;
+      this.pendingDrawLayers = undefined;
+      this.draw(nextLayers || undefined);
     });
+  }
+
+  mergeDrawLayers(current, next) {
+    if (current === null || next === null) return null;
+    if (!current) return next ? { ...next } : null;
+    if (!next) return null;
+    return {
+      image: Boolean(current.image || next.image),
+      mask: Boolean(current.mask || next.mask),
+      overlay: Boolean(current.overlay || next.overlay),
+    };
   }
 
   setFocusedAnnotation(annotationId = null, options = {}) {
     this.focusedAnnotationId = annotationId || null;
-    if (options.draw !== false) this.draw();
+    if (options.draw !== false) this.draw({ image: false, mask: false, overlay: true });
   }
 
   focusAnnotation(annotationId = null, bbox = null) {
@@ -297,7 +351,7 @@ export class CanvasViewer {
   setPreviews(previews) {
     this.previews = previews || [];
     this.invalidateMaskLayer();
-    this.requestDraw();
+    this.requestDraw({ layers: { image: false, mask: true, overlay: true } });
   }
   
   setPromptMode(mode) {
@@ -306,23 +360,23 @@ export class CanvasViewer {
       this.activePolygonPoints = [];
     }
     this.updateCursor();
-    this.draw();
+    this.draw({ image: false, mask: false, overlay: true });
   }
 
   setOptions(nextOptions = {}) {
     this.options = { ...this.options, ...nextOptions };
     this.invalidateMaskLayer();
-    this.requestDraw();
+    this.requestDraw({ layers: { image: false, mask: true, overlay: true } });
   }
   
   setPrompts(prompts) {
     this.prompts = prompts || [];
-    this.draw();
+    this.draw({ image: false, mask: false, overlay: true });
   }
 
   clearPrompts() {
     this.prompts = [];
-    this.draw();
+    this.draw({ image: false, mask: false, overlay: true });
   }
 
   getPrompts() {
@@ -696,11 +750,11 @@ export class CanvasViewer {
           this.dragAnnotation = null;
           this.dragOriginal = null;
           this.updateCursor();
-          this.draw();
+          this.draw({ image: false, mask: false, overlay: true });
           return;
         }
         this.container.style.cursor = hit.operation === 'move' ? 'move' : 'grabbing';
-        this.requestDraw();
+        this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
         return;
       }
       this.focusedAnnotationId = null;
@@ -709,7 +763,7 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.container.style.cursor = 'grabbing';
-      this.requestDraw();
+      this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
       return;
     }
 
@@ -723,7 +777,7 @@ export class CanvasViewer {
         return;
       }
       this.activePolygonPoints.push([imgX, imgY]);
-      this.requestDraw();
+      this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
       return;
     }
 
@@ -768,7 +822,7 @@ export class CanvasViewer {
       } else if (this.dragOperation.operation === 'polygon-vertex') {
         this.applyPolygonVertexDrag(this.dragAnnotation, this.dragOriginal, this.dragOperation.vertexIndex, point);
       }
-      this.requestDraw();
+      this.requestDraw({ layers: { image: false, mask: true, overlay: true } });
     } else if (this.isPanning) {
       const dx = e.clientX - this.lastX;
       const dy = e.clientY - this.lastY;
@@ -780,7 +834,7 @@ export class CanvasViewer {
       this.requestDraw();
     } else if (this.isDrawingBox) {
       this.boxEnd = this.clampPoint(this.canvasToImage(e.clientX, e.clientY));
-      this.requestDraw();
+      this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
     }
   }
   
@@ -800,7 +854,7 @@ export class CanvasViewer {
         if (this.onAnnotationUpdated) this.onAnnotationUpdated(updated, { commit: true });
       }
       this.updateCursor();
-      this.requestDraw();
+      this.requestDraw({ layers: { image: false, mask: true, overlay: true } });
       return;
     }
 
@@ -824,6 +878,7 @@ export class CanvasViewer {
     this.boxEnd = null;
     this.container.style.cursor = e.altKey ? 'grab' : 'default';
     this.updateCursor();
+    this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
   }
 
   onDoubleClick(e) {
@@ -840,49 +895,83 @@ export class CanvasViewer {
     if (bbox && this.onAnnotationCreated) {
       this.onAnnotationCreated({ polygon, bbox });
     }
-    this.requestDraw();
+    this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
   }
 
   cancelManualPolygon() {
     this.activePolygonPoints = [];
-    this.requestDraw();
+    this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
   }
   
-  draw() {
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (!this.image) return;
+  draw(layers = { image: true, mask: true, overlay: true }) {
+    if (layers.image !== false) this.drawImageLayer();
+    if (layers.mask !== false) this.drawMaskCanvasLayer();
+    if (layers.overlay !== false) this.drawOverlayLayer();
+  }
+
+  clearLayer(ctx, canvas) {
+    if (!ctx || !canvas) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  applyImageTransform(ctx) {
+    ctx.translate(this.transform.x, this.transform.y);
+    ctx.scale(this.transform.scale, this.transform.scale);
+  }
+
+  drawImageLayer() {
+    this.clearLayer(this.imageCtx, this.imageCanvas);
+    if (!this.image || !this.imageCtx) return;
+
+    this.imageCtx.save();
+    this.applyImageTransform(this.imageCtx);
+    this.imageCtx.imageSmoothingEnabled = true;
+    this.imageCtx.drawImage(this.image, 0, 0);
+    this.imageCtx.restore();
+  }
+
+  drawMaskCanvasLayer() {
+    this.clearLayer(this.maskCtx, this.maskCanvas);
+    if (!this.image || !this.maskCtx || !this.options.showMasks) return;
+
+    this.maskCtx.save();
+    this.applyImageTransform(this.maskCtx);
+
+    const liveAnnotation = this.isDraggingAnnotation ? this.dragAnnotation : null;
+    const usedMaskLayer = this.shouldUseMaskLayer() && this.drawMaskLayer(this.maskCtx, liveAnnotation);
+    if (!usedMaskLayer) {
+      for (const ann of this.annotations || []) this.drawAnnotationMask(this.maskCtx, ann, false);
+      for (const pre of this.previews || []) this.drawAnnotationMask(this.maskCtx, pre, true);
+    } else if (liveAnnotation) {
+      this.drawAnnotationMask(this.maskCtx, liveAnnotation, false);
+    }
+
+    this.maskCtx.restore();
+  }
+
+  drawOverlayLayer() {
+    this.clearLayer(this.ctx, this.overlayCanvas);
+    if (!this.image || !this.ctx) return;
     
     this.ctx.save();
-    this.ctx.translate(this.transform.x, this.transform.y);
-    this.ctx.scale(this.transform.scale, this.transform.scale);
+    this.applyImageTransform(this.ctx);
     
-    // Draw image
-    this.ctx.imageSmoothingEnabled = true;
-    this.ctx.drawImage(this.image, 0, 0);
-    
-    const visibleAnnotations = this.annotations;
-    let useMaskLayer = this.shouldUseMaskLayer();
-    if (useMaskLayer) useMaskLayer = this.drawMaskLayer();
-
-    // Draw annotations (Permanent)
-    for(const ann of visibleAnnotations) {
-      this.drawAnnotation(ann, false, { skipMask: useMaskLayer });
+    for (const ann of this.annotations || []) {
+      this.drawAnnotation(ann, false, { skipMask: true });
     }
     
-    // Draw previews (Temporary SAM results)
-    for(const pre of this.previews) {
-      this.drawAnnotation(pre, true, { skipMask: useMaskLayer });
+    for (const pre of this.previews || []) {
+      this.drawAnnotation(pre, true, { skipMask: true });
     }
     
-    // Draw current prompts
-    for(const p of this.prompts) {
+    for (const p of this.prompts) {
       this.drawPrompt(p);
     }
 
     this.drawFocusedHandles();
     this.drawActivePolygon();
     
-    // Draw currently drag-drawing box
     if (this.isDrawingBox && this.boxStart && this.boxEnd) {
       this.ctx.strokeStyle = 'rgba(49, 130, 206, 0.8)';
       this.ctx.setLineDash([5, 5]);
@@ -897,15 +986,27 @@ export class CanvasViewer {
   shouldUseMaskLayer() {
     return Boolean(
       this.options.showMasks &&
-      this.image &&
-      !this.isDraggingAnnotation &&
-      !this.isDrawingBox &&
-      this.activePolygonPoints.length === 0
+      this.image
     );
   }
 
-  maskLayerSignature() {
-    const annSig = (items) => items.map((ann) => {
+  isSameAnnotation(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const aId = a.id == null ? '' : String(a.id);
+    const bId = b.id == null ? '' : String(b.id);
+    return Boolean(aId && bId && aId === bId);
+  }
+
+  maskLayerSignature(excludedAnnotation = null) {
+    const excludedId = excludedAnnotation?.id == null ? '' : String(excludedAnnotation.id);
+    const excludedIndex = excludedAnnotation ? this.annotations.indexOf(excludedAnnotation) : -1;
+    const excludedKey = excludedAnnotation
+      ? (excludedId ? `exclude-id:${excludedId}` : `exclude-index:${excludedIndex}`)
+      : '';
+    const annSig = (items) => items
+      .filter((ann) => !this.isSameAnnotation(ann, excludedAnnotation))
+      .map((ann) => {
       const id = String(ann?.id || '');
       const poly = ann?.polygon || ann?.points || [];
       const cls = String(ann?.class_name || ann?.label || '');
@@ -914,12 +1015,14 @@ export class CanvasViewer {
     return [
       this.image?.width || 0,
       this.image?.height || 0,
+      this.maskLayerVersion,
+      excludedKey,
       annSig(this.annotations || []),
       annSig(this.previews || []),
     ].join('::');
   }
 
-  getMaskLayerCanvas() {
+  getMaskLayerCanvas(excludedAnnotation = null) {
     if (!this.image || this.maskLayerDisabled) return null;
     const pixelCount = Number(this.image.width || 0) * Number(this.image.height || 0);
     if (!Number.isFinite(pixelCount) || pixelCount <= 0 || pixelCount > 80000000) {
@@ -927,7 +1030,7 @@ export class CanvasViewer {
       return null;
     }
 
-    const key = this.maskLayerSignature();
+    const key = this.maskLayerSignature(excludedAnnotation);
     if (this.maskLayerCanvas && this.maskLayerKey === key) return this.maskLayerCanvas;
 
     const canvas = this.maskLayerCanvas || document.createElement('canvas');
@@ -937,7 +1040,9 @@ export class CanvasViewer {
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (const ann of this.annotations || []) this.drawAnnotationMask(ctx, ann, false);
+    for (const ann of this.annotations || []) {
+      if (!this.isSameAnnotation(ann, excludedAnnotation)) this.drawAnnotationMask(ctx, ann, false);
+    }
     for (const pre of this.previews || []) this.drawAnnotationMask(ctx, pre, true);
 
     this.maskLayerCanvas = canvas;
@@ -945,10 +1050,10 @@ export class CanvasViewer {
     return canvas;
   }
 
-  drawMaskLayer() {
-    const layer = this.getMaskLayerCanvas();
+  drawMaskLayer(targetCtx = this.maskCtx, excludedAnnotation = null) {
+    const layer = this.getMaskLayerCanvas(excludedAnnotation);
     if (!layer) return false;
-    this.ctx.drawImage(layer, 0, 0);
+    targetCtx.drawImage(layer, 0, 0);
     return true;
   }
 
