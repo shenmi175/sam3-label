@@ -262,19 +262,19 @@ export const ImageWorkspace = {
                 <!-- Hovering Toolbar -->
                  <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); background: var(--canvas-toolbar-bg);">
                     <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">标注</span>
-                    <button class="neu-button" id="btn-tool-pointer" title="选择/移动/修正已有标注，空白处拖动平移" style="width: 44px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">编辑</button>
-                    <button class="neu-button" id="btn-tool-manual-box" title="手动画检测框" style="width: 40px; height: 40px; border-radius: 50%;">□</button>
-                    <button class="neu-button" id="btn-tool-manual-polygon" title="手动画分割多边形，Enter 闭合，Esc 取消" style="width: 48px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">Poly</button>
+                    <button class="neu-button" id="btn-tool-pointer" title="V：选择/移动/修正已有标注，空白处拖动平移" style="width: 44px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">编辑</button>
+                    <button class="neu-button" id="btn-tool-manual-box" title="B：手动画检测框" style="width: 40px; height: 40px; border-radius: 50%;">□</button>
+                    <button class="neu-button" id="btn-tool-manual-polygon" title="P：手动画分割多边形，Enter 闭合，Esc 取消" style="width: 48px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">Poly</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-undo" title="撤销手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↶</button>
                     <button class="neu-button" id="btn-tool-redo" title="重做手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↷</button>
                     <button class="neu-button" id="btn-tool-delete-ann" title="删除当前选中标注" style="width: 40px; height: 40px; border-radius: 50%; color: #ef4444;">×</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">SAM</span>
-                    <button class="neu-button" id="btn-tool-box" title="${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                    <button class="neu-button" id="btn-tool-box" title="S：${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                     <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                    <button class="neu-button" id="btn-tool-fit" title="Fit to Screen" style="width: 40px; height: 40px; border-radius: 50%;">F</button>
+                    <button class="neu-button" id="btn-tool-fit" title="F：适配屏幕" style="width: 40px; height: 40px; border-radius: 50%;">F</button>
                  </div>
              </div>
 
@@ -1009,7 +1009,23 @@ export const ImageWorkspace = {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       const now = performance.now();
       if (now - lastNavAt < 45) return;
-      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+      const key = String(e.key || '').toLowerCase();
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'v') {
+        e.preventDefault();
+        this.setPromptMode('pointer');
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'b') {
+        e.preventDefault();
+        this.setPromptMode('manual-box');
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'p') {
+        e.preventDefault();
+        this.setPromptMode('manual-polygon');
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 's') {
+        e.preventDefault();
+        this.setPromptMode('box');
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'f') {
+        e.preventDefault();
+        if (this.viewer) this.viewer.fitToScreen();
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         lastNavAt = now;
         this.navigateImage(-1);

@@ -92,15 +92,24 @@ export class CanvasViewer {
   }
 
   onKeyDown(e) {
+    if (e.key === 'Escape') {
+      if (this.promptMode === 'manual-polygon' && this.activePolygonPoints.length > 0) {
+        e.preventDefault();
+        this.cancelManualPolygon();
+        return;
+      }
+      if (this.focusedAnnotationId) {
+        e.preventDefault();
+        this.focusedAnnotationId = null;
+        if (this.onAnnotationSelected) this.onAnnotationSelected(null);
+        this.draw();
+        return;
+      }
+    }
     if (this.promptMode === 'manual-polygon') {
       if (e.key === 'Enter') {
         e.preventDefault();
         this.finishManualPolygon();
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        this.cancelManualPolygon();
         return;
       }
     }
@@ -473,9 +482,15 @@ export class CanvasViewer {
             return { annotation: selected, operation: 'polygon-vertex', vertexIndex: i };
           }
         }
+        if (this.pointInPolygon(point, polygon)) {
+          return { annotation: selected, operation: 'move' };
+        }
       }
       if (this.pointNearBboxEdge(point, bbox, tolerance)) {
-        return { annotation: selected, operation: 'move' };
+        return { annotation: selected, operation: 'bbox-body' };
+      }
+      if (this.pointInBbox(point, bbox)) {
+        return { annotation: selected, operation: 'bbox-body' };
       }
     }
 
@@ -487,7 +502,7 @@ export class CanvasViewer {
       }
       const bbox = this.getAnnotationBbox(ann);
       if (this.pointNearBboxEdge(point, bbox, tolerance) || this.pointInBbox(point, bbox)) {
-        return { annotation: ann, operation: 'move' };
+        return { annotation: ann, operation: 'bbox-body' };
       }
     }
     return null;
@@ -640,6 +655,16 @@ export class CanvasViewer {
         this.dragOriginal = this.cloneGeometry(hit.annotation);
         this.dragMoved = false;
         this.dragStartedHistory = false;
+        if (hit.operation === 'bbox-body') {
+          this.isDraggingAnnotation = false;
+          this.dragOperation = null;
+          this.dragStart = null;
+          this.dragAnnotation = null;
+          this.dragOriginal = null;
+          this.updateCursor();
+          this.draw();
+          return;
+        }
         this.container.style.cursor = hit.operation === 'move' ? 'move' : 'grabbing';
         this.draw();
         return;
