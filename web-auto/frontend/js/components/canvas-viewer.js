@@ -22,6 +22,9 @@ export class CanvasViewer {
     this.fitFrame = null;
     this.fitRetryCount = 0;
     this.drawFrame = null;
+    this.maskLayerCanvas = null;
+    this.maskLayerKey = '';
+    this.maskLayerDisabled = false;
     
     // Interaction state
     this.isPanning = false;
@@ -195,6 +198,7 @@ export class CanvasViewer {
     this.dragMoved = false;
     this.dragStartedHistory = false;
     this.activePolygonPoints = [];
+    this.invalidateMaskLayer(true);
     if (this.fitFrame) {
       cancelAnimationFrame(this.fitFrame);
       this.fitFrame = null;
@@ -214,6 +218,7 @@ export class CanvasViewer {
     this.dragMoved = false;
     this.dragStartedHistory = false;
     this.fitMode = true;
+    this.invalidateMaskLayer(true);
     this.syncCanvasSize();
     this.fitToScreen();
     this.scheduleFitToScreen();
@@ -250,7 +255,14 @@ export class CanvasViewer {
   
   setAnnotations(anns) {
     this.annotations = anns || [];
+    this.invalidateMaskLayer();
     this.requestDraw();
+  }
+
+  invalidateMaskLayer(reset = false) {
+    this.maskLayerKey = '';
+    this.maskLayerDisabled = false;
+    if (reset) this.maskLayerCanvas = null;
   }
 
   requestDraw(options = {}) {
@@ -284,7 +296,8 @@ export class CanvasViewer {
 
   setPreviews(previews) {
     this.previews = previews || [];
-    this.draw();
+    this.invalidateMaskLayer();
+    this.requestDraw();
   }
   
   setPromptMode(mode) {
@@ -298,7 +311,8 @@ export class CanvasViewer {
 
   setOptions(nextOptions = {}) {
     this.options = { ...this.options, ...nextOptions };
-    this.draw();
+    this.invalidateMaskLayer();
+    this.requestDraw();
   }
   
   setPrompts(prompts) {
@@ -781,7 +795,10 @@ export class CanvasViewer {
       const moved = this.dragMoved;
       this.dragMoved = false;
       this.dragStartedHistory = false;
-      if (moved && this.onAnnotationUpdated) this.onAnnotationUpdated(updated, { commit: true });
+      if (moved) {
+        this.invalidateMaskLayer();
+        if (this.onAnnotationUpdated) this.onAnnotationUpdated(updated, { commit: true });
+      }
       this.updateCursor();
       this.requestDraw();
       return;
@@ -844,15 +861,17 @@ export class CanvasViewer {
     this.ctx.drawImage(this.image, 0, 0);
     
     const visibleAnnotations = this.annotations;
+    let useMaskLayer = this.shouldUseMaskLayer();
+    if (useMaskLayer) useMaskLayer = this.drawMaskLayer();
 
     // Draw annotations (Permanent)
     for(const ann of visibleAnnotations) {
-      this.drawAnnotation(ann, false);
+      this.drawAnnotation(ann, false, { skipMask: useMaskLayer });
     }
     
     // Draw previews (Temporary SAM results)
     for(const pre of this.previews) {
-      this.drawAnnotation(pre, true);
+      this.drawAnnotation(pre, true, { skipMask: useMaskLayer });
     }
     
     // Draw current prompts
@@ -873,6 +892,95 @@ export class CanvasViewer {
     }
     
     this.ctx.restore();
+  }
+
+  shouldUseMaskLayer() {
+    return Boolean(
+      this.options.showMasks &&
+      this.image &&
+      !this.isDraggingAnnotation &&
+      !this.isDrawingBox &&
+      this.activePolygonPoints.length === 0
+    );
+  }
+
+  maskLayerSignature() {
+    const annSig = (items) => items.map((ann) => {
+      const id = String(ann?.id || '');
+      const poly = ann?.polygon || ann?.points || [];
+      const cls = String(ann?.class_name || ann?.label || '');
+      return `${id}:${cls}:${Array.isArray(poly) ? poly.length : 0}`;
+    }).join('|');
+    return [
+      this.image?.width || 0,
+      this.image?.height || 0,
+      annSig(this.annotations || []),
+      annSig(this.previews || []),
+    ].join('::');
+  }
+
+  getMaskLayerCanvas() {
+    if (!this.image || this.maskLayerDisabled) return null;
+    const pixelCount = Number(this.image.width || 0) * Number(this.image.height || 0);
+    if (!Number.isFinite(pixelCount) || pixelCount <= 0 || pixelCount > 80000000) {
+      this.maskLayerDisabled = true;
+      return null;
+    }
+
+    const key = this.maskLayerSignature();
+    if (this.maskLayerCanvas && this.maskLayerKey === key) return this.maskLayerCanvas;
+
+    const canvas = this.maskLayerCanvas || document.createElement('canvas');
+    if (canvas.width !== this.image.width) canvas.width = this.image.width;
+    if (canvas.height !== this.image.height) canvas.height = this.image.height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const ann of this.annotations || []) this.drawAnnotationMask(ctx, ann, false);
+    for (const pre of this.previews || []) this.drawAnnotationMask(ctx, pre, true);
+
+    this.maskLayerCanvas = canvas;
+    this.maskLayerKey = key;
+    return canvas;
+  }
+
+  drawMaskLayer() {
+    const layer = this.getMaskLayerCanvas();
+    if (!layer) return false;
+    this.ctx.drawImage(layer, 0, 0);
+    return true;
+  }
+
+  drawAnnotationMask(targetCtx, ann, isPreview = false) {
+    const points = ann?.points || ann?.polygon;
+    if (!points || points.length <= 2) return;
+    const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
+
+    targetCtx.beginPath();
+    if (typeof points[0] === 'number') {
+      targetCtx.moveTo(points[0], points[1]);
+      for (let i = 2; i < points.length; i += 2) {
+        targetCtx.lineTo(points[i], points[i + 1]);
+      }
+    } else {
+      targetCtx.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i += 1) {
+        targetCtx.lineTo(points[i][0], points[i][1]);
+      }
+    }
+    targetCtx.closePath();
+
+    const alpha = isPreview ? 0.45 : 0.3;
+    targetCtx.fillStyle = color.startsWith('rgba')
+      ? color
+      : color.replace('hsl', 'hsla').replace(')', `, ${alpha})`);
+    targetCtx.fill();
+    targetCtx.strokeStyle = isPreview ? 'rgba(255, 255, 255, 0.8)' : color;
+    if (isPreview) targetCtx.setLineDash([4, 4]);
+    targetCtx.lineWidth = isPreview ? 2 : 1.5;
+    targetCtx.stroke();
+    targetCtx.setLineDash([]);
   }
   
   drawPrompt(p) {
@@ -897,11 +1005,11 @@ export class CanvasViewer {
     }
   }
   
-  drawAnnotation(ann, isPreview = false) {
+  drawAnnotation(ann, isPreview = false, options = {}) {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
     
     const points = ann.points || ann.polygon;
-    const drawMaskFill = this.options.showMasks;
+    const drawMaskFill = this.options.showMasks && !options.skipMask;
     if (drawMaskFill && points && points.length > 2) {
       this.ctx.beginPath();
       if (typeof points[0] === 'number') {
