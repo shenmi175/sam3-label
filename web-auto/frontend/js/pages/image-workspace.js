@@ -261,14 +261,17 @@ export const ImageWorkspace = {
 
                 <!-- Hovering Toolbar -->
                  <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); background: var(--canvas-toolbar-bg);">
-                    <button class="neu-button" id="btn-tool-pointer" title="选择/移动标注，空白处拖动平移" style="width: 40px; height: 40px; border-radius: 50%;">P</button>
+                    <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">标注</span>
+                    <button class="neu-button" id="btn-tool-pointer" title="选择/移动/修正已有标注，空白处拖动平移" style="width: 44px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">编辑</button>
                     <button class="neu-button" id="btn-tool-manual-box" title="手动画检测框" style="width: 40px; height: 40px; border-radius: 50%;">□</button>
                     <button class="neu-button" id="btn-tool-manual-polygon" title="手动画分割多边形，Enter 闭合，Esc 取消" style="width: 48px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">Poly</button>
-                    <button class="neu-button" id="btn-tool-box" title="${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-undo" title="撤销手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↶</button>
                     <button class="neu-button" id="btn-tool-redo" title="重做手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↷</button>
+                    <button class="neu-button" id="btn-tool-delete-ann" title="删除当前选中标注" style="width: 40px; height: 40px; border-radius: 50%; color: #ef4444;">×</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
+                    <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">SAM</span>
+                    <button class="neu-button" id="btn-tool-box" title="${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
                     <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-fit" title="Fit to Screen" style="width: 40px; height: 40px; border-radius: 50%;">F</button>
@@ -918,6 +921,7 @@ export const ImageWorkspace = {
     const btnToolBox = document.getElementById('btn-tool-box');
     const btnToolUndo = document.getElementById('btn-tool-undo');
     const btnToolRedo = document.getElementById('btn-tool-redo');
+    const btnToolDeleteAnn = document.getElementById('btn-tool-delete-ann');
     const btnToolClear = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
     const btnToolFit = document.getElementById('btn-tool-fit');
 
@@ -927,6 +931,10 @@ export const ImageWorkspace = {
     if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
     if (btnToolUndo) btnToolUndo.onclick = () => this.undoAnnotationChange();
     if (btnToolRedo) btnToolRedo.onclick = () => this.redoAnnotationChange();
+    if (btnToolDeleteAnn) btnToolDeleteAnn.onclick = () => {
+      if (!this.focusedAnnotationId) return showToast('请先在编辑模式下选中一个标注', 'info');
+      this.deleteAnnotation(this.focusedAnnotationId);
+    };
     if (btnToolClear) btnToolClear.onclick = () => {
       this.currentPrompts = [];
       this.previews = [];
@@ -1710,6 +1718,7 @@ export const ImageWorkspace = {
     this.annotationDirty = false;
     this.setAnnotationSaveStatus('已保存');
     this.updateUndoRedoButtons();
+    this.updateAnnotationSelectionControls();
     this.setCanvasPlaceholder(false);
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
@@ -2311,6 +2320,7 @@ export const ImageWorkspace = {
       }
     }
     this.updateAnnotationFocusListState();
+    this.updateAnnotationSelectionControls();
     this.scheduleProjectUIStateSave();
   },
 
@@ -2322,6 +2332,7 @@ export const ImageWorkspace = {
       this.viewer.setFocusedAnnotation(null);
     }
     this.updateAnnotationFocusListState();
+    this.updateAnnotationSelectionControls();
     this.scheduleProjectUIStateSave();
   },
 
@@ -2338,6 +2349,14 @@ export const ImageWorkspace = {
     const redoBtn = document.getElementById('btn-tool-redo');
     if (undoBtn) undoBtn.disabled = !(this.annotationHistory && this.annotationHistory.length > 0);
     if (redoBtn) redoBtn.disabled = !(this.annotationRedoStack && this.annotationRedoStack.length > 0);
+  },
+
+  updateAnnotationSelectionControls() {
+    const deleteBtn = document.getElementById('btn-tool-delete-ann');
+    if (deleteBtn) {
+      deleteBtn.disabled = !this.focusedAnnotationId;
+      deleteBtn.style.opacity = this.focusedAnnotationId ? '1' : '0.45';
+    }
   },
 
   pushAnnotationHistory() {
@@ -2361,6 +2380,7 @@ export const ImageWorkspace = {
       this.viewer.setAnnotations(this.annotations);
       this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
     }
+    this.updateAnnotationSelectionControls();
     this.renderClasses();
     this.renderAnnotations();
     this.markAnnotationsDirty('history');
@@ -2448,6 +2468,7 @@ export const ImageWorkspace = {
       this.viewer.setAnnotations(this.annotations);
       this.viewer.setFocusedAnnotation(ann.id);
     }
+    this.setPromptMode('pointer');
     this.renderClasses();
     this.renderAnnotations();
     this.updateCurrentImageBundleAnnotations(this.annotations);
@@ -2457,6 +2478,7 @@ export const ImageWorkspace = {
   selectAnnotationFromCanvas(annId) {
     this.focusedAnnotationId = annId || null;
     this.updateAnnotationFocusListState();
+    this.updateAnnotationSelectionControls();
     this.scheduleProjectUIStateSave();
   },
 
@@ -2598,6 +2620,7 @@ export const ImageWorkspace = {
         this.viewer.setAnnotations([]);
         this.viewer.setFocusedAnnotation(null);
       }
+      this.updateAnnotationSelectionControls();
       this.renderClasses();
       this.renderAnnotations();
       this.markAnnotationsDirty('clear');
@@ -2615,6 +2638,7 @@ export const ImageWorkspace = {
         this.viewer.setAnnotations(this.annotations);
         this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
       }
+      this.updateAnnotationSelectionControls();
       this.renderClasses();
       this.renderAnnotations();
       this.markAnnotationsDirty('delete');

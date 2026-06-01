@@ -390,6 +390,31 @@ export class CanvasViewer {
     return x >= bbox[0] && x <= bbox[2] && y >= bbox[1] && y <= bbox[3];
   }
 
+  distanceToSegment(point, a, b) {
+    const [px, py] = point;
+    const [ax, ay] = a;
+    const [bx, by] = b;
+    const dx = bx - ax;
+    const dy = by - ay;
+    if (dx === 0 && dy === 0) return this.distance(point, a);
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+    const x = ax + t * dx;
+    const y = ay + t * dy;
+    return this.distance(point, [x, y]);
+  }
+
+  pointNearBboxEdge(point, bbox, tolerance) {
+    if (!bbox) return false;
+    const [x1, y1, x2, y2] = bbox;
+    const edges = [
+      [[x1, y1], [x2, y1]],
+      [[x2, y1], [x2, y2]],
+      [[x2, y2], [x1, y2]],
+      [[x1, y2], [x1, y1]],
+    ];
+    return edges.some(([a, b]) => this.distanceToSegment(point, a, b) <= tolerance);
+  }
+
   pointInPolygon(point, polygon) {
     const pts = this.polygonToPairs(polygon);
     if (pts.length < 3) return false;
@@ -436,6 +461,7 @@ export class CanvasViewer {
 
     if (selected) {
       const polygon = this.polygonToPairs(selected.polygon || selected.points);
+      const bbox = this.getAnnotationBbox(selected);
       if (polygon.length >= 3) {
         for (let i = 0; i < polygon.length; i += 1) {
           if (this.distance(point, polygon[i]) <= tolerance) {
@@ -443,12 +469,14 @@ export class CanvasViewer {
           }
         }
       } else {
-        const bbox = this.getAnnotationBbox(selected);
         for (const handle of this.bboxHandles(bbox)) {
           if (this.distance(point, handle.point) <= tolerance) {
             return { annotation: selected, operation: 'bbox-handle', handle: handle.name };
           }
         }
+      }
+      if (this.pointNearBboxEdge(point, bbox, tolerance)) {
+        return { annotation: selected, operation: 'move' };
       }
     }
 
@@ -459,7 +487,7 @@ export class CanvasViewer {
         return { annotation: ann, operation: 'move' };
       }
       const bbox = this.getAnnotationBbox(ann);
-      if (this.pointInBbox(point, bbox)) {
+      if (this.pointNearBboxEdge(point, bbox, tolerance) || this.pointInBbox(point, bbox)) {
         return { annotation: ann, operation: 'move' };
       }
     }
