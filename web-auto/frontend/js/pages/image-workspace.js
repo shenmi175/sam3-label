@@ -35,6 +35,14 @@ export const ImageWorkspace = {
   gpuStatusFailures: 0,
   uiStateSaveTimer: null,
   batchResultShownForJobId: '',
+  annotationAutosaveEnabled: true,
+  annotationSaveTimer: null,
+  annotationDirty: false,
+  annotationSaving: false,
+  annotationRev: 0,
+  annotationSaveImageId: '',
+  annotationHistory: null,
+  annotationRedoStack: null,
   
   async render(container, params) {
     this.container = container;
@@ -68,6 +76,14 @@ export const ImageWorkspace = {
     this.gpuStatusInterval = null;
     this.gpuStatusFailures = 0;
     this.batchResultShownForJobId = '';
+    this.annotationAutosaveEnabled = true;
+    this.annotationSaveTimer = null;
+    this.annotationDirty = false;
+    this.annotationSaving = false;
+    this.annotationRev = 0;
+    this.annotationSaveImageId = '';
+    this.annotationHistory = [];
+    this.annotationRedoStack = [];
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -245,8 +261,13 @@ export const ImageWorkspace = {
 
                 <!-- Hovering Toolbar -->
                  <div class="neu-box" style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); height: 50px; border-radius: 25px; display: flex; align-items: center; padding: 0 10px; z-index: 100; gap: 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); background: var(--canvas-toolbar-bg);">
-                    <button class="neu-button" id="btn-tool-pointer" title="Move / Select" style="width: 40px; height: 40px; border-radius: 50%;">P</button>
+                    <button class="neu-button" id="btn-tool-pointer" title="选择/移动标注，空白处拖动平移" style="width: 40px; height: 40px; border-radius: 50%;">P</button>
+                    <button class="neu-button" id="btn-tool-manual-box" title="手动画检测框" style="width: 40px; height: 40px; border-radius: 50%;">□</button>
+                    <button class="neu-button" id="btn-tool-manual-polygon" title="手动画分割多边形，Enter 闭合，Esc 取消" style="width: 48px; height: 40px; border-radius: 20px; font-size: 11px; font-weight: 800;">Poly</button>
                     <button class="neu-button" id="btn-tool-box" title="${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                    <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
+                    <button class="neu-button" id="btn-tool-undo" title="撤销手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↶</button>
+                    <button class="neu-button" id="btn-tool-redo" title="重做手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↷</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
@@ -259,6 +280,10 @@ export const ImageWorkspace = {
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                    <input type="checkbox" id="chk-show-masks" checked /> 显示遮罩
                 </label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                   <input type="checkbox" id="chk-annotation-autosave" checked /> 自动保存
+                </label>
+                <div id="annotation-save-status" style="font-weight: 700; color: var(--neu-text-light); min-width: 72px;">已保存</div>
                 <div style="flex: 1;"></div>
                 <div id="ws-image-status" style="font-weight: 700; color: var(--neu-text-light);">--</div>
              </div>
@@ -325,6 +350,10 @@ export const ImageWorkspace = {
     
     this.viewer = new CanvasViewer('canvas-container');
     this.viewer.onPromptAdded = (type, data) => this.addPrompt(type, data);
+    this.viewer.onAnnotationSelected = (annId) => this.selectAnnotationFromCanvas(annId);
+    this.viewer.onAnnotationEditStart = () => this.pushAnnotationHistory();
+    this.viewer.onAnnotationUpdated = (ann) => this.handleManualAnnotationUpdated(ann);
+    this.viewer.onAnnotationCreated = (shape) => this.createManualAnnotation(shape);
     this.setPromptMode('pointer');
     
     this.bindEvents();
@@ -490,6 +519,10 @@ export const ImageWorkspace = {
       clearTimeout(this.uiStateSaveTimer);
       this.uiStateSaveTimer = null;
     }
+    if (this.annotationSaveTimer) {
+      clearTimeout(this.annotationSaveTimer);
+      this.annotationSaveTimer = null;
+    }
     if (this._keyHandler) {
       document.removeEventListener('keydown', this._keyHandler);
       this._keyHandler = null;
@@ -577,6 +610,9 @@ export const ImageWorkspace = {
       this.classesSectionCollapsed = Boolean(state.classesSectionCollapsed);
       this.annotationsSectionCollapsed = Boolean(state.annotationsSectionCollapsed);
       this.previewSectionCollapsed = Boolean(state.previewSectionCollapsed);
+      this.annotationAutosaveEnabled = state.annotationAutosaveEnabled !== false;
+      const autosave = document.getElementById('chk-annotation-autosave');
+      if (autosave) autosave.checked = this.annotationAutosaveEnabled;
       this.refreshUnlabeledButton();
     } catch (err) {
       console.warn('restore project ui state failed', err);
@@ -607,6 +643,7 @@ export const ImageWorkspace = {
         classesSectionCollapsed: Boolean(this.classesSectionCollapsed),
         annotationsSectionCollapsed: Boolean(this.annotationsSectionCollapsed),
         previewSectionCollapsed: Boolean(this.previewSectionCollapsed),
+        annotationAutosaveEnabled: Boolean(this.annotationAutosaveEnabled),
       });
     } catch (err) {
       console.warn('save project ui state failed', err);
@@ -876,12 +913,20 @@ export const ImageWorkspace = {
 
     // Canvas Tools (Pointer / Box / Clear / Fit)
     const btnToolPointer = document.getElementById('btn-tool-pointer');
+    const btnToolManualBox = document.getElementById('btn-tool-manual-box');
+    const btnToolManualPolygon = document.getElementById('btn-tool-manual-polygon');
     const btnToolBox = document.getElementById('btn-tool-box');
+    const btnToolUndo = document.getElementById('btn-tool-undo');
+    const btnToolRedo = document.getElementById('btn-tool-redo');
     const btnToolClear = document.getElementById('btn-tool-clear') || document.getElementById('btn-vtool-clear');
     const btnToolFit = document.getElementById('btn-tool-fit');
 
     if (btnToolPointer) btnToolPointer.onclick = () => this.setPromptMode('pointer');
+    if (btnToolManualBox) btnToolManualBox.onclick = () => this.setPromptMode('manual-box');
+    if (btnToolManualPolygon) btnToolManualPolygon.onclick = () => this.setPromptMode('manual-polygon');
     if (btnToolBox) btnToolBox.onclick = () => this.setPromptMode('box');
+    if (btnToolUndo) btnToolUndo.onclick = () => this.undoAnnotationChange();
+    if (btnToolRedo) btnToolRedo.onclick = () => this.redoAnnotationChange();
     if (btnToolClear) btnToolClear.onclick = () => {
       this.currentPrompts = [];
       this.previews = [];
@@ -912,6 +957,13 @@ export const ImageWorkspace = {
     const chkShowMasks = document.getElementById('chk-show-masks');
     if (chkShowMasks) chkShowMasks.onchange = (e) => {
       if (this.viewer) this.viewer.setOptions({ showMasks: e.target.checked });
+    };
+    const chkAutosave = document.getElementById('chk-annotation-autosave');
+    if (chkAutosave) chkAutosave.onchange = (e) => {
+      this.annotationAutosaveEnabled = Boolean(e.target.checked);
+      if (this.annotationAutosaveEnabled && this.annotationDirty) this.scheduleAnnotationAutosave('autosave-enabled');
+      else this.setAnnotationSaveStatus(this.annotationDirty ? '未保存' : '已保存');
+      this.scheduleProjectUIStateSave();
     };
 
     const btnToggleLeftPanel = document.getElementById('btn-toggle-left-panel');
@@ -957,6 +1009,20 @@ export const ImageWorkspace = {
         e.preventDefault();
         lastNavAt = now;
         this.navigateImage(1);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        this.saveCurrentAnns();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        this.undoAnnotationChange();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        this.redoAnnotationChange();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (this.focusedAnnotationId) {
+          e.preventDefault();
+          this.deleteAnnotation(this.focusedAnnotationId);
+        }
       }
     };
     document.addEventListener('keydown', this._keyHandler);
@@ -1296,6 +1362,13 @@ export const ImageWorkspace = {
     return this.escapeHtml(value);
   },
 
+  getPromptModeLabel(mode = this.promptMode) {
+    if (mode === 'manual-box') return '手动框';
+    if (mode === 'manual-polygon') return '手动多边形';
+    if (mode === 'box') return i18n.t('box_exemplar_tool');
+    return '选择/编辑';
+  },
+
   setPromptMode(mode) {
     if (mode === 'point') mode = 'pointer';
     this.promptMode = mode;
@@ -1307,7 +1380,7 @@ export const ImageWorkspace = {
     if (canvasEl) {
       canvasEl.style.cursor = mode === 'pan'
         ? 'grab'
-        : (mode === 'box' ? 'crosshair' : 'default');
+        : (mode === 'box' || mode === 'manual-box' || mode === 'manual-polygon' ? 'crosshair' : 'default');
     }
     
     if (this.viewer) {
@@ -1315,7 +1388,7 @@ export const ImageWorkspace = {
     }
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
-      const modeText = mode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
+      const modeText = this.getPromptModeLabel(mode);
       imageStatus.innerText = this.selectedImagePath ? `${this.selectedImagePath} | ${modeText}` : modeText;
     }
   },
@@ -1632,10 +1705,15 @@ export const ImageWorkspace = {
     this.viewer.setImage(bundle.image);
     this.viewer.setAnnotations(this.annotations);
     this.viewer.setFocusedAnnotation(null);
+    this.annotationHistory = [];
+    this.annotationRedoStack = [];
+    this.annotationDirty = false;
+    this.setAnnotationSaveStatus('已保存');
+    this.updateUndoRedoButtons();
     this.setCanvasPlaceholder(false);
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
-      const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
+      const modeText = this.getPromptModeLabel();
       imageStatus.innerText = `${this.selectedImagePath || bundle.relPath || bundle.id} | ${modeText}`;
     }
     this.renderClasses();
@@ -1663,6 +1741,18 @@ export const ImageWorkspace = {
   },
 
   async selectImage(id, relPath, options = {}) {
+    if (this.annotationSaveTimer) {
+      clearTimeout(this.annotationSaveTimer);
+      this.annotationSaveTimer = null;
+    }
+    if (this.annotationDirty) {
+      await this.flushAnnotationAutosave('before-switch');
+      if (this.annotationDirty) {
+        showToast('当前图片标注尚未保存，保存成功后再切换图片', 'error');
+        return;
+      }
+    }
+
     const requestSeq = ++this.imageLoadSeq;
     if (this.imageLoadAbortController) {
       this.imageLoadAbortController.abort();
@@ -1706,7 +1796,7 @@ export const ImageWorkspace = {
     this.setCanvasPlaceholder(true, i18n.t('loading_image_annotations'));
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
-      const modeText = this.promptMode === 'pointer' ? 'Pointer' : i18n.t('box_exemplar_tool');
+      const modeText = this.getPromptModeLabel();
       imageStatus.innerText = `${relPath || id} | ${modeText} | ${i18n.t('loading_image_annotations')}`;
     }
     
@@ -1732,6 +1822,10 @@ export const ImageWorkspace = {
 
   async runSingleInfer() {
     if (!this.selectedImageId) return showToast("Select an image first", "error");
+    if (this.annotationDirty) {
+      await this.flushAnnotationAutosave('before-infer');
+      if (this.annotationDirty) return showToast('当前图片标注尚未保存，保存成功后再推理', 'error');
+    }
     
     const btn = document.getElementById('btn-infer-current');
     try {
@@ -2231,6 +2325,245 @@ export const ImageWorkspace = {
     this.scheduleProjectUIStateSave();
   },
 
+  cloneAnnotations(annotations = this.annotations) {
+    try {
+      return JSON.parse(JSON.stringify(Array.isArray(annotations) ? annotations : []));
+    } catch (_) {
+      return [];
+    }
+  },
+
+  updateUndoRedoButtons() {
+    const undoBtn = document.getElementById('btn-tool-undo');
+    const redoBtn = document.getElementById('btn-tool-redo');
+    if (undoBtn) undoBtn.disabled = !(this.annotationHistory && this.annotationHistory.length > 0);
+    if (redoBtn) redoBtn.disabled = !(this.annotationRedoStack && this.annotationRedoStack.length > 0);
+  },
+
+  pushAnnotationHistory() {
+    if (!this.selectedImageId) return;
+    if (!this.annotationHistory) this.annotationHistory = [];
+    const snapshot = this.cloneAnnotations();
+    const previous = this.annotationHistory[this.annotationHistory.length - 1];
+    if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) return;
+    this.annotationHistory.push(snapshot);
+    if (this.annotationHistory.length > 50) this.annotationHistory.shift();
+    this.annotationRedoStack = [];
+    this.updateUndoRedoButtons();
+  },
+
+  restoreAnnotationSnapshot(snapshot) {
+    this.annotations = this.cloneAnnotations(snapshot);
+    if (this.focusedAnnotationId && !this.annotations.some((ann) => String(ann?.id || '') === String(this.focusedAnnotationId))) {
+      this.focusedAnnotationId = null;
+    }
+    if (this.viewer) {
+      this.viewer.setAnnotations(this.annotations);
+      this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
+    }
+    this.renderClasses();
+    this.renderAnnotations();
+    this.markAnnotationsDirty('history');
+  },
+
+  undoAnnotationChange() {
+    if (!this.annotationHistory || this.annotationHistory.length === 0) return;
+    if (!this.annotationRedoStack) this.annotationRedoStack = [];
+    this.annotationRedoStack.push(this.cloneAnnotations());
+    const snapshot = this.annotationHistory.pop();
+    this.restoreAnnotationSnapshot(snapshot);
+    this.updateUndoRedoButtons();
+  },
+
+  redoAnnotationChange() {
+    if (!this.annotationRedoStack || this.annotationRedoStack.length === 0) return;
+    if (!this.annotationHistory) this.annotationHistory = [];
+    this.annotationHistory.push(this.cloneAnnotations());
+    const snapshot = this.annotationRedoStack.pop();
+    this.restoreAnnotationSnapshot(snapshot);
+    this.updateUndoRedoButtons();
+  },
+
+  setAnnotationSaveStatus(text, tone = 'muted') {
+    const el = document.getElementById('annotation-save-status');
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = tone === 'error'
+      ? '#ef4444'
+      : (tone === 'active' ? 'var(--neu-text-active)' : 'var(--neu-text-light)');
+  },
+
+  markManualAnnotation(ann) {
+    if (!ann || typeof ann !== 'object') return ann;
+    const now = new Date().toISOString();
+    ann.edited = true;
+    ann.updated_at = now;
+    if (!ann.source) ann.source = 'manual';
+    else if (ann.source !== 'manual') ann.modified_by = 'manual';
+    if (!ann.score) ann.score = 1;
+    return ann;
+  },
+
+  bboxFromPolygon(points = []) {
+    const pairs = Array.isArray(points)
+      ? points.map((p) => Array.isArray(p) ? [Number(p[0] || 0), Number(p[1] || 0)] : null).filter(Boolean)
+      : [];
+    if (pairs.length === 0) return null;
+    const xs = pairs.map((p) => p[0]);
+    const ys = pairs.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  },
+
+  selectedOrDefaultClass() {
+    return String(this.selectedClass || this.projectMeta?.classes?.[0] || 'object').trim() || 'object';
+  },
+
+  createManualAnnotation(shape) {
+    if (!this.selectedImageId) return showToast('请先选择图片', 'error');
+    const className = this.selectedOrDefaultClass();
+    const now = new Date().toISOString();
+    const polygon = Array.isArray(shape?.polygon) ? shape.polygon : null;
+    const bbox = Array.isArray(shape?.bbox)
+      ? shape.bbox
+      : (polygon ? this.bboxFromPolygon(polygon) : null);
+    if (!bbox || bbox.length !== 4) return;
+
+    this.pushAnnotationHistory();
+    const ann = {
+      id: `ann_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      class_name: className,
+      label: className,
+      bbox: bbox.map((v) => Number(v || 0)),
+      score: 1,
+      source: 'manual',
+      edited: true,
+      created_at: now,
+      updated_at: now,
+    };
+    if (polygon && polygon.length >= 3) ann.polygon = polygon;
+
+    this.annotations = [...(this.annotations || []), ann];
+    this.focusedAnnotationId = ann.id;
+    if (this.viewer) {
+      this.viewer.setAnnotations(this.annotations);
+      this.viewer.setFocusedAnnotation(ann.id);
+    }
+    this.renderClasses();
+    this.renderAnnotations();
+    this.updateCurrentImageBundleAnnotations(this.annotations);
+    this.markAnnotationsDirty('create');
+  },
+
+  selectAnnotationFromCanvas(annId) {
+    this.focusedAnnotationId = annId || null;
+    this.updateAnnotationFocusListState();
+    this.scheduleProjectUIStateSave();
+  },
+
+  handleManualAnnotationUpdated(ann) {
+    if (!ann) return;
+    this.markManualAnnotation(ann);
+    this.updateCurrentImageBundleAnnotations(this.annotations);
+    this.renderClasses();
+    this.renderAnnotations();
+    this.markAnnotationsDirty('geometry');
+  },
+
+  markSelectedImageLabeledState(labeled) {
+    const img = (this.images || []).find((item) => String(item.id) === String(this.selectedImageId));
+    const wasLabeled = Boolean(img && (img.status === 'labeled' || img.labeled));
+    if (img) {
+      img.status = labeled ? 'labeled' : 'unlabeled';
+      img.labeled = Boolean(labeled);
+    }
+    if (this.projectMeta && wasLabeled !== Boolean(labeled)) {
+      const total = Number(this.projectMeta.num_images || 0);
+      const current = Number(this.projectMeta.labeled_images || 0);
+      this.projectMeta.labeled_images = Math.max(0, Math.min(total, current + (labeled ? 1 : -1)));
+      this.projectMeta.unlabeled_images = Math.max(0, total - Number(this.projectMeta.labeled_images || 0));
+      const progress = total > 0 ? (Number(this.projectMeta.labeled_images || 0) / total) * 100 : 0;
+      const progressBar = document.getElementById('ws-progress-bar');
+      const progressText = document.getElementById('ws-progress-text');
+      const metaLabeled = document.getElementById('ws-meta-labeled');
+      if (progressBar) progressBar.style.width = `${progress}%`;
+      if (progressText) progressText.innerText = `${this.projectMeta.labeled_images || 0} / ${total}`;
+      if (metaLabeled) metaLabeled.innerText = this.projectMeta.labeled_images || 0;
+    }
+    const item = document.querySelector(`.image-item[data-id="${this.selectedImageId}"]`);
+    const dot = item?.querySelector('span');
+    if (dot) dot.style.background = labeled ? '#10b981' : '#e2e8f0';
+  },
+
+  markAnnotationsDirty(reason = '') {
+    this.annotationDirty = true;
+    this.annotationRev += 1;
+    this.annotationSaveImageId = this.selectedImageId || '';
+    this.updateCurrentImageBundleAnnotations(this.annotations);
+    this.markSelectedImageLabeledState((this.annotations || []).length > 0);
+    if (this.annotationAutosaveEnabled) {
+      this.scheduleAnnotationAutosave(reason);
+    } else {
+      this.setAnnotationSaveStatus('未保存', 'active');
+    }
+  },
+
+  scheduleAnnotationAutosave(reason = '') {
+    if (!this.selectedImageId) return;
+    if (this.annotationSaveTimer) clearTimeout(this.annotationSaveTimer);
+    this.setAnnotationSaveStatus('待保存', 'active');
+    this.annotationSaveTimer = setTimeout(() => {
+      this.annotationSaveTimer = null;
+      this.flushAnnotationAutosave(reason);
+    }, 700);
+  },
+
+  async ensureAnnotationClasses(annotations) {
+    if (!this.projectMeta) return;
+    if (!Array.isArray(this.projectMeta.classes)) this.projectMeta.classes = [];
+    const current = new Set((this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()).filter(Boolean));
+    const needed = Array.from(new Set((annotations || [])
+      .map((ann) => String(ann?.class_name || ann?.label || '').trim())
+      .filter((cls) => cls && !current.has(cls))));
+    if (needed.length === 0) return;
+    await api.addClass(this.projectId, needed.join('\n'));
+    this.projectMeta.classes = Array.from(new Set([...(this.projectMeta.classes || []), ...needed]));
+  },
+
+  async flushAnnotationAutosave(reason = '') {
+    if (!this.selectedImageId || this.annotationSaving || !this.annotationDirty) return;
+    const imageId = this.annotationSaveImageId || this.selectedImageId;
+    const cached = this.getCachedImageBundle(imageId);
+    const annotations = String(imageId) === String(this.selectedImageId)
+      ? this.cloneAnnotations()
+      : this.cloneAnnotations(cached?.annotations || []);
+    if (!imageId) return;
+    const rev = this.annotationRev;
+    try {
+      this.annotationSaving = true;
+      this.setAnnotationSaveStatus('保存中...', 'active');
+      await this.ensureAnnotationClasses(annotations);
+      if (String(this.selectedImageId) === String(imageId)) this.renderClasses();
+      await api.saveAnnotations(this.projectId, imageId, annotations);
+      if (this.isUnmounted) return;
+      if (String(this.selectedImageId) === String(imageId)) {
+        this.updateCurrentImageBundleAnnotations(annotations);
+        this.markSelectedImageLabeledState(annotations.length > 0);
+        if (this.annotationRev === rev) {
+          this.annotationDirty = false;
+          this.annotationSaveImageId = '';
+          this.setAnnotationSaveStatus('已保存');
+        } else {
+          this.scheduleAnnotationAutosave('dirty-during-save');
+        }
+      }
+    } catch (e) {
+      this.setAnnotationSaveStatus('保存失败', 'error');
+      showToast(`保存失败: ${e.message}`, 'error');
+    } finally {
+      this.annotationSaving = false;
+    }
+  },
+
   getSelectedClassesForInference() {
     const checked = [];
     document.querySelectorAll('.cls-chk-infer[type="checkbox"]:checked').forEach(chk => {
@@ -2241,11 +2574,16 @@ export const ImageWorkspace = {
 
   async saveCurrentAnns() {
     if (!this.selectedImageId) return;
+    if (this.annotationSaveTimer) {
+      clearTimeout(this.annotationSaveTimer);
+      this.annotationSaveTimer = null;
+    }
+    this.annotationDirty = true;
+    this.annotationSaveImageId = this.selectedImageId;
+    this.annotationRev += 1;
     try {
-      await api.saveAnnotations(this.projectId, this.selectedImageId, this.annotations);
-      this.updateCurrentImageBundleAnnotations(this.annotations);
-      showToast(i18n.t('save_success'), "success");
-      await this.loadProjectInfo();
+      await this.flushAnnotationAutosave('manual-save');
+      if (!this.annotationDirty) showToast(i18n.t('save_success'), "success");
     } catch(e) { showToast(e.message, "error"); }
   },
 
@@ -2253,21 +2591,33 @@ export const ImageWorkspace = {
     if (!this.selectedImageId) return;
     if (!confirm("Clear all annotations on this image?")) return;
     try {
-      await api.saveAnnotations(this.projectId, this.selectedImageId, []);
-      this.invalidateImageBundle(this.selectedImageId);
-      await this.selectImage(this.selectedImageId, this.selectedImagePath);
-      await this.loadProjectInfo();
+      this.pushAnnotationHistory();
+      this.annotations = [];
+      this.focusedAnnotationId = null;
+      if (this.viewer) {
+        this.viewer.setAnnotations([]);
+        this.viewer.setFocusedAnnotation(null);
+      }
+      this.renderClasses();
+      this.renderAnnotations();
+      this.markAnnotationsDirty('clear');
     } catch(e) { showToast(e.message, "error"); }
   },
   
   async deleteAnnotation(annId) {
     if (!this.selectedImageId) return;
     try {
+      this.pushAnnotationHistory();
       const newAnns = this.annotations.filter(a => a.id !== annId);
-      await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
-      this.invalidateImageBundle(this.selectedImageId);
-      await this.selectImage(this.selectedImageId, this.selectedImagePath);
-      await this.loadProjectInfo();
+      this.annotations = newAnns;
+      if (String(this.focusedAnnotationId || '') === String(annId || '')) this.focusedAnnotationId = null;
+      if (this.viewer) {
+        this.viewer.setAnnotations(this.annotations);
+        this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
+      }
+      this.renderClasses();
+      this.renderAnnotations();
+      this.markAnnotationsDirty('delete');
     } catch(e) { showToast(e.message, "error"); }
   },
 
@@ -2376,15 +2726,16 @@ export const ImageWorkspace = {
       const existingClasses = new Set((this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()));
       if (!existingClasses.has(cleanClass)) {
         await api.addClass(this.projectId, cleanClass);
+        this.projectMeta.classes = Array.from(new Set([...(this.projectMeta.classes || []), cleanClass]));
       }
 
+      this.pushAnnotationHistory();
       const newAnns = this.annotations.map((ann) => {
         if (String(ann?.id || '') !== String(annId || '')) return ann;
-        const updated = { ...ann, class_name: cleanClass, label: cleanClass };
+        const updated = this.markManualAnnotation({ ...ann, class_name: cleanClass, label: cleanClass });
         delete updated.color;
         return updated;
       });
-      await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
 
       this.annotations = newAnns;
       this.updateCurrentImageBundleAnnotations(newAnns);
@@ -2394,8 +2745,7 @@ export const ImageWorkspace = {
         this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
       }
       this.renderAnnotations();
-      await this.loadProjectInfo();
-      await this.loadImages();
+      this.markAnnotationsDirty('class');
       showToast(`已将标注类别改为 "${cleanClass}"`, 'success');
       return true;
     } catch(e) {
