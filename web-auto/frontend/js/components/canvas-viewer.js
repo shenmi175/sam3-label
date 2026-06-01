@@ -11,20 +11,38 @@ export class CanvasViewer {
       width: '100%',
       height: '100%',
       overflow: 'hidden',
+      pointerEvents: 'none',
+      zIndex: '1',
+    });
+
+    this.visualRoot = document.createElement('div');
+    Object.assign(this.visualRoot.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      pointerEvents: 'none',
+      transformOrigin: '0 0',
+      transform: 'translate3d(0, 0, 0) scale(1)',
+      transition: 'none',
     });
 
     this.imageCanvas = this.createLayerCanvas('canvas-layer-image', 'none');
     this.maskCanvas = this.createLayerCanvas('canvas-layer-mask', 'none');
-    this.overlayCanvas = this.createLayerCanvas('canvas-layer-overlay', 'auto');
-    this.canvas = this.overlayCanvas;
+    this.overlayCanvas = this.createLayerCanvas('canvas-layer-overlay', 'none');
+    this.eventCanvas = this.createLayerCanvas('canvas-layer-events', 'auto');
+    this.eventCanvas.style.zIndex = '20';
+    this.canvas = this.eventCanvas;
     this.imageCtx = this.imageCanvas.getContext('2d');
     this.maskCtx = this.maskCanvas.getContext('2d');
     this.ctx = this.overlayCanvas.getContext('2d');
 
-    this.layerRoot.appendChild(this.imageCanvas);
-    this.layerRoot.appendChild(this.maskCanvas);
-    this.layerRoot.appendChild(this.overlayCanvas);
+    this.visualRoot.appendChild(this.imageCanvas);
+    this.visualRoot.appendChild(this.maskCanvas);
+    this.visualRoot.appendChild(this.overlayCanvas);
+    this.layerRoot.appendChild(this.visualRoot);
     this.container.appendChild(this.layerRoot);
+    this.container.appendChild(this.eventCanvas);
     this.container.style.cursor = 'default';
     
     // State
@@ -39,6 +57,10 @@ export class CanvasViewer {
     this.fitRetryCount = 0;
     this.drawFrame = null;
     this.pendingDrawLayers = undefined;
+    this.renderTransform = { ...this.transform };
+    this.compositorFrame = null;
+    this.compositorCommitTimer = null;
+    this.compositorActive = false;
     this.maskLayerCanvas = null;
     this.maskLayerKey = '';
     this.maskLayerDisabled = false;
@@ -125,7 +147,10 @@ export class CanvasViewer {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
+    if (this.compositorFrame) cancelAnimationFrame(this.compositorFrame);
+    if (this.compositorCommitTimer) clearTimeout(this.compositorCommitTimer);
     if (this.layerRoot) this.layerRoot.remove();
+    if (this.eventCanvas) this.eventCanvas.remove();
     else if (this.canvas) this.canvas.remove();
   }
 
@@ -180,7 +205,7 @@ export class CanvasViewer {
     if (width <= 0 || height <= 0) return false;
     if (this.canvas.width === width && this.canvas.height === height) return;
 
-    for (const canvas of [this.imageCanvas, this.maskCanvas, this.overlayCanvas]) {
+    for (const canvas of [this.imageCanvas, this.maskCanvas, this.overlayCanvas, this.eventCanvas]) {
       if (!canvas) continue;
       canvas.width = width;
       canvas.height = height;
@@ -215,6 +240,7 @@ export class CanvasViewer {
   }
 
   clearImage() {
+    this.clearCompositorTransform();
     this.imageLoadToken++;
     this.image = null;
     this.annotations = [];
@@ -244,6 +270,7 @@ export class CanvasViewer {
 
   setImage(img) {
     if (!img) return false;
+    this.clearCompositorTransform();
     this.image = img;
     this.isPanning = false;
     this.isDrawingBox = false;
@@ -302,6 +329,22 @@ export class CanvasViewer {
     if (reset) this.maskLayerCanvas = null;
   }
 
+  cloneTransform(transform = this.transform) {
+    return {
+      x: Number(transform?.x || 0),
+      y: Number(transform?.y || 0),
+      scale: Number(transform?.scale || 1),
+    };
+  }
+
+  isSameTransform(a = this.renderTransform, b = this.transform) {
+    return (
+      Math.abs(Number(a?.x || 0) - Number(b?.x || 0)) < 0.001 &&
+      Math.abs(Number(a?.y || 0) - Number(b?.y || 0)) < 0.001 &&
+      Math.abs(Number(a?.scale || 1) - Number(b?.scale || 1)) < 0.000001
+    );
+  }
+
   requestDraw(options = {}) {
     const layers = options.layers || null;
     this.pendingDrawLayers = this.mergeDrawLayers(this.pendingDrawLayers, layers);
@@ -333,6 +376,70 @@ export class CanvasViewer {
       mask: Boolean(current.mask || next.mask),
       overlay: Boolean(current.overlay || next.overlay),
     };
+  }
+
+  startCompositorTransform() {
+    if (!this.image || !this.visualRoot) return false;
+    if (this.drawFrame) {
+      cancelAnimationFrame(this.drawFrame);
+      this.drawFrame = null;
+      this.pendingDrawLayers = undefined;
+    }
+    if (!this.compositorActive) {
+      this.visualRoot.style.willChange = 'transform';
+      this.compositorActive = true;
+    }
+    return true;
+  }
+
+  scheduleCompositorUpdate(options = {}) {
+    if (!this.startCompositorTransform()) return;
+    if (!this.compositorFrame) {
+      this.compositorFrame = requestAnimationFrame(() => {
+        this.compositorFrame = null;
+        this.applyCompositorTransform();
+      });
+    }
+    this.scheduleCompositorCommit(options.delay ?? 110);
+  }
+
+  scheduleCompositorCommit(delay = 110) {
+    if (this.compositorCommitTimer) clearTimeout(this.compositorCommitTimer);
+    this.compositorCommitTimer = setTimeout(() => {
+      this.compositorCommitTimer = null;
+      this.commitCompositorTransform();
+    }, delay);
+  }
+
+  applyCompositorTransform() {
+    if (!this.visualRoot || !this.image) return;
+    const base = this.renderTransform || this.transform;
+    const baseScale = Math.max(Number(base.scale || 1), 0.000001);
+    const scale = this.transform.scale / baseScale;
+    const x = this.transform.x - (Number(base.x || 0) * scale);
+    const y = this.transform.y - (Number(base.y || 0) * scale);
+    this.visualRoot.style.transform = `translate3d(${x.toFixed(3)}px, ${y.toFixed(3)}px, 0) scale(${scale.toFixed(6)})`;
+  }
+
+  clearCompositorTransform() {
+    if (this.compositorFrame) {
+      cancelAnimationFrame(this.compositorFrame);
+      this.compositorFrame = null;
+    }
+    if (this.compositorCommitTimer) {
+      clearTimeout(this.compositorCommitTimer);
+      this.compositorCommitTimer = null;
+    }
+    if (this.visualRoot) {
+      this.visualRoot.style.transform = 'translate3d(0, 0, 0) scale(1)';
+      this.visualRoot.style.willChange = 'auto';
+    }
+    this.compositorActive = false;
+  }
+
+  commitCompositorTransform() {
+    this.clearCompositorTransform();
+    this.draw({ image: true, mask: true, overlay: true });
   }
 
   setFocusedAnnotation(annotationId = null, options = {}) {
@@ -407,7 +514,7 @@ export class CanvasViewer {
   }
 
   canvasToImage(clientX, clientY) {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.container.getBoundingClientRect();
     const mx = clientX - rect.left;
     const my = clientY - rect.top;
     return [
@@ -692,7 +799,7 @@ export class CanvasViewer {
     else if (e.deltaMode === 2) delta *= this.canvas.height || window.innerHeight || 800;
     delta = Math.max(-120, Math.min(120, delta));
     
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.container.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     
@@ -706,7 +813,7 @@ export class CanvasViewer {
     this.transform.scale = newScale;
     this.fitMode = false;
     
-    this.requestDraw();
+    this.scheduleCompositorUpdate({ delay: 120 });
   }
   
   onMouseDown(e) {
@@ -719,6 +826,7 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.container.style.cursor = 'grabbing';
+      this.startCompositorTransform();
       return;
     }
 
@@ -728,6 +836,7 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.container.style.cursor = 'grabbing';
+      this.startCompositorTransform();
       return;
     }
 
@@ -763,7 +872,8 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.container.style.cursor = 'grabbing';
-      this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
+      this.draw({ image: false, mask: false, overlay: true });
+      this.startCompositorTransform();
       return;
     }
 
@@ -798,6 +908,7 @@ export class CanvasViewer {
        this.lastX = e.clientX;
        this.lastY = e.clientY;
        this.container.style.cursor = 'grabbing';
+       this.startCompositorTransform();
     }
   }
   
@@ -831,7 +942,7 @@ export class CanvasViewer {
       this.lastX = e.clientX;
       this.lastY = e.clientY;
       this.fitMode = false;
-      this.requestDraw();
+      this.scheduleCompositorUpdate({ delay: 90 });
     } else if (this.isDrawingBox) {
       this.boxEnd = this.clampPoint(this.canvasToImage(e.clientX, e.clientY));
       this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
@@ -858,6 +969,8 @@ export class CanvasViewer {
       return;
     }
 
+    const wasPanning = this.isPanning;
+
     if (this.isDrawingBox && this.boxStart && this.boxEnd) {
       const x1 = Math.min(this.boxStart[0], this.boxEnd[0]);
       const y1 = Math.min(this.boxStart[1], this.boxEnd[1]);
@@ -878,7 +991,8 @@ export class CanvasViewer {
     this.boxEnd = null;
     this.container.style.cursor = e.altKey ? 'grab' : 'default';
     this.updateCursor();
-    this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
+    if (wasPanning) this.commitCompositorTransform();
+    else this.requestDraw({ layers: { image: false, mask: false, overlay: true } });
   }
 
   onDoubleClick(e) {
@@ -904,9 +1018,19 @@ export class CanvasViewer {
   }
   
   draw(layers = { image: true, mask: true, overlay: true }) {
-    if (layers.image !== false) this.drawImageLayer();
-    if (layers.mask !== false) this.drawMaskCanvasLayer();
-    if (layers.overlay !== false) this.drawOverlayLayer();
+    const transformChanged = !this.isSameTransform(this.renderTransform, this.transform);
+    const nextLayers = transformChanged
+      ? { image: true, mask: true, overlay: true }
+      : layers;
+
+    this.clearCompositorTransform();
+    if (nextLayers.image !== false) this.drawImageLayer();
+    if (nextLayers.mask !== false) this.drawMaskCanvasLayer();
+    if (nextLayers.overlay !== false) this.drawOverlayLayer();
+
+    if (nextLayers.image !== false && nextLayers.mask !== false && nextLayers.overlay !== false) {
+      this.renderTransform = this.cloneTransform();
+    }
   }
 
   clearLayer(ctx, canvas) {
