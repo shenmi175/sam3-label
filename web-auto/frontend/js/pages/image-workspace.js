@@ -8,6 +8,7 @@ import { bindClassPanelEvents, renderClassPanel } from '../components/class-pane
 import { renderExportPanel } from '../components/export-panel.js';
 import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
+import { renderSmartFilterPanel } from '../components/smart-filter-panel.js';
 import { renderWorkspaceToolbar } from '../components/workspace-toolbar.js';
 import { i18n } from '../i18n.js';
 import { AnnotationController } from '../modules/image-workspace/annotation-controller.js';
@@ -2529,168 +2530,18 @@ export const ImageWorkspace = {
     if (!modal) return showToast('智能过滤弹窗初始化失败', 'error');
     const classes = this.projectMeta?.classes || [];
 
-    modal.innerHTML = `
-      <div class="neu-card" style="width: 860px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
-        <button class="neu-button" style="position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-filter-full').style.display='none'">&times;</button>
-        <h2 style="margin-top: 0; margin-bottom: 8px;">智能过滤工作台</h2>
-        <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.7; margin-bottom: 18px;">
-          先生成候选预览，再确认应用；应用时会为受影响图片写入 SQLite 回滚快照。
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 18px;">
-          <div id="filter-rollback-panel" class="neu-box" style="display: none; padding: 14px; border-radius: 12px; background: var(--neu-bg-light);"></div>
-
-          <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
-            <button class="neu-button filter-recipe-card" data-filter-preset="dedupe" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
-              <b style="font-size: 13px;">同类去重</b>
-              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">同一类别高覆盖/重叠时保留更大实例，适合清理批推重复框。</span>
-            </button>
-            <button class="neu-button filter-recipe-card" data-filter-preset="canonical" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
-              <b style="font-size: 13px;">类别合并</b>
-              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">把来源类别并入目标类别，例如 face/head 合并到 human face。</span>
-            </button>
-            <button class="neu-button filter-recipe-card" data-filter-preset="cleanup" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
-              <b style="font-size: 13px;">小目标/低置信度</b>
-              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">按类别范围删除小面积噪声或低分实例，必须预览后才能执行。</span>
-            </button>
-            <button class="neu-button filter-recipe-card" data-filter-preset="delete_unlabeled" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
-              <b style="font-size: 13px;">删除无标注图片</b>
-              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">删除没有任何标注的图片文件和对应标注 JSON，适合清理空样本。</span>
-            </button>
-          </div>
-
-          <div class="neu-box" style="padding: 8px; border-radius: 14px; display: flex; gap: 8px;">
-            <button id="btn-filter-op-merge" class="neu-button" style="flex: 1; font-weight: 700;">\u5408\u5E76\u8FC7\u6EE4</button>
-            <button id="btn-filter-op-rule" class="neu-button" style="flex: 1; font-weight: 700;">\u89C4\u5219\u8FC7\u6EE4</button>
-            <button id="btn-filter-op-delete-unlabeled" class="neu-button" style="flex: 1; font-weight: 700;">删除无标注图片</button>
-          </div>
-
-          <div id="filter-op-hint" class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light); font-size: 12px; line-height: 1.8;"></div>
-
-          <div id="filter-merge-panel" style="display: flex; flex-direction: column; gap: 18px;">
-            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;">
-              <div>
-                <label class="neu-label">\u5408\u5E76\u6A21\u5F0F</label>
-                <select id="filter-mode-sel" class="neu-input" style="width: 100%;">
-                  <option value="same_class">\u540C\u7C7B\u53BB\u91CD</option>
-                  <option value="canonical_class">\u6765\u6E90\u7C7B\u5E76\u5165\u76EE\u6807\u7C7B</option>
-                </select>
-              </div>
-              <div>
-                <label class="neu-label">\u7A7A\u95F4\u5224\u5B9A</label>
-                <select id="filter-spatial-sel" class="neu-input" style="width: 100%;">
-                  <option value="instance_cover">\u5B9E\u4F8B\u5D4C\u5957</option>
-                  <option value="bbox_cover">\u8FB9\u6846\u5D4C\u5957</option>
-                </select>
-              </div>
-              <div>
-                <label class="neu-label">\u9762\u79EF\u6307\u6807</label>
-                <select id="filter-area-sel" class="neu-input" style="width: 100%;">
-                  <option value="instance">\u5B9E\u4F8B\u9762\u79EF</option>
-                  <option value="bbox">\u8FB9\u6846\u9762\u79EF</option>
-                </select>
-              </div>
-            </div>
-
-            <div id="filter-ms-panel" style="display: none; flex-direction: column; gap: 14px; padding: 16px; border-radius: 14px; background: var(--neu-bg-light);">
-              <div>
-                <label class="neu-label">\u76EE\u6807\u7C7B\u522B</label>
-                <select id="filter-target-cls" class="neu-input" style="width: 100%;">
-                  ${classes.map(c => `<option value="${c}">${c}</option>`).join('')}
-                </select>
-              </div>
-              <div>
-                <label class="neu-label">\u6765\u6E90\u7C7B\u522B</label>
-                <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 140px; overflow-y: auto; padding: 10px; border-radius: 10px; background: var(--neu-bg); box-shadow: var(--neu-inset);">
-                  ${classes.map(c => `<label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" class="source-cls-chk" value="${c}" /> <span>${c}</span></label>`).join('')}
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-                <label class="neu-label">\u5305\u542B\u9608\u503C</label>
-                <span id="filter-cov-val" style="font-size:12px; font-weight:700; color: var(--neu-text-active);">0.98</span>
-              </div>
-              <input type="range" id="filter-cov" min="0.5" max="1" step="0.01" value="0.98" style="width:100%;" />
-              <div style="margin-top: 6px; font-size: 11px; color: var(--neu-text-light);">\u5F53\u8F83\u5927\u5B9E\u4F8B\u8986\u76D6\u8F83\u5C0F\u5B9E\u4F8B\u8FBE\u5230\u8BE5\u6BD4\u4F8B\u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002</div>
-            </div>
-          </div>
-
-          <div id="filter-rule-panel" style="display: none; flex-direction: column; gap: 18px;">
-            <div class="neu-box" style="padding: 14px; border-radius: 12px; background: rgba(239, 68, 68, 0.08); font-size: 12px; line-height: 1.8; color: var(--neu-text);">
-              \u89C4\u5219\u8FC7\u6EE4\u53EA\u4F1A\u5220\u9664\u547D\u4E2D\u7684\u6807\u6CE8\uFF0C\u4E0D\u4F1A\u6539\u7C7B\u6216\u5408\u5E76\u3002\u8BF7\u5148\u9884\u89C8\uFF0C\u786E\u8BA4\u547D\u4E2D\u8303\u56F4\u540E\u518D\u6267\u884C\u5220\u9664\u3002
-            </div>
-
-            <div class="neu-box" style="padding: 16px; border-radius: 14px; display: flex; flex-direction: column; gap: 14px;">
-              <div style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">\u7B5B\u9009\u6761\u4EF6</div>
-              <div>
-                <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">\u7C7B\u522B\u8303\u56F4</div>
-                <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-height: 140px; overflow-y:auto;">
-                  ${classes.map(c => `<label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input type="checkbox" class="rule-cls-chk" value="${c}" checked /> <span>${c}</span></label>`).join('')}
-                </div>
-              </div>
-              <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
-                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
-                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-small-enabled" /> \u5C0F\u76EE\u6807\u8FC7\u6EE4</label>
-                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u9762\u79EF\u5360\u6BD4\u4E0D\u8D85\u8FC7\u8BE5\u503C\u7684\u76EE\u6807\u3002</div>
-                  <input type="number" id="filter-small-ratio" class="neu-input" min="0" max="1" step="0.001" value="0.02" />
-                </div>
-                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
-                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-count-enabled" /> \u5B9E\u4F8B\u6570\u91CF\u8FC7\u6EE4</label>
-                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u5B9E\u4F8B\u603B\u6570\u843D\u5728\u8BE5\u8303\u56F4\u5185\u7684\u56FE\u7247\u6807\u6CE8\u3002\u5DE6\u8FB9\u662F\u6700\u5C11\u6570\u91CF\uFF0C\u53F3\u8FB9\u662F\u6700\u591A\u6570\u91CF\uFF0C0 \u8868\u793A\u4E0D\u9650\u5236\u4E0A\u9650\u3002</div>
-                  <div style="display:flex; gap: 8px;">
-                    <input type="number" id="filter-min-count" class="neu-input" min="0" value="1" placeholder="\u6700\u5C0F\u503C" />
-                    <input type="number" id="filter-max-count" class="neu-input" min="0" value="0" placeholder="\u6700\u5927\u503C(0=\u4E0D\u9650)" />
-                  </div>
-                </div>
-                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
-                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-pos-enabled" /> \u4F4D\u7F6E\u8FC7\u6EE4</label>
-                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4E2D\u5FC3\u77E9\u5F62\u5185\u547D\u4E2D\u7684\u6807\u6CE8\u4F1A\u88AB\u5220\u9664\u3002</div>
-                  <div style="display:flex; gap: 8px;">
-                    <input type="number" id="filter-center-x" class="neu-input" min="0" max="0.5" step="0.01" value="0.25" placeholder="\u534A\u5BBD" />
-                    <input type="number" id="filter-center-y" class="neu-input" min="0" max="0.5" step="0.01" value="0.05" placeholder="\u534A\u9AD8" />
-                  </div>
-                </div>
-                <div class="neu-box" style="padding: 12px; border-radius: 12px; box-shadow: var(--neu-inset);">
-                  <label style="display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; margin-bottom:8px;"><input type="checkbox" id="filter-conf-enabled" /> \u7F6E\u4FE1\u5EA6\u8FC7\u6EE4</label>
-                  <div style="font-size:11px; color: var(--neu-text-light); margin-bottom: 8px;">\u4EC5\u5220\u9664\u7F6E\u4FE1\u5EA6\u843D\u5728\u8BE5\u533A\u95F4\u5185\u7684\u6807\u6CE8\u3002\u5DE6\u8FB9\u662F\u6700\u5C0F\u5206\u6570\uFF0C\u53F3\u8FB9\u662F\u6700\u5927\u5206\u6570\u3002</div>
-                  <div style="display:flex; gap: 8px;">
-                    <input type="number" id="filter-conf-min" class="neu-input" min="0" max="1" step="0.01" value="0.00" placeholder="\u6700\u5C0F\u5206\u6570" />
-                    <input type="number" id="filter-conf-max" class="neu-input" min="0" max="1" step="0.01" value="1.00" placeholder="\u6700\u5927\u5206\u6570" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light);">
-            <div style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 6px;">\u6267\u884C\u6458\u8981</div>
-            <div id="filter-rule-text" style="font-size: 12px; line-height: 1.7;">--</div>
-          </div>
-
-          <div class="neu-box" style="padding: 16px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">\u4EFB\u52A1\u8FDB\u5EA6</span>
-              <span id="filter-job-progress-text" style="font-size: 11px; color: var(--neu-text-light);">\u7A7A\u95F2</span>
-            </div>
-            <div style="height: 8px; background: rgba(0,0,0,0.05); border-radius: 999px; overflow: hidden;">
-              <div id="filter-job-progress-fill" style="width: 0%; height: 100%; background: var(--neu-text-active); transition: width 0.25s ease;"></div>
-            </div>
-            <div id="filter-job-status" style="font-size: 12px; color: var(--neu-text); min-height: 18px;">\u5148\u6267\u884C\u9884\u89C8\u4EE5\u67E5\u770B\u547D\u4E2D\u7ED3\u679C\u3002</div>
-            <div id="filter-preview-summary" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;"></div>
-          </div>
-
-          <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button class="neu-button" style="padding: 10px 24px;" onclick="document.getElementById('modal-filter-full').style.display='none'">\u53D6\u6D88</button>
-            <button id="btn-start-filter-preview" class="neu-button" style="padding: 10px 24px; color: var(--neu-text-active); font-weight: 700;">\u5F00\u59CB\u9884\u89C8</button>
-            <button id="btn-apply-filter" class="neu-button" style="padding: 10px 24px; color: #10b981; font-weight: 700; display: none;">\u786E\u8BA4\u5408\u5E76</button>
-          </div>
-        </div>
-      </div>
-    `;
+    modal.innerHTML = renderSmartFilterPanel(classes);
     modal.style.display = 'flex';
 
     let operationMode = 'merge';
+    const closeFilterModal = () => {
+      modal.style.display = 'none';
+      modal.innerHTML = '';
+    };
+    const closeFilterBtn = document.getElementById('btn-close-filter-modal');
+    const cancelFilterBtn = document.getElementById('btn-cancel-filter-modal');
+    if (closeFilterBtn) closeFilterBtn.onclick = closeFilterModal;
+    if (cancelFilterBtn) cancelFilterBtn.onclick = closeFilterModal;
     const mergeBtn = document.getElementById('btn-filter-op-merge');
     const ruleBtn = document.getElementById('btn-filter-op-rule');
     const deleteUnlabeledBtn = document.getElementById('btn-filter-op-delete-unlabeled');
