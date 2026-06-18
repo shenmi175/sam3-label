@@ -707,7 +707,7 @@ Additional request fields:
 
 Meaning:
 
-- `operation_mode`: `merge` or `rule`
+- `operation_mode`: `merge`, `rule`, or `delete_unlabeled`
 - `merge_mode`: `same_class` or `canonical_class`
 - `spatial_mode`: `instance_cover` or `bbox_cover`
 - `coverage_threshold`: remove the smaller instance when the larger instance covers at least this ratio of it
@@ -717,8 +717,10 @@ Meaning:
 - `instance_count_enabled + min/max_instances`: per-image scoped instance-count filter
 - `position_enabled + center_x_half_width + center_y_half_height`: center-rectangle filter
 - `confidence_enabled + min/max_confidence`: score range filter
+- `delete_unlabeled`: preview and then delete images whose annotation list is empty; apply removes the image file, its `annotations/{image_id}.json`, and related project/index rows
 
 Notes:
 
 - `spatial_mode=instance_cover` prefers polygon/mask coverage and falls back to bbox coverage when instance geometry is unavailable
 - `spatial_mode=bbox_cover` always uses bbox containment coverage
+- `delete_unlabeled` is a physical delete and cannot be restored by smart-filter rollback

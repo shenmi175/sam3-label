@@ -31,6 +31,7 @@ Running ./deploy.sh without a command starts the interactive install wizard.
 Commands:
   install            Guided setup, image pull, build, and start.
   update             Pull latest git changes, rebuild, and restart.
+  rebuild-web-auto   Rebuild and recreate only web-auto, preserving mounts.
   restart [service]  Restart all services or one service.
   start              Start the stack without rebuilding.
   stop               Stop and remove containers, preserving data.
@@ -65,6 +66,7 @@ Examples:
   ./deploy.sh install --proxy
   ./deploy.sh install --mirror https://your-mirror.example
   ./deploy.sh update
+  ./deploy.sh rebuild-web-auto
   ./deploy.sh gpu-check
   ./deploy.sh gpu-install
   ./deploy.sh restart web-auto
@@ -1393,6 +1395,21 @@ cmd_update() {
   print_next_steps
 }
 
+cmd_rebuild_web_auto() {
+  parse_common_options "$@"
+  [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown rebuild-web-auto option: ${POSITIONAL[*]}"
+  ensure_env "$PROFILE_OVERRIDE"
+  select_docker
+  info "Rebuilding and recreating web-auto"
+  compose up -d --build --force-recreate web-auto
+  compose ps web-auto
+  if using_proxy_mode; then
+    wait_for_https
+  else
+    wait_for_direct_http
+  fi
+}
+
 cmd_start() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
@@ -2010,6 +2027,7 @@ main() {
   case "$command" in
     install) cmd_install "$@" ;;
     update) cmd_update "$@" ;;
+    rebuild-web-auto) cmd_rebuild_web_auto "$@" ;;
     start|up) cmd_start "$@" ;;
     restart) cmd_restart "$@" ;;
     stop|down) cmd_stop "$@" ;;

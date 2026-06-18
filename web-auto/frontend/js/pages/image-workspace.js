@@ -864,8 +864,16 @@ export const ImageWorkspace = {
     const listCont = document.getElementById('image-list-container');
     if (listCont) {
       listCont.onclick = (e) => {
+        const deleteBtn = e.target.closest('.btn-delete-image');
+        if (deleteBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.deleteProjectImage(deleteBtn.dataset.id, deleteBtn.dataset.rel);
+          return;
+        }
         const item = e.target.closest('.image-item');
         if (item) {
+          item.focus({ preventScroll: true });
           this.selectImage(item.dataset.id, item.dataset.rel);
         }
       };
@@ -1042,7 +1050,16 @@ export const ImageWorkspace = {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         this.redoAnnotationChange();
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      } else if (e.key === 'Delete') {
+        const activeImageItem = document.activeElement?.closest?.('.image-item');
+        if (this.focusedAnnotationId) {
+          e.preventDefault();
+          this.deleteAnnotation(this.focusedAnnotationId);
+        } else if (activeImageItem?.dataset?.id) {
+          e.preventDefault();
+          this.deleteProjectImage(activeImageItem.dataset.id, activeImageItem.dataset.rel);
+        }
+      } else if (e.key === 'Backspace') {
         if (this.focusedAnnotationId) {
           e.preventDefault();
           this.deleteAnnotation(this.focusedAnnotationId);
@@ -1561,16 +1578,20 @@ export const ImageWorkspace = {
         const bgState = isSel ? 'var(--neu-bg)' : 'transparent';
         const shadowState = isSel ? 'var(--neu-inset)' : 'none';
         const weight = isSel ? '700' : '500';
+        const imageIdAttr = this.escapeAttr(img.id);
+        const relPathAttr = this.escapeAttr(img.rel_path);
+        const relPathHtml = this.escapeHtml(img.rel_path);
         
         const isLabeled = (img.status === 'labeled' || img.labeled);
         const dotColor = isLabeled ? '#10b981' : '#e2e8f0';
         
         html += `
           <div class="neu-button image-item" 
-               data-id="${img.id}" data-rel="${img.rel_path}"
-               style="justify-content: flex-start; text-align: left; padding: 12px; background: ${bgState}; box-shadow: ${shadowState}; font-weight: ${weight}; border-radius: 12px; font-size: 13px; overflow: hidden; cursor: pointer;">
+               data-id="${imageIdAttr}" data-rel="${relPathAttr}" tabindex="0"
+               style="justify-content: flex-start; text-align: left; padding: 10px 8px 10px 12px; background: ${bgState}; box-shadow: ${shadowState}; font-weight: ${weight}; border-radius: 12px; font-size: 13px; overflow: hidden; cursor: pointer; display: flex; align-items: center; gap: 8px;">
              <span style="width: 8px; height: 8px; border-radius: 50%; background: ${dotColor}; margin-right: 12px; flex-shrink: 0; pointer-events: none;"></span>
-             <span style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden; pointer-events: none;">${img.rel_path}</span>
+             <span style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden; pointer-events: none; flex: 1; min-width: 0;">${relPathHtml}</span>
+             <button type="button" class="neu-button btn-delete-image" data-id="${imageIdAttr}" data-rel="${relPathAttr}" title="删除图片和标注文件" aria-label="删除图片和标注文件" style="width: 24px; height: 24px; min-width: 24px; padding: 0; border-radius: 8px; color: #ef4444; font-size: 15px; font-weight: 800; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">×</button>
           </div>
         `;
       }
@@ -2642,6 +2663,85 @@ export const ImageWorkspace = {
     } catch(e) { showToast(e.message, "error"); }
   },
 
+  async deleteProjectImage(imageId, relPath = '') {
+    const targetId = String(imageId || '').trim();
+    if (!targetId) return;
+    const currentPageIndex = (this.images || []).findIndex((item) => String(item.id) === targetId);
+    const targetImage = currentPageIndex >= 0 ? this.images[currentPageIndex] : null;
+    const displayPath = String(relPath || targetImage?.rel_path || targetId);
+    const deletingSelected = String(this.selectedImageId || '') === targetId;
+
+    if (deletingSelected && this.annotationSaving) {
+      showToast('当前图片正在保存，稍后再删除', 'error');
+      return;
+    }
+    if (!confirm(`确认删除图片 "${displayPath}" 及对应标注文件吗？\n\n该操作会删除原图文件，不能从页面撤销。`)) return;
+
+    try {
+      if (deletingSelected) {
+        this.imageLoadSeq += 1;
+        if (this.imageLoadAbortController) {
+          this.imageLoadAbortController.abort();
+          this.imageLoadAbortController = null;
+        }
+        if (this.annotationSaveTimer) {
+          clearTimeout(this.annotationSaveTimer);
+          this.annotationSaveTimer = null;
+        }
+        this.annotationDirty = false;
+        this.annotationSaveImageId = '';
+      }
+
+      await api.deleteImage(this.projectId, targetId);
+      this.invalidateImageBundle(targetId);
+      await this.loadProjectInfo();
+      await this.loadImages();
+
+      if (this.images.length === 0 && this.totalImages > 0 && this.offset > 0) {
+        this.offset = Math.max(0, this.offset - this.limit);
+        await this.loadImages();
+      }
+
+      if (deletingSelected) {
+        const nextImage = this.images[Math.min(Math.max(currentPageIndex, 0), Math.max(this.images.length - 1, 0))];
+        if (nextImage) {
+          await this.selectImage(nextImage.id, nextImage.rel_path, { preserveFit: false });
+          const nextEl = Array.from(document.querySelectorAll('.image-item'))
+            .find((el) => String(el.dataset.id || '') === String(nextImage.id));
+          if (nextEl) nextEl.focus({ preventScroll: true });
+        } else {
+          this.selectedImageId = null;
+          this.selectedImagePath = null;
+          this.annotations = [];
+          this.focusedAnnotationId = null;
+          this.currentPrompts = [];
+          this.previews = [];
+          this.annotationHistory = [];
+          this.annotationRedoStack = [];
+          if (this.viewer) {
+            this.viewer.clearImage();
+            this.viewer.setAnnotations([]);
+            this.viewer.setPrompts([]);
+            this.viewer.setPreviews([]);
+            this.viewer.setFocusedAnnotation(null);
+          }
+          this.updateUndoRedoButtons();
+          this.updateAnnotationSelectionControls();
+          this.renderAnnotations();
+          this.renderPreviews();
+          this.updateActionBar();
+          this.setCanvasPlaceholder(true, i18n.t('select_image_prompt'));
+        }
+      } else {
+        this.updateSelectedImageListState();
+      }
+
+      showToast(`已删除图片: ${displayPath}`, 'success');
+    } catch (e) {
+      showToast(`删除图片失败: ${e.message}`, 'error');
+    }
+  },
+
   editAnnotationClass(annId) {
     const ann = (this.annotations || []).find((item) => String(item?.id || '') === String(annId || ''));
     if (!ann) return showToast('未找到该标注', 'error');
@@ -2883,7 +2983,7 @@ export const ImageWorkspace = {
         <div style="display: flex; flex-direction: column; gap: 18px;">
           <div id="filter-rollback-panel" class="neu-box" style="display: none; padding: 14px; border-radius: 12px; background: var(--neu-bg-light);"></div>
 
-          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;">
+          <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
             <button class="neu-button filter-recipe-card" data-filter-preset="dedupe" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
               <b style="font-size: 13px;">同类去重</b>
               <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">同一类别高覆盖/重叠时保留更大实例，适合清理批推重复框。</span>
@@ -2896,11 +2996,16 @@ export const ImageWorkspace = {
               <b style="font-size: 13px;">小目标/低置信度</b>
               <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">按类别范围删除小面积噪声或低分实例，必须预览后才能执行。</span>
             </button>
+            <button class="neu-button filter-recipe-card" data-filter-preset="delete_unlabeled" style="padding: 14px; text-align: left; display: flex; flex-direction: column; align-items: stretch; gap: 8px;">
+              <b style="font-size: 13px;">删除无标注图片</b>
+              <span style="font-size: 11px; color: var(--neu-text-light); line-height: 1.5;">删除没有任何标注的图片文件和对应标注 JSON，适合清理空样本。</span>
+            </button>
           </div>
 
           <div class="neu-box" style="padding: 8px; border-radius: 14px; display: flex; gap: 8px;">
             <button id="btn-filter-op-merge" class="neu-button" style="flex: 1; font-weight: 700;">\u5408\u5E76\u8FC7\u6EE4</button>
             <button id="btn-filter-op-rule" class="neu-button" style="flex: 1; font-weight: 700;">\u89C4\u5219\u8FC7\u6EE4</button>
+            <button id="btn-filter-op-delete-unlabeled" class="neu-button" style="flex: 1; font-weight: 700;">删除无标注图片</button>
           </div>
 
           <div id="filter-op-hint" class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light); font-size: 12px; line-height: 1.8;"></div>
@@ -3032,6 +3137,7 @@ export const ImageWorkspace = {
     let operationMode = 'merge';
     const mergeBtn = document.getElementById('btn-filter-op-merge');
     const ruleBtn = document.getElementById('btn-filter-op-rule');
+    const deleteUnlabeledBtn = document.getElementById('btn-filter-op-delete-unlabeled');
     const opHint = document.getElementById('filter-op-hint');
     const mergePanel = document.getElementById('filter-merge-panel');
     const rulePanel = document.getElementById('filter-rule-panel');
@@ -3054,17 +3160,26 @@ export const ImageWorkspace = {
 
     const syncOperationUI = () => {
       const mergeActive = operationMode === 'merge';
+      const ruleActive = operationMode === 'rule';
+      const deleteActive = operationMode === 'delete_unlabeled';
       mergePanel.style.display = mergeActive ? 'flex' : 'none';
-      rulePanel.style.display = mergeActive ? 'none' : 'flex';
+      rulePanel.style.display = ruleActive ? 'flex' : 'none';
       msPanel.style.display = mergeActive && modeSel.value === 'canonical_class' ? 'flex' : 'none';
       mergeBtn.style.boxShadow = mergeActive ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
-      ruleBtn.style.boxShadow = mergeActive ? 'var(--neu-outset-sm)' : 'var(--neu-inset)';
+      ruleBtn.style.boxShadow = ruleActive ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+      deleteUnlabeledBtn.style.boxShadow = deleteActive ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
       mergeBtn.style.color = mergeActive ? 'var(--neu-text-active)' : 'var(--neu-text)';
-      ruleBtn.style.color = mergeActive ? 'var(--neu-text)' : '#ef4444';
-      opHint.innerText = mergeActive
-        ? '\u5408\u5E76\u8FC7\u6EE4\uFF1A\u7528\u4E8E\u5904\u7406\u91CD\u590D\u6807\u6CE8\u6216\u628A\u6765\u6E90\u7C7B\u522B\u5E76\u5165\u76EE\u6807\u7C7B\u522B\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u4F7F\u7528\u89C4\u5219\u8FC7\u6EE4\u6761\u4EF6\u3002'
-        : '\u89C4\u5219\u8FC7\u6EE4\uFF1A\u53EA\u6839\u636E\u5DF2\u52FE\u9009\u7684\u89C4\u5219\u7B5B\u51FA\u547D\u4E2D\u6807\u6CE8\uFF0C\u5E76\u5728\u786E\u8BA4\u540E\u5220\u9664\u8FD9\u4E9B\u547D\u4E2D\u6807\u6CE8\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u505A\u6539\u7C7B\u6216\u5408\u5E76\u3002';
-      applyBtn.innerText = mergeActive ? '\u786E\u8BA4\u5408\u5E76' : '\u5220\u9664\u547D\u4E2D\u6807\u6CE8';
+      ruleBtn.style.color = ruleActive ? '#ef4444' : 'var(--neu-text)';
+      deleteUnlabeledBtn.style.color = deleteActive ? '#ef4444' : 'var(--neu-text)';
+      if (mergeActive) {
+        opHint.innerText = '\u5408\u5E76\u8FC7\u6EE4\uFF1A\u7528\u4E8E\u5904\u7406\u91CD\u590D\u6807\u6CE8\u6216\u628A\u6765\u6E90\u7C7B\u522B\u5E76\u5165\u76EE\u6807\u7C7B\u522B\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u4F7F\u7528\u89C4\u5219\u8FC7\u6EE4\u6761\u4EF6\u3002';
+      } else if (ruleActive) {
+        opHint.innerText = '\u89C4\u5219\u8FC7\u6EE4\uFF1A\u53EA\u6839\u636E\u5DF2\u52FE\u9009\u7684\u89C4\u5219\u7B5B\u51FA\u547D\u4E2D\u6807\u6CE8\uFF0C\u5E76\u5728\u786E\u8BA4\u540E\u5220\u9664\u8FD9\u4E9B\u547D\u4E2D\u6807\u6CE8\u3002\u8BE5\u6A21\u5F0F\u4E0D\u4F1A\u505A\u6539\u7C7B\u6216\u5408\u5E76\u3002';
+      } else {
+        opHint.innerText = '删除无标注图片：扫描当前项目中没有任何标注的图片，确认后删除原图文件和 annotations 目录下对应 JSON。该操作不能通过智能过滤回滚恢复。';
+      }
+      applyBtn.innerText = mergeActive ? '\u786E\u8BA4\u5408\u5E76' : (deleteActive ? '确认删除图片' : '\u5220\u9664\u547D\u4E2D\u6807\u6CE8');
+      applyBtn.style.color = mergeActive ? '#10b981' : '#ef4444';
       this.updateFilterRuleText(operationMode);
     };
 
@@ -3156,7 +3271,9 @@ export const ImageWorkspace = {
       document.getElementById('filter-conf-min').value = '0.00';
       document.getElementById('filter-conf-max').value = '1.00';
       document.getElementById('filter-small-ratio').value = '0.02';
-      if (preset === 'cleanup') {
+      if (preset === 'delete_unlabeled') {
+        operationMode = 'delete_unlabeled';
+      } else if (preset === 'cleanup') {
         operationMode = 'rule';
         document.getElementById('filter-small-enabled').checked = true;
         document.getElementById('filter-conf-enabled').checked = true;
@@ -3175,6 +3292,12 @@ export const ImageWorkspace = {
 
     mergeBtn.onclick = () => {
       operationMode = 'merge';
+      resetPreviewState();
+      setActivePreset('');
+      updateUI();
+    };
+    deleteUnlabeledBtn.onclick = () => {
+      operationMode = 'delete_unlabeled';
       resetPreviewState();
       setActivePreset('');
       updateUI();
@@ -3228,6 +3351,31 @@ export const ImageWorkspace = {
       const posEnabled = document.getElementById('filter-pos-enabled').checked;
       const confEnabled = document.getElementById('filter-conf-enabled').checked;
 
+      if (operationMode === 'delete_unlabeled') {
+        return {
+          project_id: this.projectId,
+          operation_mode: operationMode,
+          merge_mode: 'same_class',
+          spatial_mode: 'instance_cover',
+          coverage_threshold: parseFloat(cov.value),
+          canonical_class: '',
+          source_classes: [],
+          area_mode: document.getElementById('filter-area-sel').value,
+          rule_classes: [],
+          small_target_enabled: false,
+          max_area_ratio: parseFloat(document.getElementById('filter-small-ratio').value || '0.02'),
+          instance_count_enabled: false,
+          min_instances: parseInt(document.getElementById('filter-min-count').value || '1', 10),
+          max_instances: parseInt(document.getElementById('filter-max-count').value || '0', 10),
+          position_enabled: false,
+          center_x_half_width: parseFloat(document.getElementById('filter-center-x').value || '0.25'),
+          center_y_half_height: parseFloat(document.getElementById('filter-center-y').value || '0.05'),
+          confidence_enabled: false,
+          min_confidence: parseFloat(document.getElementById('filter-conf-min').value || '0'),
+          max_confidence: parseFloat(document.getElementById('filter-conf-max').value || '1')
+        };
+      }
+
       if (operationMode === 'merge' && mode === 'canonical_class' && sources.length === 0) {
         throw new Error('\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u6765\u6E90\u7C7B\u522B');
       }
@@ -3268,6 +3416,36 @@ export const ImageWorkspace = {
       const imageCount = kind === 'preview' ? (result?.image_count || 0) : (result?.changed_images || 0);
       const candidateCount = kind === 'preview' ? (result?.candidate_count || 0) : (result?.removed_annotations || 0);
       const relabelCount = kind === 'preview' ? (result?.relabel_count || 0) : (result?.relabeled_annotations || 0);
+      if (op === 'delete_unlabeled') {
+        const deletedImages = kind === 'preview' ? imageCount : (result?.deleted_images || result?.changed_images || 0);
+        const deletedImageFiles = kind === 'preview' ? 0 : (result?.deleted_image_files || 0);
+        const deletedAnnotationFiles = kind === 'preview' ? 0 : (result?.deleted_annotation_files || 0);
+        const failedCount = Array.isArray(result?.failed_deletes) ? result.failed_deletes.length : 0;
+        const header = `
+          <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;">
+            <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${deletedImages}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '待删图片' : '删除图片'}</div></div>
+            <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${kind === 'preview' ? candidateCount : deletedImageFiles}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '命中样本' : '原图文件'}</div></div>
+            <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${deletedAnnotationFiles}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">标注 JSON</div></div>
+            <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${failedCount}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">文件失败</div></div>
+          </div>
+        `;
+        if (items.length === 0) {
+          summaryEl.innerHTML = `${header}<div style="font-size: 12px; color: var(--neu-text-light);">当前项目没有无标注图片。</div>`;
+          return;
+        }
+        summaryEl.innerHTML = header + items.slice(0, 30).map((item) => {
+          const detail = kind === 'preview'
+            ? '<span>待删除图片和对应标注 JSON</span>'
+            : `<span>原图${item.deleted_image_file ? '已删除' : '未删除或不存在'}</span><span>标注 JSON ${item.deleted_annotation_file ? '已删除' : '未删除或不存在'}</span>`;
+          return `
+            <div class="neu-box" style="padding: 10px 12px; border-radius: 10px; background: var(--neu-bg-light);">
+              <div style="font-size: 12px; font-weight: 700; color: var(--neu-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.rel_path || item.image_id || '--'}</div>
+              <div style="margin-top: 6px; display: flex; gap: 12px; font-size: 11px; color: var(--neu-text-light); flex-wrap: wrap;">${detail}</div>
+            </div>
+          `;
+        }).join('');
+        return;
+      }
       const header = `
         <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
           <div class="neu-box" style="padding: 10px; border-radius: 10px; background: var(--neu-bg-light);"><b>${imageCount}</b><div style="font-size: 11px; color: var(--neu-text-light); margin-top: 4px;">${kind === 'preview' ? '命中图片' : '修改图片'}</div></div>
@@ -3325,7 +3503,9 @@ export const ImageWorkspace = {
             renderFilterSummary(result, 'apply');
             applyBtn.style.display = 'none';
             this.currentFilterToken = '';
-            if (result.rollback_run_id) {
+            if (result.operation_mode === 'delete_unlabeled') {
+              renderRollbackPanel(null);
+            } else if (result.rollback_run_id) {
               renderRollbackPanel({
                 run_id: result.rollback_run_id,
                 summary: result,
@@ -3334,7 +3514,26 @@ export const ImageWorkspace = {
             }
             this.clearImageBundleCache();
             await this.loadProjectInfo();
-            if (this.selectedImageId && this.selectedImagePath) {
+            if (result.operation_mode === 'delete_unlabeled') {
+              await this.loadImages();
+              const selectedVisible = this.images.some((img) => String(img.id) === String(this.selectedImageId || ''));
+              if (selectedVisible && this.selectedImageId && this.selectedImagePath) {
+                await this.selectImage(this.selectedImageId, this.selectedImagePath);
+              } else if (this.images.length > 0) {
+                await this.selectImage(this.images[0].id, this.images[0].rel_path);
+              } else {
+                this.selectedImageId = null;
+                this.selectedImagePath = null;
+                this.annotations = [];
+                if (this.viewer) {
+                  this.viewer.clearImage();
+                  this.viewer.setAnnotations([]);
+                }
+                this.renderAnnotations();
+                this.updateActionBar();
+                this.setCanvasPlaceholder(true, i18n.t('select_image_prompt'));
+              }
+            } else if (this.selectedImageId && this.selectedImagePath) {
               await this.selectImage(this.selectedImageId, this.selectedImagePath);
             }
           }
@@ -3382,7 +3581,11 @@ export const ImageWorkspace = {
       if (!this.currentFilterToken) return showToast(i18n.t('filter_preview_expired'), 'error');
       const confirmText = operationMode === 'merge'
         ? '\u786E\u8BA4\u6309\u9884\u89C8\u7ED3\u679C\u6267\u884C\u5408\u5E76\u8FC7\u6EE4\u5417\uFF1F'
-        : '\u786E\u8BA4\u5220\u9664\u6240\u6709\u547D\u4E2D\u89C4\u5219\u7684\u6807\u6CE8\u5417\uFF1F\u8BE5\u64CD\u4F5C\u4F1A\u76F4\u63A5\u4FEE\u6539\u6807\u6CE8\u3002';
+        : (
+            operationMode === 'delete_unlabeled'
+              ? '确认删除所有无标注图片吗？该操作会删除原图文件和对应标注 JSON，不能通过智能过滤回滚恢复。'
+              : '\u786E\u8BA4\u5220\u9664\u6240\u6709\u547D\u4E2D\u89C4\u5219\u7684\u6807\u6CE8\u5417\uFF1F\u8BE5\u64CD\u4F5C\u4F1A\u76F4\u63A5\u4FEE\u6539\u6807\u6CE8\u3002'
+          );
       if (!confirm(confirmText)) return;
       try {
         applyBtn.disabled = true;
@@ -3397,9 +3600,11 @@ export const ImageWorkspace = {
         });
         const job = res?.job || null;
         if (!job?.job_id) throw new Error('\u786E\u8BA4\u4EFB\u52A1\u672A\u8FD4\u56DE job_id');
-        statusEl.innerText = operationMode === 'merge' ? '\u6B63\u5728\u5E94\u7528\u5408\u5E76\u7ED3\u679C...' : '\u6B63\u5728\u5220\u9664\u547D\u4E2D\u6807\u6CE8...';
+        statusEl.innerText = operationMode === 'merge'
+          ? '\u6B63\u5728\u5E94\u7528\u5408\u5E76\u7ED3\u679C...'
+          : (operationMode === 'delete_unlabeled' ? '正在删除无标注图片...' : '\u6B63\u5728\u5220\u9664\u547D\u4E2D\u6807\u6CE8...');
         await pollFilterJob(job.job_id, 'apply');
-        showToast(operationMode === 'merge' ? '\u5408\u5E76\u8FC7\u6EE4\u5DF2\u5E94\u7528' : '\u89C4\u5219\u8FC7\u6EE4\u5220\u9664\u5DF2\u5E94\u7528', 'success');
+        showToast(operationMode === 'merge' ? '\u5408\u5E76\u8FC7\u6EE4\u5DF2\u5E94\u7528' : (operationMode === 'delete_unlabeled' ? '无标注图片删除已应用' : '\u89C4\u5219\u8FC7\u6EE4\u5220\u9664\u5DF2\u5E94\u7528'), 'success');
       } catch (e) {
         showToast(e.message, 'error');
       } finally {
@@ -3420,7 +3625,10 @@ export const ImageWorkspace = {
     const spatialLabel = spatialMode === 'bbox_cover' ? '\u8FB9\u6846\u5D4C\u5957' : '\u5B9E\u4F8B\u5D4C\u5957';
     const areaLabel = areaMode === 'bbox' ? '\u8FB9\u6846\u9762\u79EF' : '\u5B9E\u4F8B\u9762\u79EF';
 
-    if (operationMode === 'merge') {
+    if (operationMode === 'delete_unlabeled') {
+      chunks.push('删除无标注图片：扫描当前项目中标注数组为空的图片，预览后删除这些原图文件和 annotations 目录下对应的 JSON 文件。该操作不会删除任何有标注的图片。');
+      chunks.push('删除后项目图片索引、标注索引和项目统计会同步更新；物理删除不能通过智能过滤回滚恢复。');
+    } else if (operationMode === 'merge') {
       if (mode === 'same_class') {
         chunks.push(`\u5408\u5E76\u8FC7\u6EE4\uFF1A\u4F7F\u7528${spatialLabel}\u5224\u5B9A\u540C\u7C7B\u91CD\u590D\uFF0C\u5F53\u8F83\u5927\u5B9E\u4F8B\u5BF9\u8F83\u5C0F\u5B9E\u4F8B\u7684\u8986\u76D6\u8FBE\u5230 ${(cov * 100).toFixed(0)}% \u65F6\uFF0C\u5220\u9664\u8F83\u5C0F\u5B9E\u4F8B\u3002`);
       } else {

@@ -648,7 +648,7 @@ class ExportIn(BaseModel):
 
 class SmartFilterIn(BaseModel):
     project_id: str
-    operation_mode: str = Field(default='merge', pattern='^(merge|rule)$')
+    operation_mode: str = Field(default='merge', pattern='^(merge|rule|delete_unlabeled)$')
     merge_mode: str = Field(default='same_class', pattern='^(same_class|canonical_class)$')
     spatial_mode: str = Field(default='instance_cover', pattern='^(bbox_cover|instance_cover)$')
     coverage_threshold: float = 0.98
@@ -1444,10 +1444,73 @@ def _analyze_smart_filter_project(
     progress_cb: Optional[Callable[..., None]] = None,
 ) -> dict[str, Any]:
     operation_mode = str(config.get('operation_mode') or 'merge').strip().lower()
+    if operation_mode == 'delete_unlabeled':
+        return _analyze_delete_unlabeled_filter_project(project=project, config=config, progress_cb=progress_cb)
     if operation_mode == 'rule':
         return _analyze_rule_filter_project(project=project, config=config, progress_cb=progress_cb)
 
     return _analyze_merge_filter_project(project=project, config=config, progress_cb=progress_cb)
+
+
+def _analyze_delete_unlabeled_filter_project(
+    *,
+    project: dict[str, Any],
+    config: dict[str, Any],
+    progress_cb: Optional[Callable[..., None]] = None,
+) -> dict[str, Any]:
+    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
+    total = len(images)
+    items: list[dict[str, Any]] = []
+    apply_items: list[dict[str, Any]] = []
+
+    if progress_cb:
+        progress_cb(
+            message=f'无标注图片扫描准备中，待扫描 {total} 张',
+            progress_done=0,
+            progress_total=total,
+        )
+
+    project_id = str(config.get('project_id') or project.get('id') or '')
+    for idx, image in enumerate(images, start=1):
+        image_id = str(image.get('id') or '')
+        if not image_id:
+            continue
+        rel_path = str(image.get('rel_path') or image_id)
+        annotations = storage.load_annotations(project_id, image_id)
+        if not annotations:
+            item = {
+                'image_id': image_id,
+                'rel_path': rel_path,
+                'candidate_count': 1,
+                'relabel_count': 0,
+                'pair_count': 0,
+            }
+            items.append(item)
+            apply_items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'removed_count': 1,
+                    'relabel_count': 0,
+                }
+            )
+
+        if progress_cb:
+            progress_cb(
+                message=f'无标注图片扫描 {idx}/{total}: {rel_path}',
+                progress_done=idx,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
+
+    return {
+        'image_count': len(items),
+        'candidate_count': len(items),
+        'relabel_count': 0,
+        'items': items,
+        'apply_items': apply_items,
+    }
 
 
 def _analyze_merge_filter_project(
@@ -1741,6 +1804,25 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
 
     candidate_count = int(analysis.get('candidate_count') or 0)
     relabel_count = int(analysis.get('relabel_count') or 0)
+    if operation_mode == 'delete_unlabeled':
+        preview_message = (
+            f'无标注图片预览完成：命中 {candidate_count} 张待删除图片'
+            if candidate_count > 0
+            else '无标注图片预览完成：没有命中待删除图片'
+        )
+    elif operation_mode == 'merge':
+        preview_message = (
+            f'合并过滤预览完成：可删除 {candidate_count} 个标注'
+            + (f'，可改类 {relabel_count} 个标注' if relabel_count > 0 else '')
+            if candidate_count > 0 or relabel_count > 0
+            else '合并过滤预览完成：没有命中可处理标注'
+        )
+    else:
+        preview_message = (
+            f'规则过滤预览完成：命中 {candidate_count} 个待删除标注'
+            if candidate_count > 0
+            else '规则过滤预览完成：没有命中标注'
+        )
     return {
         'project_id': config['project_id'],
         'operation_mode': operation_mode,
@@ -1773,22 +1855,7 @@ def _run_smart_filter_preview_job(payload_dict: dict[str, Any], progress_cb: Cal
             'small_box_covered_by_large_gte': float(config['coverage_threshold']),
             'keep': 'larger_area',
         },
-        'message': (
-            (
-                f'合并过滤预览完成：可删除 {candidate_count} 个标注'
-                + (f'，可改类 {relabel_count} 个标注' if relabel_count > 0 else '')
-            )
-            if operation_mode == 'merge' and (candidate_count > 0 or relabel_count > 0)
-            else (
-                '合并过滤预览完成：没有命中可处理标注'
-                if operation_mode == 'merge'
-                else (
-                    f'规则过滤预览完成：命中 {candidate_count} 个待删除标注'
-                    if candidate_count > 0
-                    else '规则过滤预览完成：没有命中标注'
-                )
-            )
-        ),
+        'message': preview_message,
     }
 
 def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
@@ -1821,6 +1888,60 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
     apply_items = list(cached_result.get('apply_items', [])) if isinstance(cached_result.get('apply_items', []), list) else []
     total = len(apply_items)
     operation_mode = str(config.get('operation_mode') or 'merge')
+
+    def clear_preview_cache() -> None:
+        with SMART_FILTER_JOB_LOCK:
+            current_entry = SMART_FILTER_PREVIEW_CACHE.get(config['project_id'])
+            if isinstance(current_entry, dict) and str(current_entry.get('preview_token') or '') == preview_token:
+                SMART_FILTER_PREVIEW_CACHE.pop(config['project_id'], None)
+
+    if operation_mode == 'delete_unlabeled':
+        if progress_cb:
+            progress_cb(
+                message=f'准备删除无标注图片，待删除 {total} 张',
+                progress_done=0,
+                progress_total=total,
+            )
+        image_ids = [str(item.get('image_id') or '').strip() for item in apply_items if str(item.get('image_id') or '').strip()]
+        delete_result = storage.delete_project_images(config['project_id'], image_ids)
+        deleted_images = int(delete_result.get('deleted_images') or 0)
+        failed_deletes = delete_result.get('failed_deletes', [])
+        if progress_cb:
+            progress_cb(
+                message=f'无标注图片删除完成：删除 {deleted_images} 张',
+                progress_done=total,
+                progress_total=total,
+            )
+        clear_preview_cache()
+        result_items = []
+        for item in delete_result.get('items', []):
+            if not isinstance(item, dict):
+                continue
+            result_items.append(
+                {
+                    **item,
+                    'removed_count': 1,
+                    'relabel_count': 0,
+                }
+            )
+        return {
+            'project_id': config['project_id'],
+            'operation_mode': operation_mode,
+            'rollback_run_id': '',
+            'changed_images': deleted_images,
+            'deleted_images': deleted_images,
+            'deleted_annotation_files': int(delete_result.get('deleted_annotation_files') or 0),
+            'deleted_image_files': int(delete_result.get('deleted_image_files') or 0),
+            'failed_deletes': failed_deletes if isinstance(failed_deletes, list) else [],
+            'removed_annotations': 0,
+            'relabeled_annotations': 0,
+            'items': result_items,
+            'message': (
+                f'无标注图片删除完成：删除 {deleted_images} 张图片'
+                + (f'，{len(failed_deletes)} 个文件删除失败' if isinstance(failed_deletes, list) and failed_deletes else '')
+            ),
+        }
+
     changed_images = 0
     removed_annotations = 0
     relabeled_annotations = 0
@@ -1876,10 +1997,7 @@ def _run_smart_filter_apply_job(payload_dict: dict[str, Any], progress_cb: Calla
                 current_image_rel_path=rel_path,
             )
 
-    with SMART_FILTER_JOB_LOCK:
-        current_entry = SMART_FILTER_PREVIEW_CACHE.get(config['project_id'])
-        if isinstance(current_entry, dict) and str(current_entry.get('preview_token') or '') == preview_token:
-            SMART_FILTER_PREVIEW_CACHE.pop(config['project_id'], None)
+    clear_preview_cache()
 
     items.sort(key=lambda x: (int(x.get('removed_count') or 0), int(x.get('relabel_count') or 0), str(x.get('rel_path') or '')), reverse=True)
     result = {
@@ -1927,9 +2045,14 @@ def _spawn_smart_filter_job(
         worker_payload = dict(payload_dict)
         worker_payload['_job_id'] = job_id
         state = _smart_filter_job_state_default(job_id=job_id, project_id=project_id, job_type=job_type)
+        operation_mode = str(worker_payload.get('operation_mode') or 'merge').strip().lower()
+        if operation_mode == 'delete_unlabeled':
+            mode_label = '无标注图片删除预览' if job_type == 'preview' else '无标注图片确认删除'
+        else:
+            mode_label = '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并'
         state['payload_dict'] = dict(worker_payload)
         state['params'] = {
-            'mode_label': '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并',
+            'mode_label': mode_label,
             'scope_label': '全部图片',
         }
         SMART_FILTER_JOB_STATES[job_id] = state

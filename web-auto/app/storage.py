@@ -526,6 +526,32 @@ class Storage:
             finally:
                 conn.close()
 
+    def _delete_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> None:
+        ids = list(dict.fromkeys(str(item).strip() for item in image_ids if str(item).strip()))
+        if not ids:
+            return
+        tables = [
+            'project_images',
+            'annotation_ids',
+            'image_annotations',
+            'image_annotation_stats',
+            'image_class_index',
+        ]
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                for table in tables:
+                    for start in range(0, len(ids), 500):
+                        chunk = ids[start:start + 500]
+                        placeholders = ','.join('?' for _ in chunk)
+                        conn.execute(
+                            f'DELETE FROM {table} WHERE project_id = ? AND image_id IN ({placeholders})',
+                            [str(project_id), *chunk],
+                        )
+                conn.commit()
+            finally:
+                conn.close()
+
     def _delete_project_images_db(self, project_id: str) -> None:
         with self._db_lock:
             conn = self._db_connect()
@@ -2524,6 +2550,144 @@ class Storage:
         self._save_projects(out)
         self._write_project_manifest(updated)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(updated), deleted_image
+
+    def delete_project_images(self, project_id: str, image_ids: list[str]) -> dict[str, Any]:
+        requested_ids = list(dict.fromkeys(str(item).strip() for item in image_ids if str(item).strip()))
+        if not requested_ids:
+            project = self.get_project(project_id, enrich=False, include_images=False)
+            if not project:
+                raise ValueError('project not found')
+            return {
+                'project': project,
+                'deleted_images': 0,
+                'deleted_annotation_files': 0,
+                'deleted_image_files': 0,
+                'failed_deletes': [],
+                'items': [],
+            }
+
+        images = self._load_project_images_by_ids_db(project_id, requested_ids)
+        images_by_id = {str(img.get('id') or ''): img for img in images if str(img.get('id') or '').strip()}
+        delete_ids = [image_id for image_id in requested_ids if image_id in images_by_id]
+        if not delete_ids:
+            project = self.get_project(project_id, enrich=False, include_images=False)
+            if not project:
+                raise ValueError('project not found')
+            return {
+                'project': project,
+                'deleted_images': 0,
+                'deleted_annotation_files': 0,
+                'deleted_image_files': 0,
+                'failed_deletes': [],
+                'items': [],
+            }
+
+        projects = self._load_projects()
+        out: list[dict[str, Any]] = []
+        updated: dict[str, Any] | None = None
+        for raw in projects:
+            p = self._normalize_project(raw)
+            if p.get('id') == project_id:
+                if str(p.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
+                    raise ValueError('only image or pose project is supported')
+                deleted_labeled = sum(
+                    1
+                    for image_id in delete_ids
+                    if self._normalize_image_status(images_by_id[image_id].get('status')) == 'labeled'
+                )
+                current_total = max(0, int(p.get('num_images', 0) or 0))
+                current_labeled = max(0, int(p.get('labeled_images', 0) or 0))
+                p['num_images'] = max(0, current_total - len(delete_ids))
+                p['labeled_images'] = max(0, current_labeled - deleted_labeled)
+                p['unlabeled_images'] = max(0, int(p.get('num_images', 0) or 0) - int(p.get('labeled_images', 0) or 0))
+                self._bump_content_rev(p)
+                p['updated_at'] = now_ts()
+                updated = p
+            out.append(p)
+
+        if not updated:
+            raise ValueError('project not found')
+
+        deleted_annotation_files = 0
+        deleted_image_files = 0
+        failed_deletes: list[dict[str, str]] = []
+        items: list[dict[str, Any]] = []
+        image_root = Path(str(updated.get('image_dir') or '')).expanduser().resolve()
+
+        for image_id in delete_ids:
+            image = images_by_id[image_id]
+            rel_path = str(image.get('rel_path') or image_id)
+            ann_path = self._annotation_path(updated, image_id)
+            image_file_deleted = False
+            annotation_file_deleted = False
+
+            try:
+                if ann_path.exists():
+                    ann_path.unlink(missing_ok=True)
+                    deleted_annotation_files += 1
+                    annotation_file_deleted = True
+            except Exception as exc:  # noqa: BLE001
+                failed_deletes.append(
+                    {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'kind': 'annotation',
+                        'path': str(ann_path),
+                        'error': str(exc),
+                    }
+                )
+
+            raw_abs_path = str(image.get('abs_path') or '').strip()
+            if raw_abs_path:
+                try:
+                    abs_path = Path(raw_abs_path).expanduser().resolve()
+                    if abs_path.exists() and abs_path.is_file():
+                        if abs_path.is_relative_to(image_root):
+                            abs_path.unlink(missing_ok=True)
+                            deleted_image_files += 1
+                            image_file_deleted = True
+                        else:
+                            failed_deletes.append(
+                                {
+                                    'image_id': image_id,
+                                    'rel_path': rel_path,
+                                    'kind': 'image',
+                                    'path': str(abs_path),
+                                    'error': 'image path is outside project image_dir',
+                                }
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    failed_deletes.append(
+                        {
+                            'image_id': image_id,
+                            'rel_path': rel_path,
+                            'kind': 'image',
+                            'path': raw_abs_path,
+                            'error': str(exc),
+                        }
+                    )
+
+            items.append(
+                {
+                    'image_id': image_id,
+                    'rel_path': rel_path,
+                    'deleted_image_file': image_file_deleted,
+                    'deleted_annotation_file': annotation_file_deleted,
+                }
+            )
+
+        self._delete_project_images_by_ids_db(project_id, delete_ids)
+        self._save_projects(out)
+        self._write_project_manifest(updated)
+        project = self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(updated)
+        return {
+            'project': project,
+            'deleted_images': len(delete_ids),
+            'deleted_annotation_files': deleted_annotation_files,
+            'deleted_image_files': deleted_image_files,
+            'failed_deletes': failed_deletes,
+            'items': items,
+        }
 
     @staticmethod
     def _unique_import_target(root: Path, rel_path: str) -> Path:
