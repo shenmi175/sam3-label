@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
+import { AnnotationController } from '../modules/image-workspace/annotation-controller.js';
 import {
   clearBundleState,
   getBundleFromCache,
@@ -11,7 +12,6 @@ import {
   touchBundleCache,
 } from '../modules/image-workspace/workspace-state.js';
 import { store } from '../store.js';
-import { bboxFromPolygon } from '../utils/geometry.js';
 import { escapeAttr, escapeHtml } from '../utils/html.js';
 
 export const ImageWorkspace = {
@@ -26,6 +26,7 @@ export const ImageWorkspace = {
   selectedImageId: null,
   selectedImagePath: null,
   viewer: null,
+  annotationController: null,
   isUnmounted: false,
   promptMode: 'pointer',
   currentPrompts: [],
@@ -95,6 +96,7 @@ export const ImageWorkspace = {
     this.annotationSaveImageId = '';
     this.annotationHistory = [];
     this.annotationRedoStack = [];
+    this.annotationController = new AnnotationController(this);
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -533,10 +535,7 @@ export const ImageWorkspace = {
       clearTimeout(this.uiStateSaveTimer);
       this.uiStateSaveTimer = null;
     }
-    if (this.annotationSaveTimer) {
-      clearTimeout(this.annotationSaveTimer);
-      this.annotationSaveTimer = null;
-    }
+    if (this.annotationController) this.annotationController.clearSaveTimer();
     if (this._keyHandler) {
       document.removeEventListener('keydown', this._keyHandler);
       this._keyHandler = null;
@@ -1708,19 +1707,13 @@ export const ImageWorkspace = {
 
   commitImageBundle(bundle) {
     if (!bundle || !this.viewer) return;
-    this.annotations = Array.isArray(bundle.annotations) ? bundle.annotations : [];
+    this.annotationController.resetForImage(bundle.annotations);
     this.isImageLoading = false;
     this.viewer.setPrompts([]);
     this.viewer.setPreviews([]);
     this.viewer.setImageSource(bundle.imageInfo);
     this.viewer.setAnnotations(this.annotations);
     this.viewer.setFocusedAnnotation(null);
-    this.annotationHistory = [];
-    this.annotationRedoStack = [];
-    this.annotationDirty = false;
-    this.setAnnotationSaveStatus('已保存');
-    this.updateUndoRedoButtons();
-    this.updateAnnotationSelectionControls();
     this.setCanvasPlaceholder(false);
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
@@ -1752,10 +1745,7 @@ export const ImageWorkspace = {
   },
 
   async selectImage(id, relPath, options = {}) {
-    if (this.annotationSaveTimer) {
-      clearTimeout(this.annotationSaveTimer);
-      this.annotationSaveTimer = null;
-    }
+    this.annotationController.clearSaveTimer();
     if (this.annotationDirty) {
       await this.flushAnnotationAutosave('before-switch');
       if (this.annotationDirty) {
@@ -1774,10 +1764,9 @@ export const ImageWorkspace = {
     this.selectedImagePath = relPath;
     this.currentPrompts = [];
     this.previews = [];
-    this.annotations = [];
+    this.annotationController.resetEmptySelection();
     const cachedBundle = this.getCachedImageBundle(id);
     this.isImageLoading = !cachedBundle;
-    this.focusedAnnotationId = null;
     
     if (this.viewer) {
       this.viewer.setPrompts([]);
@@ -2339,11 +2328,7 @@ export const ImageWorkspace = {
   },
 
   cloneAnnotations(annotations = this.annotations) {
-    try {
-      return JSON.parse(JSON.stringify(Array.isArray(annotations) ? annotations : []));
-    } catch (_) {
-      return [];
-    }
+    return this.annotationController.cloneAnnotations(annotations);
   },
 
   updateUndoRedoButtons() {
@@ -2362,48 +2347,19 @@ export const ImageWorkspace = {
   },
 
   pushAnnotationHistory() {
-    if (!this.selectedImageId) return;
-    if (!this.annotationHistory) this.annotationHistory = [];
-    const snapshot = this.cloneAnnotations();
-    const previous = this.annotationHistory[this.annotationHistory.length - 1];
-    if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) return;
-    this.annotationHistory.push(snapshot);
-    if (this.annotationHistory.length > 50) this.annotationHistory.shift();
-    this.annotationRedoStack = [];
-    this.updateUndoRedoButtons();
+    this.annotationController.pushHistory();
   },
 
   restoreAnnotationSnapshot(snapshot) {
-    this.annotations = this.cloneAnnotations(snapshot);
-    if (this.focusedAnnotationId && !this.annotations.some((ann) => String(ann?.id || '') === String(this.focusedAnnotationId))) {
-      this.focusedAnnotationId = null;
-    }
-    if (this.viewer) {
-      this.viewer.setAnnotations(this.annotations);
-      this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
-    }
-    this.updateAnnotationSelectionControls();
-    this.renderClasses();
-    this.renderAnnotations();
-    this.markAnnotationsDirty('history');
+    this.annotationController.restoreSnapshot(snapshot);
   },
 
   undoAnnotationChange() {
-    if (!this.annotationHistory || this.annotationHistory.length === 0) return;
-    if (!this.annotationRedoStack) this.annotationRedoStack = [];
-    this.annotationRedoStack.push(this.cloneAnnotations());
-    const snapshot = this.annotationHistory.pop();
-    this.restoreAnnotationSnapshot(snapshot);
-    this.updateUndoRedoButtons();
+    this.annotationController.undo();
   },
 
   redoAnnotationChange() {
-    if (!this.annotationRedoStack || this.annotationRedoStack.length === 0) return;
-    if (!this.annotationHistory) this.annotationHistory = [];
-    this.annotationHistory.push(this.cloneAnnotations());
-    const snapshot = this.annotationRedoStack.pop();
-    this.restoreAnnotationSnapshot(snapshot);
-    this.updateUndoRedoButtons();
+    this.annotationController.redo();
   },
 
   setAnnotationSaveStatus(text, tone = 'muted') {
@@ -2416,14 +2372,7 @@ export const ImageWorkspace = {
   },
 
   markManualAnnotation(ann) {
-    if (!ann || typeof ann !== 'object') return ann;
-    const now = new Date().toISOString();
-    ann.edited = true;
-    ann.updated_at = now;
-    if (!ann.source) ann.source = 'manual';
-    else if (ann.source !== 'manual') ann.modified_by = 'manual';
-    if (!ann.score) ann.score = 1;
-    return ann;
+    return this.annotationController.markManualAnnotation(ann);
   },
 
   selectedOrDefaultClass() {
@@ -2431,56 +2380,15 @@ export const ImageWorkspace = {
   },
 
   createManualAnnotation(shape) {
-    if (!this.selectedImageId) return showToast('请先选择图片', 'error');
-    const className = this.selectedOrDefaultClass();
-    const now = new Date().toISOString();
-    const polygon = Array.isArray(shape?.polygon) ? shape.polygon : null;
-    const bbox = Array.isArray(shape?.bbox)
-      ? shape.bbox
-      : (polygon ? bboxFromPolygon(polygon) : null);
-    if (!bbox || bbox.length !== 4) return;
-
-    this.pushAnnotationHistory();
-    const ann = {
-      id: `ann_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      class_name: className,
-      label: className,
-      bbox: bbox.map((v) => Number(v || 0)),
-      score: 1,
-      source: 'manual',
-      edited: true,
-      created_at: now,
-      updated_at: now,
-    };
-    if (polygon && polygon.length >= 3) ann.polygon = polygon;
-
-    this.annotations = [...(this.annotations || []), ann];
-    this.focusedAnnotationId = ann.id;
-    if (this.viewer) {
-      this.viewer.setAnnotations(this.annotations);
-      this.viewer.setFocusedAnnotation(ann.id);
-    }
-    this.setPromptMode('pointer');
-    this.renderClasses();
-    this.renderAnnotations();
-    this.updateCurrentImageBundleAnnotations(this.annotations);
-    this.markAnnotationsDirty('create');
+    this.annotationController.createAnnotation(shape, this.selectedOrDefaultClass());
   },
 
   selectAnnotationFromCanvas(annId) {
-    this.focusedAnnotationId = annId || null;
-    this.updateAnnotationFocusListState();
-    this.updateAnnotationSelectionControls();
-    this.scheduleProjectUIStateSave();
+    this.annotationController.selectFromCanvas(annId);
   },
 
   handleManualAnnotationUpdated(ann) {
-    if (!ann) return;
-    this.markManualAnnotation(ann);
-    this.updateCurrentImageBundleAnnotations(this.annotations);
-    this.renderClasses();
-    this.renderAnnotations();
-    this.markAnnotationsDirty('geometry');
+    this.annotationController.handleGeometryUpdated(ann);
   },
 
   markSelectedImageLabeledState(labeled) {
@@ -2509,26 +2417,11 @@ export const ImageWorkspace = {
   },
 
   markAnnotationsDirty(reason = '') {
-    this.annotationDirty = true;
-    this.annotationRev += 1;
-    this.annotationSaveImageId = this.selectedImageId || '';
-    this.updateCurrentImageBundleAnnotations(this.annotations);
-    this.markSelectedImageLabeledState((this.annotations || []).length > 0);
-    if (this.annotationAutosaveEnabled) {
-      this.scheduleAnnotationAutosave(reason);
-    } else {
-      this.setAnnotationSaveStatus('未保存', 'active');
-    }
+    this.annotationController.markDirty(reason);
   },
 
   scheduleAnnotationAutosave(reason = '') {
-    if (!this.selectedImageId) return;
-    if (this.annotationSaveTimer) clearTimeout(this.annotationSaveTimer);
-    this.setAnnotationSaveStatus('待保存', 'active');
-    this.annotationSaveTimer = setTimeout(() => {
-      this.annotationSaveTimer = null;
-      this.flushAnnotationAutosave(reason);
-    }, 700);
+    this.annotationController.scheduleAutosave(reason);
   },
 
   async ensureAnnotationClasses(annotations) {
@@ -2543,39 +2436,16 @@ export const ImageWorkspace = {
     this.projectMeta.classes = Array.from(new Set([...(this.projectMeta.classes || []), ...needed]));
   },
 
+  async saveAnnotationsToServer(imageId, annotations) {
+    return api.saveAnnotations(this.projectId, imageId, annotations);
+  },
+
+  async addProjectClasses(classesText) {
+    return api.addClass(this.projectId, classesText);
+  },
+
   async flushAnnotationAutosave(reason = '') {
-    if (!this.selectedImageId || this.annotationSaving || !this.annotationDirty) return;
-    const imageId = this.annotationSaveImageId || this.selectedImageId;
-    const cached = this.getCachedImageBundle(imageId);
-    const annotations = String(imageId) === String(this.selectedImageId)
-      ? this.cloneAnnotations()
-      : this.cloneAnnotations(cached?.annotations || []);
-    if (!imageId) return;
-    const rev = this.annotationRev;
-    try {
-      this.annotationSaving = true;
-      this.setAnnotationSaveStatus('保存中...', 'active');
-      await this.ensureAnnotationClasses(annotations);
-      if (String(this.selectedImageId) === String(imageId)) this.renderClasses();
-      await api.saveAnnotations(this.projectId, imageId, annotations);
-      if (this.isUnmounted) return;
-      if (String(this.selectedImageId) === String(imageId)) {
-        this.updateCurrentImageBundleAnnotations(annotations);
-        this.markSelectedImageLabeledState(annotations.length > 0);
-        if (this.annotationRev === rev) {
-          this.annotationDirty = false;
-          this.annotationSaveImageId = '';
-          this.setAnnotationSaveStatus('已保存');
-        } else {
-          this.scheduleAnnotationAutosave('dirty-during-save');
-        }
-      }
-    } catch (e) {
-      this.setAnnotationSaveStatus('保存失败', 'error');
-      showToast(`保存失败: ${e.message}`, 'error');
-    } finally {
-      this.annotationSaving = false;
-    }
+    return this.annotationController.flushSave(reason);
   },
 
   getSelectedClassesForInference() {
@@ -2587,17 +2457,9 @@ export const ImageWorkspace = {
   },
 
   async saveCurrentAnns() {
-    if (!this.selectedImageId) return;
-    if (this.annotationSaveTimer) {
-      clearTimeout(this.annotationSaveTimer);
-      this.annotationSaveTimer = null;
-    }
-    this.annotationDirty = true;
-    this.annotationSaveImageId = this.selectedImageId;
-    this.annotationRev += 1;
     try {
-      await this.flushAnnotationAutosave('manual-save');
-      if (!this.annotationDirty) showToast(i18n.t('save_success'), "success");
+      const saved = await this.annotationController.saveCurrent();
+      if (saved) showToast(i18n.t('save_success'), "success");
     } catch(e) { showToast(e.message, "error"); }
   },
 
@@ -2605,35 +2467,13 @@ export const ImageWorkspace = {
     if (!this.selectedImageId) return;
     if (!confirm("Clear all annotations on this image?")) return;
     try {
-      this.pushAnnotationHistory();
-      this.annotations = [];
-      this.focusedAnnotationId = null;
-      if (this.viewer) {
-        this.viewer.setAnnotations([]);
-        this.viewer.setFocusedAnnotation(null);
-      }
-      this.updateAnnotationSelectionControls();
-      this.renderClasses();
-      this.renderAnnotations();
-      this.markAnnotationsDirty('clear');
+      this.annotationController.clearAnnotations();
     } catch(e) { showToast(e.message, "error"); }
   },
   
   async deleteAnnotation(annId) {
-    if (!this.selectedImageId) return;
     try {
-      this.pushAnnotationHistory();
-      const newAnns = this.annotations.filter(a => a.id !== annId);
-      this.annotations = newAnns;
-      if (String(this.focusedAnnotationId || '') === String(annId || '')) this.focusedAnnotationId = null;
-      if (this.viewer) {
-        this.viewer.setAnnotations(this.annotations);
-        this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
-      }
-      this.updateAnnotationSelectionControls();
-      this.renderClasses();
-      this.renderAnnotations();
-      this.markAnnotationsDirty('delete');
+      this.annotationController.deleteAnnotation(annId);
     } catch(e) { showToast(e.message, "error"); }
   },
 
@@ -2658,10 +2498,7 @@ export const ImageWorkspace = {
           this.imageLoadAbortController.abort();
           this.imageLoadAbortController = null;
         }
-        if (this.annotationSaveTimer) {
-          clearTimeout(this.annotationSaveTimer);
-          this.annotationSaveTimer = null;
-        }
+        this.annotationController.clearSaveTimer();
         this.annotationDirty = false;
         this.annotationSaveImageId = '';
       }
@@ -2686,12 +2523,9 @@ export const ImageWorkspace = {
         } else {
           this.selectedImageId = null;
           this.selectedImagePath = null;
-          this.annotations = [];
-          this.focusedAnnotationId = null;
+          this.annotationController.resetEmptySelection();
           this.currentPrompts = [];
           this.previews = [];
-          this.annotationHistory = [];
-          this.annotationRedoStack = [];
           if (this.viewer) {
             this.viewer.clearImage();
             this.viewer.setAnnotations([]);
@@ -2798,55 +2632,7 @@ export const ImageWorkspace = {
   },
 
   async updateAnnotationClass(annId, nextClass) {
-    if (!this.selectedImageId) return false;
-    const cleanClass = String(nextClass || '').trim();
-    if (!cleanClass) {
-      showToast('类别名称不能为空', 'error');
-      return false;
-    }
-
-    const annIndex = (this.annotations || []).findIndex((item) => String(item?.id || '') === String(annId || ''));
-    if (annIndex < 0) {
-      showToast('未找到该标注', 'error');
-      return false;
-    }
-
-    const currentClass = String(this.annotations[annIndex]?.class_name || '').trim();
-    if (currentClass === cleanClass) {
-      showToast('类别未变化', 'info');
-      return true;
-    }
-
-    try {
-      const existingClasses = new Set((this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()));
-      if (!existingClasses.has(cleanClass)) {
-        await api.addClass(this.projectId, cleanClass);
-        this.projectMeta.classes = Array.from(new Set([...(this.projectMeta.classes || []), cleanClass]));
-      }
-
-      this.pushAnnotationHistory();
-      const newAnns = this.annotations.map((ann) => {
-        if (String(ann?.id || '') !== String(annId || '')) return ann;
-        const updated = this.markManualAnnotation({ ...ann, class_name: cleanClass, label: cleanClass });
-        delete updated.color;
-        return updated;
-      });
-
-      this.annotations = newAnns;
-      this.updateCurrentImageBundleAnnotations(newAnns);
-      this.selectedClass = cleanClass;
-      if (this.viewer) {
-        this.viewer.setAnnotations(this.annotations);
-        this.viewer.setFocusedAnnotation(this.focusedAnnotationId);
-      }
-      this.renderAnnotations();
-      this.markAnnotationsDirty('class');
-      showToast(`已将标注类别改为 "${cleanClass}"`, 'success');
-      return true;
-    } catch(e) {
-      showToast(e.message, 'error');
-      return false;
-    }
+    return this.annotationController.updateClass(annId, nextClass);
   },
 
   async openDataDashboard() {
