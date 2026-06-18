@@ -64,6 +64,8 @@ export const ImageWorkspace = {
   annotationSaveImageId: '',
   annotationHistory: null,
   annotationRedoStack: null,
+  workspaceMode: 'auto',
+  reviewContinuousMode: true,
   
   async render(container, params) {
     this.container = container;
@@ -105,6 +107,8 @@ export const ImageWorkspace = {
     this.annotationSaveImageId = '';
     this.annotationHistory = [];
     this.annotationRedoStack = [];
+    this.workspaceMode = 'auto';
+    this.reviewContinuousMode = true;
     this.annotationController = new AnnotationController(this);
     this.imageNavigationController = new ImageNavigationController(this);
     window.currentWorkspace = this;
@@ -158,15 +162,20 @@ export const ImageWorkspace = {
 
         <!-- 2. Top Operation Bar -->
         <div class="neu-box" style="height: 64px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 90; border-radius: 0; gap: 15px; background: var(--neu-bg); border-bottom: 1px solid rgba(0,0,0,0.03); box-sizing: border-box;">
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div id="workspace-mode-switch" class="neu-box" style="height: 34px; display: flex; align-items: center; gap: 4px; padding: 3px; border-radius: 12px; box-shadow: var(--neu-inset); flex-shrink: 0;">
+            <button id="btn-workspace-mode-auto" class="neu-button" style="height: 28px; padding: 0 12px; font-size: 11px; font-weight: 800;">自动标注</button>
+            <button id="btn-workspace-mode-review" class="neu-button" style="height: 28px; padding: 0 12px; font-size: 11px; font-weight: 800;">人工校对</button>
+          </div>
+
+          <div class="ws-auto-only" data-default-display="flex" style="display: flex; align-items: center; gap: 8px;">
             <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light);">${i18n.t('sam3_api')}</label>
             <input type="text" id="inp-sam3-url" class="neu-input" style="width: 180px; height: 32px; font-size: 11px;" value="${store.state.config.sam3ApiUrl}" />
             <button id="btn-test-api" class="neu-button" style="height: 32px; padding: 0 10px; font-size: 11px;">${i18n.t('test_api')}</button>
           </div>
 
-          <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
+          <div class="ws-auto-only" data-default-display="block" style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
 
-          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;">
+          <div class="ws-auto-only" data-default-display="flex" style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;">
             <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); white-space: nowrap;">${i18n.t('threshold')}</label>
             <div class="neu-box" style="height: 32px; display: flex; align-items: center; gap: 2px; padding: 0 4px; border-radius: 10px; box-shadow: var(--neu-inset);">
               <button id="btn-threshold-dec" class="neu-button" title="Threshold -0.05" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">-</button>
@@ -182,12 +191,24 @@ export const ImageWorkspace = {
             </div>
           </div>
 
-          <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
+          <div class="ws-auto-only" data-default-display="block" style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
 
-          <div style="display: flex; gap: 8px;">
+          <div class="ws-auto-only" data-default-display="flex" style="display: flex; gap: 8px;">
             <button id="btn-infer-current" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('infer_current')}</button>
             <button id="btn-batch-infer" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('batch_infer')}</button>
             <button id="btn-example-segment" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('example_segment')}</button>
+          </div>
+
+          <div class="ws-review-only" data-default-display="flex" style="display: none; align-items: center; gap: 8px; min-width: 0;">
+            <div class="neu-box" title="当前手工标注类别，可用数字键 1-9 快速切换" style="height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 10px; box-shadow: var(--neu-inset); min-width: 0;">
+              <span style="font-size: 11px; font-weight: 800; color: var(--neu-text-light); white-space: nowrap;">当前类</span>
+              <span id="review-current-class" style="font-size: 12px; font-weight: 800; color: var(--neu-text-active); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</span>
+            </div>
+            <button id="btn-review-continuous" class="neu-button" title="人工模式下画完一个框/多边形后继续保持当前工具" style="height: 32px; padding: 0 10px; font-size: 11px; font-weight: 700;">连续: 开</button>
+            <button id="btn-review-apply-class" class="neu-button" title="将选中标注改为当前类别" style="height: 32px; padding: 0 10px; font-size: 11px; font-weight: 700;">改为当前类</button>
+            <button id="btn-review-delete-ann" class="neu-button" title="删除当前选中标注，快捷键 Delete" style="height: 32px; padding: 0 10px; font-size: 11px; font-weight: 700; color: #ef4444;">删标注</button>
+            <button id="btn-review-save-next" class="neu-button" title="保存当前标注并切换下一张" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 800; color: var(--neu-text-active);">保存下一张</button>
+            <button id="btn-review-next-unlabeled" class="neu-button" title="切换到下一张未标注图片" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 700;">下一张未标注</button>
           </div>
 
           <div style="flex: 1;"></div>
@@ -292,10 +313,12 @@ export const ImageWorkspace = {
                     <button class="neu-button" id="btn-tool-undo" title="撤销手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↶</button>
                     <button class="neu-button" id="btn-tool-redo" title="重做手动修改" style="width: 40px; height: 40px; border-radius: 50%;">↷</button>
                     <button class="neu-button" id="btn-tool-delete-ann" title="删除当前选中标注" style="width: 40px; height: 40px; border-radius: 50%; color: #ef4444;">×</button>
-                    <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
-                    <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">SAM</span>
-                    <button class="neu-button" id="btn-tool-box" title="S：${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
-                    <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
+                    <div id="ws-sam-tools" class="ws-auto-only" data-default-display="flex" style="display: flex; align-items: center; gap: 5px;">
+                      <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
+                      <span style="font-size: 10px; font-weight: 800; color: var(--neu-text-light); padding: 0 4px;">SAM</span>
+                      <button class="neu-button" id="btn-tool-box" title="S：${i18n.t('box_exemplar_tool')}" style="width: 40px; height: 40px; border-radius: 50%;">🏁</button>
+                      <button class="neu-button" id="btn-tool-clear" title="${i18n.t('clear_prompts')}" style="width: 40px; height: 40px; border-radius: 50%;">🧹</button>
+                    </div>
                     <div style="width: 1px; height: 24px; background: rgba(0,0,0,0.1); margin: 0 5px;"></div>
                     <button class="neu-button" id="btn-tool-fit" title="F：适配屏幕" style="width: 40px; height: 40px; border-radius: 50%;">F</button>
                  </div>
@@ -315,7 +338,7 @@ export const ImageWorkspace = {
              </div>
 
              <!-- Bottom Action Bar (Context Sensitive) -->
-             <div id="ws-action-bar" style="position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%); z-index: 100; display: none;">
+             <div id="ws-action-bar" class="ws-auto-only" data-default-display="block" style="position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%); z-index: 100; display: none;">
                 <button class="neu-button" id="btn-submit-preview" style="padding: 12px 32px; border-radius: 30px; font-weight: 800; font-size: 16px; color: var(--neu-text-active); background: var(--neu-bg); box-shadow: var(--neu-outset);">
                    ${i18n.t('submit_all')}
                 </button>
@@ -346,7 +369,7 @@ export const ImageWorkspace = {
                   </div>
                 </div>
                 <div style="padding: 20px; border-top: 1px solid rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 10px;">
-                   <div class="neu-box" style="padding: 12px; border-radius: 12px; background: var(--neu-bg-light);">
+                   <div id="preview-results-card" class="neu-box ws-auto-only" data-default-display="block" style="padding: 12px; border-radius: 12px; background: var(--neu-bg-light);">
                      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 12px;">
                        <span style="font-size: 12px; font-weight: 800; color: var(--neu-text-light);">${i18n.t('preview_results')}</span>
                        <span style="font-size: 10px; color: var(--neu-text-light); text-align: right;">${i18n.t('preview_results_desc')}</span>
@@ -388,6 +411,7 @@ export const ImageWorkspace = {
     
     await this.loadProjectInfo();
     await this.restoreProjectUIState();
+    this.syncWorkspaceModeUI();
     this.renderImageFilterControls();
     this.applyLayoutState();
     await this.loadImages();
@@ -578,6 +602,97 @@ export const ImageWorkspace = {
     return this.imageNavigationController.hasFilter();
   },
 
+  setWorkspaceMode(mode) {
+    const nextMode = mode === 'review' ? 'review' : 'auto';
+    this.workspaceMode = nextMode;
+    if (nextMode === 'review' && this.promptMode === 'box') {
+      this.setPromptMode('pointer');
+    }
+    this.syncWorkspaceModeUI();
+    this.scheduleProjectUIStateSave();
+  },
+
+  setModeElementVisibility(selector, visible) {
+    document.querySelectorAll(selector).forEach((el) => {
+      const defaultDisplay = el.dataset.defaultDisplay || 'flex';
+      el.style.display = visible ? defaultDisplay : 'none';
+    });
+  },
+
+  syncWorkspaceModeUI() {
+    const isReview = this.workspaceMode === 'review';
+    this.setModeElementVisibility('.ws-auto-only', !isReview);
+    this.setModeElementVisibility('.ws-review-only', isReview);
+
+    const autoBtn = document.getElementById('btn-workspace-mode-auto');
+    const reviewBtn = document.getElementById('btn-workspace-mode-review');
+    const syncModeButton = (btn, active) => {
+      if (!btn) return;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      btn.style.boxShadow = active ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+      btn.style.color = active ? 'var(--neu-text-active)' : 'var(--neu-text)';
+    };
+    syncModeButton(autoBtn, !isReview);
+    syncModeButton(reviewBtn, isReview);
+
+    const btnReviewContinuous = document.getElementById('btn-review-continuous');
+    if (btnReviewContinuous) {
+      btnReviewContinuous.textContent = this.reviewContinuousMode ? '连续: 开' : '连续: 关';
+      btnReviewContinuous.style.boxShadow = this.reviewContinuousMode ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
+      btnReviewContinuous.style.color = this.reviewContinuousMode ? 'var(--neu-text-active)' : 'var(--neu-text)';
+    }
+    this.syncReviewModeSummary();
+    this.updateAnnotationSelectionControls();
+    this.updateActionBar();
+  },
+
+  syncReviewModeSummary() {
+    const currentClassEl = document.getElementById('review-current-class');
+    if (currentClassEl) {
+      const selected = this.selectedClass || this.projectMeta?.classes?.[0] || '';
+      currentClassEl.textContent = selected || '未选择';
+      currentClassEl.title = selected || '未选择类别';
+    }
+  },
+
+  toggleReviewContinuousMode() {
+    this.reviewContinuousMode = !this.reviewContinuousMode;
+    this.syncWorkspaceModeUI();
+    this.scheduleProjectUIStateSave();
+  },
+
+  async saveAndNavigate(delta = 1) {
+    if (!this.selectedImageId) return showToast('请先选择图片', 'error');
+    try {
+      if (this.annotationDirty) {
+        await this.flushAnnotationAutosave('review-save-next');
+      } else {
+        const saved = await this.annotationController.saveCurrent();
+        if (saved) showToast(i18n.t('save_success'), 'success');
+      }
+      if (this.annotationDirty) return showToast('当前图片标注尚未保存，保存成功后再切换图片', 'error');
+      this.navigateImage(delta);
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  },
+
+  selectClassByIndex(index) {
+    const classes = this.projectMeta?.classes || [];
+    const cls = classes[index];
+    if (!cls) return;
+    this.selectClass(cls);
+    showToast(`当前类别: ${cls}`, 'info');
+  },
+
+  async applySelectedClassToFocusedAnnotation() {
+    if (!this.focusedAnnotationId) return showToast('请先选中一个标注', 'info');
+    const nextClass = this.selectedClass || this.projectMeta?.classes?.[0] || '';
+    if (!nextClass) return showToast('请先选择类别', 'error');
+    await this.updateAnnotationClass(this.focusedAnnotationId, nextClass);
+  },
+
   async restoreProjectUIState() {
     try {
       const res = await api.getUIState(this.projectId);
@@ -596,6 +711,8 @@ export const ImageWorkspace = {
       this.annotationsSectionCollapsed = Boolean(state.annotationsSectionCollapsed);
       this.previewSectionCollapsed = Boolean(state.previewSectionCollapsed);
       this.annotationAutosaveEnabled = state.annotationAutosaveEnabled !== false;
+      this.workspaceMode = state.workspaceMode === 'review' ? 'review' : 'auto';
+      this.reviewContinuousMode = state.reviewContinuousMode !== false;
       const autosave = document.getElementById('chk-annotation-autosave');
       if (autosave) autosave.checked = this.annotationAutosaveEnabled;
       this.refreshUnlabeledButton();
@@ -629,6 +746,8 @@ export const ImageWorkspace = {
         annotationsSectionCollapsed: Boolean(this.annotationsSectionCollapsed),
         previewSectionCollapsed: Boolean(this.previewSectionCollapsed),
         annotationAutosaveEnabled: Boolean(this.annotationAutosaveEnabled),
+        workspaceMode: this.workspaceMode === 'review' ? 'review' : 'auto',
+        reviewContinuousMode: Boolean(this.reviewContinuousMode),
       });
     } catch (err) {
       console.warn('save project ui state failed', err);
@@ -801,6 +920,25 @@ export const ImageWorkspace = {
     if (btnBatchDec) btnBatchDec.onclick = () => adjustBatchSize(-1);
     if (btnBatchInc) btnBatchInc.onclick = () => adjustBatchSize(1);
     syncTopConfigControls();
+
+    const btnWorkspaceAuto = document.getElementById('btn-workspace-mode-auto');
+    const btnWorkspaceReview = document.getElementById('btn-workspace-mode-review');
+    if (btnWorkspaceAuto) btnWorkspaceAuto.onclick = () => this.setWorkspaceMode('auto');
+    if (btnWorkspaceReview) btnWorkspaceReview.onclick = () => this.setWorkspaceMode('review');
+
+    const btnReviewContinuous = document.getElementById('btn-review-continuous');
+    if (btnReviewContinuous) btnReviewContinuous.onclick = () => this.toggleReviewContinuousMode();
+    const btnReviewApplyClass = document.getElementById('btn-review-apply-class');
+    if (btnReviewApplyClass) btnReviewApplyClass.onclick = () => this.applySelectedClassToFocusedAnnotation();
+    const btnReviewDeleteAnn = document.getElementById('btn-review-delete-ann');
+    if (btnReviewDeleteAnn) btnReviewDeleteAnn.onclick = () => {
+      if (!this.focusedAnnotationId) return showToast('请先选中一个标注', 'info');
+      this.deleteAnnotation(this.focusedAnnotationId);
+    };
+    const btnReviewSaveNext = document.getElementById('btn-review-save-next');
+    if (btnReviewSaveNext) btnReviewSaveNext.onclick = () => this.saveAndNavigate(1);
+    const btnReviewNextUnlabeled = document.getElementById('btn-review-next-unlabeled');
+    if (btnReviewNextUnlabeled) btnReviewNextUnlabeled.onclick = () => this.navigateUnlabeledImage(1);
 
     const btnTest = document.getElementById('btn-test-api');
     if (btnTest) btnTest.onclick = async () => {
@@ -1005,6 +1143,17 @@ export const ImageWorkspace = {
       } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'f') {
         e.preventDefault();
         if (this.viewer) this.viewer.fitToScreen();
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(key)) {
+        e.preventDefault();
+        this.selectClassByIndex(Number(key) - 1);
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Escape') {
+        if (this.promptMode !== 'pointer') {
+          e.preventDefault();
+          this.setPromptMode('pointer');
+        } else if (this.focusedAnnotationId) {
+          e.preventDefault();
+          this.clearAnnotationFocus();
+        }
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         lastNavAt = now;
@@ -1118,6 +1267,11 @@ export const ImageWorkspace = {
     const btn = document.getElementById('btn-submit-preview');
     const btnAll = document.getElementById('btn-select-all-previews');
     if (!bar || !btn) return;
+    if (this.workspaceMode === 'review') {
+      bar.style.display = 'none';
+      if (btnAll) btnAll.style.display = 'none';
+      return;
+    }
     
     if (this.previews.length > 0) {
       bar.style.display = 'block';
@@ -1199,12 +1353,14 @@ export const ImageWorkspace = {
       onDelete: (className) => this.deleteClass(className),
     });
     
+    this.syncReviewModeSummary();
     this.updateActionBar();
   },
 
   selectClass(cls) {
     this.selectedClass = cls;
     this.renderClasses();
+    this.syncReviewModeSummary();
   },
 
   async deleteClass(className) {
@@ -1278,6 +1434,9 @@ export const ImageWorkspace = {
 
   setPromptMode(mode) {
     if (mode === 'point') mode = 'pointer';
+    if (this.workspaceMode === 'review' && mode === 'box') {
+      mode = 'pointer';
+    }
     this.promptMode = mode;
     document.querySelectorAll('[id^="btn-tool-"]').forEach(btn => btn.classList.remove('active'));
     const btn = document.getElementById(`btn-tool-${mode}`);
@@ -2084,6 +2243,16 @@ export const ImageWorkspace = {
       deleteBtn.disabled = !this.focusedAnnotationId;
       deleteBtn.style.opacity = this.focusedAnnotationId ? '1' : '0.45';
     }
+    const reviewDeleteBtn = document.getElementById('btn-review-delete-ann');
+    if (reviewDeleteBtn) {
+      reviewDeleteBtn.disabled = !this.focusedAnnotationId;
+      reviewDeleteBtn.style.opacity = this.focusedAnnotationId ? '1' : '0.45';
+    }
+    const reviewApplyBtn = document.getElementById('btn-review-apply-class');
+    if (reviewApplyBtn) {
+      reviewApplyBtn.disabled = !this.focusedAnnotationId;
+      reviewApplyBtn.style.opacity = this.focusedAnnotationId ? '1' : '0.45';
+    }
   },
 
   pushAnnotationHistory() {
@@ -2120,7 +2289,15 @@ export const ImageWorkspace = {
   },
 
   createManualAnnotation(shape) {
+    const previousMode = this.promptMode;
     this.annotationController.createAnnotation(shape, this.selectedOrDefaultClass());
+    if (
+      this.workspaceMode === 'review'
+      && this.reviewContinuousMode
+      && (previousMode === 'manual-box' || previousMode === 'manual-polygon')
+    ) {
+      setTimeout(() => this.setPromptMode(previousMode), 0);
+    }
   },
 
   selectAnnotationFromCanvas(annId) {
@@ -2301,7 +2478,12 @@ export const ImageWorkspace = {
   },
 
   async updateAnnotationClass(annId, nextClass) {
-    return this.annotationController.updateClass(annId, nextClass);
+    const updated = await this.annotationController.updateClass(annId, nextClass);
+    if (updated) {
+      this.renderClasses();
+      this.syncReviewModeSummary();
+    }
+    return updated;
   },
 
   async openDataDashboard() {
