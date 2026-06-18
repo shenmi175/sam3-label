@@ -1,7 +1,18 @@
 import { api } from '../api.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
+import {
+  clearBundleState,
+  getBundleFromCache,
+  invalidateBundleState,
+  makeImageBundle,
+  makeImageBundleKey,
+  storeBundleInCache,
+  touchBundleCache,
+} from '../modules/image-workspace/workspace-state.js';
 import { store } from '../store.js';
+import { bboxFromPolygon } from '../utils/geometry.js';
+import { escapeAttr, escapeHtml } from '../utils/html.js';
 
 export const ImageWorkspace = {
   container: null,
@@ -1390,19 +1401,6 @@ export const ImageWorkspace = {
     return `hsl(${hue}, 70%, 50%)`;
   },
 
-  escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  },
-
-  escapeAttr(value) {
-    return this.escapeHtml(value);
-  },
-
   getPromptModeLabel(mode = this.promptMode) {
     if (mode === 'manual-box') return '手动框';
     if (mode === 'manual-polygon') return '手动多边形';
@@ -1578,9 +1576,9 @@ export const ImageWorkspace = {
         const bgState = isSel ? 'var(--neu-bg)' : 'transparent';
         const shadowState = isSel ? 'var(--neu-inset)' : 'none';
         const weight = isSel ? '700' : '500';
-        const imageIdAttr = this.escapeAttr(img.id);
-        const relPathAttr = this.escapeAttr(img.rel_path);
-        const relPathHtml = this.escapeHtml(img.rel_path);
+        const imageIdAttr = escapeAttr(img.id);
+        const relPathAttr = escapeAttr(img.rel_path);
+        const relPathHtml = escapeHtml(img.rel_path);
         
         const isLabeled = (img.status === 'labeled' || img.labeled);
         const dotColor = isLabeled ? '#10b981' : '#e2e8f0';
@@ -1634,48 +1632,40 @@ export const ImageWorkspace = {
   },
 
   imageBundleKey(id) {
-    return `${this.projectId || ''}:${String(id || '')}`;
+    return makeImageBundleKey(this.projectId, id);
   },
 
   touchImageBundleCache(key, bundle) {
-    if (!key || !bundle) return;
-    if (!this.imageBundleCache) this.imageBundleCache = new Map();
-    this.imageBundleCache.delete(key);
-    this.imageBundleCache.set(key, bundle);
-    while (this.imageBundleCache.size > this.imageBundleCacheLimit) {
-      const oldestKey = this.imageBundleCache.keys().next().value;
-      this.imageBundleCache.delete(oldestKey);
-    }
+    this.imageBundleCache = touchBundleCache(this.imageBundleCache, key, bundle, this.imageBundleCacheLimit);
   },
 
   getCachedImageBundle(id) {
     const key = this.imageBundleKey(id);
-    const cached = this.imageBundleCache?.get(key) || null;
+    const cached = getBundleFromCache(this.imageBundleCache, key);
     if (!cached) return null;
     this.touchImageBundleCache(key, cached);
     return cached;
   },
 
   storeImageBundle(id, relPath, imageInfo, annotations) {
-    if (!id || !imageInfo) return;
-    this.touchImageBundleCache(this.imageBundleKey(id), {
-      id: String(id),
-      relPath: relPath || '',
+    this.imageBundleCache = storeBundleInCache(
+      this.imageBundleCache,
+      this.imageBundleKey(id),
+      id,
+      relPath,
       imageInfo,
-      annotations: Array.isArray(annotations) ? annotations : [],
-      cachedAt: Date.now(),
-    });
+      annotations,
+      this.imageBundleCacheLimit,
+    );
   },
 
   invalidateImageBundle(id) {
     const key = this.imageBundleKey(id);
-    this.imageBundleCache?.delete(key);
-    this.imageBundlePromises?.delete(key);
+    invalidateBundleState(this.imageBundleCache, this.imageBundlePromises, key);
   },
 
   clearImageBundleCache() {
-    this.imageBundleCache?.clear();
-    this.imageBundlePromises?.clear();
+    clearBundleState(this.imageBundleCache, this.imageBundlePromises);
   },
 
   updateCurrentImageBundleAnnotations(annotations) {
@@ -1698,13 +1688,7 @@ export const ImageWorkspace = {
       api.getImageTilesInfo(this.projectId, id, requestOptions),
       api.getAnnotations(this.projectId, id, requestOptions),
     ]).then(([imageInfo, annsRes]) => {
-      const bundle = {
-        id: String(id),
-        relPath: relPath || '',
-        imageInfo,
-        annotations: Array.isArray(annsRes?.annotations) ? annsRes.annotations : [],
-        cachedAt: Date.now(),
-      };
+      const bundle = makeImageBundle(id, relPath, imageInfo, annsRes?.annotations);
       this.touchImageBundleCache(key, bundle);
       return bundle;
     });
@@ -2112,8 +2096,8 @@ export const ImageWorkspace = {
     list.innerHTML = `${anns.map(ann => {
       const annId = String(ann.id || '');
       const className = String(ann.class_name || '');
-      const annIdAttr = this.escapeAttr(annId);
-      const classNameHtml = this.escapeHtml(className);
+      const annIdAttr = escapeAttr(annId);
+      const classNameHtml = escapeHtml(className);
       const isFocused = String(this.focusedAnnotationId || '') === annId;
       return `
       <div class="neu-box ann-item-focus" data-ann-id="${annIdAttr}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
@@ -2442,16 +2426,6 @@ export const ImageWorkspace = {
     return ann;
   },
 
-  bboxFromPolygon(points = []) {
-    const pairs = Array.isArray(points)
-      ? points.map((p) => Array.isArray(p) ? [Number(p[0] || 0), Number(p[1] || 0)] : null).filter(Boolean)
-      : [];
-    if (pairs.length === 0) return null;
-    const xs = pairs.map((p) => p[0]);
-    const ys = pairs.map((p) => p[1]);
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  },
-
   selectedOrDefaultClass() {
     return String(this.selectedClass || this.projectMeta?.classes?.[0] || 'object').trim() || 'object';
   },
@@ -2463,7 +2437,7 @@ export const ImageWorkspace = {
     const polygon = Array.isArray(shape?.polygon) ? shape.polygon : null;
     const bbox = Array.isArray(shape?.bbox)
       ? shape.bbox
-      : (polygon ? this.bboxFromPolygon(polygon) : null);
+      : (polygon ? bboxFromPolygon(polygon) : null);
     if (!bbox || bbox.length !== 4) return;
 
     this.pushAnnotationHistory();
@@ -2755,7 +2729,7 @@ export const ImageWorkspace = {
       ...(this.projectMeta?.classes || []).map((cls) => String(cls || '').trim()),
     ].filter(Boolean)));
     const options = classes.map((cls) => `
-      <option value="${this.escapeAttr(cls)}" ${cls === currentClass ? 'selected' : ''}>${this.escapeHtml(cls)}</option>
+      <option value="${escapeAttr(cls)}" ${cls === currentClass ? 'selected' : ''}>${escapeHtml(cls)}</option>
     `).join('');
 
     const modal = document.createElement('div');
@@ -2767,7 +2741,7 @@ export const ImageWorkspace = {
         <button class="neu-button" id="btn-close-edit-ann-class" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;">&times;</button>
         <h3 style="margin: 0 0 8px 0; font-size: 16px;">修改标注类别</h3>
         <div style="font-size: 12px; color: var(--neu-text-light); line-height: 1.7; margin-bottom: 18px;">
-          当前类别：<b style="color: var(--neu-text);">${this.escapeHtml(currentClass || '--')}</b>
+          当前类别：<b style="color: var(--neu-text);">${escapeHtml(currentClass || '--')}</b>
         </div>
         <label style="display: block; font-size: 12px; font-weight: 700; color: var(--neu-text-light); margin-bottom: 8px;">选择已有类别</label>
         <select id="sel-edit-ann-class" class="neu-input" style="width: 100%; height: 38px; font-size: 13px; margin-bottom: 14px;">
