@@ -4,6 +4,7 @@ import {
   renderAnnotationList,
   updateAnnotationListFocus,
 } from '../components/annotation-list.js';
+import { bindClassPanelEvents, renderClassPanel } from '../components/class-panel.js';
 import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
@@ -1186,52 +1187,17 @@ export const ImageWorkspace = {
     const classes = this.projectMeta?.classes || [];
     this.renderImageFilterControls();
     
-    if (classes.length === 0) {
-      list.innerHTML = `<div style="color:var(--neu-text-light); font-size:12px; text-align:center;">${i18n.t('no_classes')}</div>`;
-      return;
-    }
-    
     if (!this.selectedClass) this.selectedClass = classes[0];
-
-    // Calculate current image class counts
-    const annCounts = {};
-    (this.annotations || []).forEach(ann => {
-      annCounts[ann.class_name] = (annCounts[ann.class_name] || 0) + 1;
+    renderClassPanel(list, classes, {
+      selectedClass: this.selectedClass,
+      annotations: this.annotations,
+      emptyText: i18n.t('no_classes'),
+      getClassColor: (className) => this.getClassColor(className),
     });
-
-    list.innerHTML = classes.map(cls => {
-      const escapedCls = cls.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `
-        <div class="neu-button class-item ${this.selectedClass === cls ? 'active' : ''}" 
-             data-cls="${escapedCls}"
-             style="justify-content: space-between; padding: 10px 15px; font-size: 13px; border-radius: 12px; ${this.selectedClass === cls ? 'box-shadow: var(--neu-inset);' : ''}">
-          <div class="cls-select" style="display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer; pointer-events: auto;">
-             <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${this.getClassColor(cls)}; box-shadow: 0 2px 5px rgba(0,0,0,0.1); pointer-events: none;"></span>
-             <span style="font-weight: 600; pointer-events: none;">${escapedCls}</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 6px;">
-             <span style="font-size: 11px; opacity: 0.6; font-family: monospace;">(${annCounts[cls] || 0})</span>
-             <input type="checkbox" class="cls-chk-infer" data-cls="${escapedCls}" title="Include in text inference" checked style="width: 14px; height: 14px; cursor: pointer;" />
-             <button class="cls-delete-btn neu-button" data-delete-cls="${escapedCls}" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px; color: #ef4444; flex-shrink: 0;" title="删除类别">×</button>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    // Attach events via delegation on the list element
-    list.onclick = (e) => {
-      const deleteBtn = e.target.closest('.cls-delete-btn');
-      if (deleteBtn) {
-        e.stopPropagation();
-        this.deleteClass(deleteBtn.dataset.deleteCls);
-        return;
-      }
-      const selectArea = e.target.closest('.cls-select');
-      if (selectArea) {
-        const item = e.target.closest('.class-item');
-        if (item) this.selectClass(item.dataset.cls);
-      }
-    };
+    bindClassPanelEvents(list, {
+      onSelect: (className) => this.selectClass(className),
+      onDelete: (className) => this.deleteClass(className),
+    });
     
     this.updateActionBar();
   },
