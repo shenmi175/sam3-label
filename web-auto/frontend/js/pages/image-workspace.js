@@ -1,4 +1,9 @@
 import { api } from '../api.js';
+import {
+  bindAnnotationListEvents,
+  renderAnnotationList,
+  updateAnnotationListFocus,
+} from '../components/annotation-list.js';
 import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
@@ -1895,83 +1900,22 @@ export const ImageWorkspace = {
 
   renderAnnotations() {
     const list = document.getElementById('annotation-list-container');
-    const anns = this.annotations || [];
-    if (this.isImageLoading) {
-      list.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">${i18n.t('loading_image_annotations')}</div>`;
-      return;
-    }
-    if (anns.length === 0) {
-      list.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--neu-text-light); font-size: 12px;">无标注数据</div>`;
-      return;
-    }
-
-    const focusBanner = ''; /*
-      <div class="neu-box" style="padding: 10px 12px; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--neu-bg-light); box-shadow: var(--neu-inset-sm);">
-        <span style="font-size: 12px; font-weight: 700; color: var(--neu-text-light);">只显示当前实例</span>
-        <button class="neu-button" style="padding: 6px 10px; font-size: 11px; font-weight: 700;" onclick="window.currentWorkspace.clearAnnotationFocus()">显示全部</button>
-      </div>
-    */
-
-    list.innerHTML = `${anns.map(ann => {
-      const annId = String(ann.id || '');
-      const className = String(ann.class_name || '');
-      const annIdAttr = escapeAttr(annId);
-      const classNameHtml = escapeHtml(className);
-      const isFocused = String(this.focusedAnnotationId || '') === annId;
-      return `
-      <div class="neu-box ann-item-focus" data-ann-id="${annIdAttr}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.getClassColor(className)};"></span>
-            <span style="font-size: 13px; font-weight: 700;">${classNameHtml}</span>
-          </div>
-          <div style="display: flex; gap: 5px;">
-            <button class="neu-button ann-edit-class-btn" data-ann-id="${annIdAttr}" title="修改该标注类别" style="width: 28px; height: 24px; padding: 0; font-size: 11px; font-weight: 800; color: var(--neu-text-active);">改</button>
-            <button class="neu-button ann-delete-btn" data-ann-id="${annIdAttr}" title="删除该标注" style="width: 24px; height: 24px; padding: 0; font-size: 12px; color: #ef4444;">×</button>
-          </div>
-        </div>
-        <div style="font-size: 11px; color: var(--neu-text-light); display: flex; justify-content: space-between;">
-          <span>Conf: <b>${(ann.score || 0.98).toFixed(3)}</b></span>
-          <span>${ann.polygon ? 'Polygon' : 'BBox'}</span>
-        </div>
-      </div>
-      `;
-    }).join('')}`;
-    list.onclick = (e) => {
-      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
-      if (!target) return;
-
-      const editBtn = target.closest('.ann-edit-class-btn');
-      if (editBtn) {
-        e.stopPropagation();
-        this.editAnnotationClass(editBtn.dataset.annId || '');
-        return;
-      }
-
-      const deleteBtn = target.closest('.ann-delete-btn');
-      if (deleteBtn) {
-        e.stopPropagation();
-        this.deleteAnnotation(deleteBtn.dataset.annId || '');
-        return;
-      }
-
-      const item = target.closest('.ann-item-focus');
-      if (item && list.contains(item)) {
-        this.toggleAnnotationFocus(item.dataset.annId || '');
-      }
-    };
+    renderAnnotationList(list, this.annotations, {
+      focusedAnnotationId: this.focusedAnnotationId,
+      isLoading: this.isImageLoading,
+      loadingText: i18n.t('loading_image_annotations'),
+      emptyText: '无标注数据',
+      getClassColor: (className) => this.getClassColor(className),
+    });
+    bindAnnotationListEvents(list, {
+      onFocus: (annId) => this.toggleAnnotationFocus(annId),
+      onEditClass: (annId) => this.editAnnotationClass(annId),
+      onDelete: (annId) => this.deleteAnnotation(annId),
+    });
   },
 
   updateAnnotationFocusListState() {
-    const list = document.getElementById('annotation-list-container');
-    if (!list) return;
-    const focusedId = String(this.focusedAnnotationId || '');
-    list.querySelectorAll('.ann-item-focus').forEach((item) => {
-      const isFocused = String(item.dataset.annId || '') === focusedId && focusedId !== '';
-      item.style.background = isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)';
-      item.style.boxShadow = isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)';
-      item.setAttribute('aria-selected', isFocused ? 'true' : 'false');
-    });
+    updateAnnotationListFocus(document.getElementById('annotation-list-container'), this.focusedAnnotationId);
   },
 
   openBatchConfigModal(defaultClasses = []) {
