@@ -1,7 +1,9 @@
 import { api } from '../api.js';
+import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { i18n } from '../i18n.js';
 import { AnnotationController } from '../modules/image-workspace/annotation-controller.js';
+import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
 import {
   clearBundleState,
   getBundleFromCache,
@@ -27,6 +29,7 @@ export const ImageWorkspace = {
   selectedImagePath: null,
   viewer: null,
   annotationController: null,
+  imageNavigationController: null,
   isUnmounted: false,
   promptMode: 'pointer',
   currentPrompts: [],
@@ -97,6 +100,7 @@ export const ImageWorkspace = {
     this.annotationHistory = [];
     this.annotationRedoStack = [];
     this.annotationController = new AnnotationController(this);
+    this.imageNavigationController = new ImageNavigationController(this);
     window.currentWorkspace = this;
     
     container.innerHTML = `
@@ -545,65 +549,27 @@ export const ImageWorkspace = {
   },
 
   sanitizeOffset(offsetValue = this.offset, totalValue = this.totalImages) {
-    const total = Math.max(0, Number(totalValue || 0));
-    const limit = Math.max(1, Number(this.limit || 50));
-    let nextOffset = Math.max(0, Number(offsetValue || 0));
-    if (total > 0 && nextOffset >= total) {
-      nextOffset = Math.max(0, Math.floor((total - 1) / limit) * limit);
-    }
-    return nextOffset;
+    return this.imageNavigationController.sanitizeOffset(offsetValue, totalValue);
   },
 
   getTotalImagePages() {
-    const total = Math.max(0, Number(this.totalImages || 0));
-    const limit = Math.max(1, Number(this.limit || 50));
-    return Math.ceil(total / limit) || 1;
+    return this.imageNavigationController.getTotalPages();
   },
 
   getCurrentImagePage() {
-    const limit = Math.max(1, Number(this.limit || 50));
-    const offset = this.sanitizeOffset(this.offset, this.totalImages);
-    return Math.floor(offset / limit) + 1;
+    return this.imageNavigationController.getCurrentPage();
   },
 
   syncImagePaginationControls() {
-    const totalPages = this.getTotalImagePages();
-    const currentPage = this.getCurrentImagePage();
-    const pageInput = document.getElementById('inp-page-jump');
-    const pageTotal = document.getElementById('ws-page-total');
-    const btnPrev = document.getElementById('btn-img-prev');
-    const btnNext = document.getElementById('btn-img-next');
-
-    if (pageInput && document.activeElement !== pageInput) {
-      pageInput.value = String(currentPage);
-    }
-    if (pageInput) {
-      pageInput.setAttribute('max', String(totalPages));
-      pageInput.setAttribute('title', `输入页码，按 Enter 跳转。当前 ${currentPage} / ${totalPages}`);
-    }
-    if (pageTotal) pageTotal.innerText = String(totalPages);
-    if (btnPrev) btnPrev.disabled = currentPage <= 1;
-    if (btnNext) btnNext.disabled = currentPage >= totalPages;
+    this.imageNavigationController.syncPaginationControls();
   },
 
   async goToImagePage(pageValue) {
-    const totalPages = this.getTotalImagePages();
-    const fallbackPage = this.getCurrentImagePage();
-    const requestedPage = Number.parseInt(String(pageValue || ''), 10);
-    const safePage = Math.max(1, Math.min(totalPages, Number.isFinite(requestedPage) ? requestedPage : fallbackPage));
-    const nextOffset = (safePage - 1) * Math.max(1, Number(this.limit || 50));
-
-    if (nextOffset === this.offset) {
-      this.syncImagePaginationControls();
-      return;
-    }
-
-    this.offset = nextOffset;
-    await this.loadImages();
+    await this.imageNavigationController.goToPage(pageValue);
   },
 
   hasImageFilter() {
-    return Boolean(this.imageFilterClass || (this.imageFilterStatus && this.imageFilterStatus !== 'all'));
+    return this.imageNavigationController.hasFilter();
   },
 
   async restoreProjectUIState() {
@@ -873,20 +839,10 @@ export const ImageWorkspace = {
     // Image List (Event Delegation)
     const listCont = document.getElementById('image-list-container');
     if (listCont) {
-      listCont.onclick = (e) => {
-        const deleteBtn = e.target.closest('.btn-delete-image');
-        if (deleteBtn) {
-          e.preventDefault();
-          e.stopPropagation();
-          this.deleteProjectImage(deleteBtn.dataset.id, deleteBtn.dataset.rel);
-          return;
-        }
-        const item = e.target.closest('.image-item');
-        if (item) {
-          item.focus({ preventScroll: true });
-          this.selectImage(item.dataset.id, item.dataset.rel);
-        }
-      };
+      bindImageListEvents(listCont, {
+        onDelete: (imageId, relPath) => this.deleteProjectImage(imageId, relPath),
+        onSelect: (imageId, relPath) => this.selectImage(imageId, relPath),
+      });
     }
 
     const btnPrev = document.getElementById('btn-img-prev');
@@ -1080,77 +1036,19 @@ export const ImageWorkspace = {
   },
 
   navigateImage(delta) {
-    if (this.unlabeledNavigationEnabled) {
-      this.navigateUnlabeledImage(delta);
-      return;
-    }
-    if (!this.images || this.images.length === 0) return;
-    const currentIndex = this.images.findIndex(img => String(img.id) === String(this.selectedImageId));
-    const nextIndex = currentIndex + delta;
-    if (nextIndex >= 0 && nextIndex < this.images.length) {
-      const img = this.images[nextIndex];
-      this.selectImage(img.id, img.rel_path);
-      setTimeout(() => {
-        const el = document.querySelector(`.image-item[data-id="${img.id}"]`);
-        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }, 50);
-    } else if (nextIndex < 0 && this.offset >= this.limit) {
-      this.offset -= this.limit;
-      this.loadImages().then(() => {
-        const img = this.images[this.images.length - 1];
-        if (img) this.selectImage(img.id, img.rel_path);
-      });
-    } else if (nextIndex >= this.images.length && this.offset + this.limit < this.totalImages) {
-      this.offset += this.limit;
-      this.loadImages().then(() => {
-        const img = this.images[0];
-        if (img) this.selectImage(img.id, img.rel_path);
-      });
-    }
+    this.imageNavigationController.navigate(delta);
   },
 
   toggleUnlabeledNavigation() {
-    this.unlabeledNavigationEnabled = !this.unlabeledNavigationEnabled;
-    this.refreshUnlabeledButton();
-    this.scheduleProjectUIStateSave();
-    showToast(
-      this.unlabeledNavigationEnabled
-        ? '未标注导航已开启，方向键将只切换未标注图片'
-        : '未标注导航已关闭，方向键恢复普通切图',
-      'info'
-    );
+    this.imageNavigationController.toggleUnlabeledNavigation();
   },
 
   refreshUnlabeledButton() {
-    const btn = document.getElementById('btn-find-unlabeled');
-    if (!btn) return;
-    btn.style.boxShadow = this.unlabeledNavigationEnabled ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
-    btn.style.color = this.unlabeledNavigationEnabled ? 'var(--neu-text-active)' : 'var(--neu-text)';
-    btn.textContent = this.unlabeledNavigationEnabled ? '未标注: 开' : '未标注';
+    this.imageNavigationController.refreshUnlabeledButton();
   },
 
   async navigateUnlabeledImage(delta) {
-    try {
-      const direction = delta < 0 ? 'prev' : 'next';
-      const res = await api.getUnlabeledImage(this.projectId, this.selectedImageId || '', direction);
-      const image = res?.image || null;
-      const imageIndex = Number(res?.image_index ?? -1);
-      if (!image || !image.id) {
-        showToast('No unlabeled images found', 'info');
-        return;
-      }
-      if (imageIndex >= 0) {
-        this.offset = Math.floor(imageIndex / this.limit) * this.limit;
-      }
-      await this.loadImages();
-      await this.selectImage(image.id, image.rel_path);
-      setTimeout(() => {
-        const el = document.querySelector(`.image-item[data-id="${image.id}"]`);
-        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }, 50);
-    } catch (e) {
-      showToast(e.message, 'error');
-    }
+    await this.imageNavigationController.navigateUnlabeled(delta);
   },
 
   toggleSidePanel(side) {
@@ -1544,83 +1442,15 @@ export const ImageWorkspace = {
   },
   
   async loadImages() {
-    const listCont = document.getElementById('image-list-container');
-    const requestSeq = ++this.imageListLoadSeq;
-    try {
-      this.offset = this.sanitizeOffset(this.offset, this.totalImages);
-      const data = await api.getImages(this.projectId, this.offset, this.limit, {
-        status: this.imageFilterStatus,
-        className: this.imageFilterClass,
-        imageId: this.selectedImageId || '',
-      });
-      if (this.isUnmounted || requestSeq !== this.imageListLoadSeq) return;
-      
-      this.images = data.items || [];
-      this.totalImages = data.total || 0;
-      this.offset = this.sanitizeOffset(this.offset, this.totalImages);
-      
-      this.syncImagePaginationControls();
-      
-      const imageCountBadge = document.getElementById('ws-img-count-badge');
-      if (imageCountBadge) imageCountBadge.innerText = this.totalImages;
-
-      if (this.images.length === 0) {
-         listCont.innerHTML = `<div style="text-align:center; padding: 20px; color: var(--neu-text-light);">${i18n.t('no_images')}</div>`;
-         return;
-      }
-      
-      let html = '<div style="display: flex; flex-direction: column; gap: 8px;">';
-      for(const img of this.images) {
-        const isSel = this.selectedImageId === img.id;
-        const bgState = isSel ? 'var(--neu-bg)' : 'transparent';
-        const shadowState = isSel ? 'var(--neu-inset)' : 'none';
-        const weight = isSel ? '700' : '500';
-        const imageIdAttr = escapeAttr(img.id);
-        const relPathAttr = escapeAttr(img.rel_path);
-        const relPathHtml = escapeHtml(img.rel_path);
-        
-        const isLabeled = (img.status === 'labeled' || img.labeled);
-        const dotColor = isLabeled ? '#10b981' : '#e2e8f0';
-        
-        html += `
-          <div class="neu-button image-item" 
-               data-id="${imageIdAttr}" data-rel="${relPathAttr}" tabindex="0"
-               style="justify-content: flex-start; text-align: left; padding: 10px 8px 10px 12px; background: ${bgState}; box-shadow: ${shadowState}; font-weight: ${weight}; border-radius: 12px; font-size: 13px; overflow: hidden; cursor: pointer; display: flex; align-items: center; gap: 8px;">
-             <span style="width: 8px; height: 8px; border-radius: 50%; background: ${dotColor}; margin-right: 12px; flex-shrink: 0; pointer-events: none;"></span>
-             <span style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden; pointer-events: none; flex: 1; min-width: 0;">${relPathHtml}</span>
-             <button type="button" class="neu-button btn-delete-image" data-id="${imageIdAttr}" data-rel="${relPathAttr}" title="删除图片和标注文件" aria-label="删除图片和标注文件" style="width: 24px; height: 24px; min-width: 24px; padding: 0; border-radius: 8px; color: #ef4444; font-size: 15px; font-weight: 800; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">×</button>
-          </div>
-        `;
-      }
-      html += '</div>';
-      listCont.innerHTML = html;
-      this.prefetchAdjacentImages(this.selectedImageId || this.images[0]?.id || '');
-      this.scheduleProjectUIStateSave();
-      
-    } catch(e) {
-      listCont.innerHTML = `<div style="color: #ef4444; padding: 10px; font-size: 12px;">${e.message}</div>`;
-    }
+    return this.imageNavigationController.loadImages();
   },
 
   async applyImageFilters() {
-    this.offset = 0;
-    await this.loadImages();
-    const selectedVisible = this.images.some((img) => String(img.id) === String(this.selectedImageId || ''));
-    if (!selectedVisible && this.images.length > 0) {
-      await this.selectImage(this.images[0].id, this.images[0].rel_path);
-    } else {
-      this.updateSelectedImageListState();
-    }
-    this.scheduleProjectUIStateSave();
+    await this.imageNavigationController.applyFilters();
   },
 
   updateSelectedImageListState() {
-    document.querySelectorAll('.image-item').forEach((el) => {
-      const selected = String(el.dataset.id || '') === String(this.selectedImageId || '');
-      el.style.background = selected ? 'var(--neu-bg)' : 'transparent';
-      el.style.boxShadow = selected ? 'var(--neu-inset)' : 'none';
-      el.style.fontWeight = selected ? '700' : '500';
-    });
+    this.imageNavigationController.updateSelectedImageListState();
   },
 
   setCanvasPlaceholder(visible, text = '') {
@@ -2411,9 +2241,7 @@ export const ImageWorkspace = {
       if (progressText) progressText.innerText = `${this.projectMeta.labeled_images || 0} / ${total}`;
       if (metaLabeled) metaLabeled.innerText = this.projectMeta.labeled_images || 0;
     }
-    const item = document.querySelector(`.image-item[data-id="${this.selectedImageId}"]`);
-    const dot = item?.querySelector('span');
-    if (dot) dot.style.background = labeled ? '#10b981' : '#e2e8f0';
+    setImageListItemLabeledState(this.selectedImageId, labeled);
   },
 
   markAnnotationsDirty(reason = '') {
@@ -2478,76 +2306,7 @@ export const ImageWorkspace = {
   },
 
   async deleteProjectImage(imageId, relPath = '') {
-    const targetId = String(imageId || '').trim();
-    if (!targetId) return;
-    const currentPageIndex = (this.images || []).findIndex((item) => String(item.id) === targetId);
-    const targetImage = currentPageIndex >= 0 ? this.images[currentPageIndex] : null;
-    const displayPath = String(relPath || targetImage?.rel_path || targetId);
-    const deletingSelected = String(this.selectedImageId || '') === targetId;
-
-    if (deletingSelected && this.annotationSaving) {
-      showToast('当前图片正在保存，稍后再删除', 'error');
-      return;
-    }
-    if (!confirm(`确认删除图片 "${displayPath}" 及对应标注文件吗？\n\n该操作会删除原图文件，不能从页面撤销。`)) return;
-
-    try {
-      if (deletingSelected) {
-        this.imageLoadSeq += 1;
-        if (this.imageLoadAbortController) {
-          this.imageLoadAbortController.abort();
-          this.imageLoadAbortController = null;
-        }
-        this.annotationController.clearSaveTimer();
-        this.annotationDirty = false;
-        this.annotationSaveImageId = '';
-      }
-
-      await api.deleteImage(this.projectId, targetId);
-      this.invalidateImageBundle(targetId);
-      await this.loadProjectInfo();
-      await this.loadImages();
-
-      if (this.images.length === 0 && this.totalImages > 0 && this.offset > 0) {
-        this.offset = Math.max(0, this.offset - this.limit);
-        await this.loadImages();
-      }
-
-      if (deletingSelected) {
-        const nextImage = this.images[Math.min(Math.max(currentPageIndex, 0), Math.max(this.images.length - 1, 0))];
-        if (nextImage) {
-          await this.selectImage(nextImage.id, nextImage.rel_path, { preserveFit: false });
-          const nextEl = Array.from(document.querySelectorAll('.image-item'))
-            .find((el) => String(el.dataset.id || '') === String(nextImage.id));
-          if (nextEl) nextEl.focus({ preventScroll: true });
-        } else {
-          this.selectedImageId = null;
-          this.selectedImagePath = null;
-          this.annotationController.resetEmptySelection();
-          this.currentPrompts = [];
-          this.previews = [];
-          if (this.viewer) {
-            this.viewer.clearImage();
-            this.viewer.setAnnotations([]);
-            this.viewer.setPrompts([]);
-            this.viewer.setPreviews([]);
-            this.viewer.setFocusedAnnotation(null);
-          }
-          this.updateUndoRedoButtons();
-          this.updateAnnotationSelectionControls();
-          this.renderAnnotations();
-          this.renderPreviews();
-          this.updateActionBar();
-          this.setCanvasPlaceholder(true, i18n.t('select_image_prompt'));
-        }
-      } else {
-        this.updateSelectedImageListState();
-      }
-
-      showToast(`已删除图片: ${displayPath}`, 'success');
-    } catch (e) {
-      showToast(`删除图片失败: ${e.message}`, 'error');
-    }
+    await this.imageNavigationController.deleteProjectImage(imageId, relPath);
   },
 
   editAnnotationClass(annId) {
