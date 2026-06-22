@@ -126,7 +126,7 @@ export const ImageWorkspace = {
       <div class="workspace-layout" style="display: flex; height: 100%; flex-direction: column; background: var(--neu-bg); overflow: hidden; min-height: 0; min-width: 0; box-sizing: border-box;">
         <!-- 1. Top Navigation Bar -->
         <div class="neu-box" style="height: 56px; flex-shrink: 0; display: flex; align-items: center; padding: 0 24px; z-index: 100; border-radius: 0; gap: 20px; border-bottom: 1px solid rgba(0,0,0,0.05); box-sizing: border-box; position: relative;">
-          <div style="display: flex; align-items: center; gap: 12px; cursor: pointer;" onclick="window.location.hash='/'">
+          <div id="ws-back-dashboard" role="button" tabindex="0" style="display: flex; align-items: center; gap: 12px; cursor: pointer;">
             <span style="font-size: 18px;">⬅️</span>
             <div style="display: flex; flex-direction: column; max-width: 280px;">
               <span id="ws-pj-name" style="font-weight: 700; font-size: 14px; color: var(--neu-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;">${i18n.t('backend_checking')}</span>
@@ -165,7 +165,7 @@ export const ImageWorkspace = {
              <button id="btn-toggle-theme" class="neu-button" title="${i18n.t('toggle_theme')}" style="padding: 6px 10px; font-size: 14px;">
                 <span id="theme-icon">🌓</span>
              </button>
-             <button class="neu-button" onclick="window.location.hash='/'" style="padding: 6px 14px; font-size: 12px; font-weight: 600;">${i18n.t('dashboard')}</button>
+             <button id="btn-dashboard-nav" class="neu-button" style="padding: 6px 14px; font-size: 12px; font-weight: 600;">${i18n.t('dashboard')}</button>
           </div>
         </div>
 
@@ -843,6 +843,22 @@ export const ImageWorkspace = {
   },
 
   bindEvents() {
+    const goToDashboard = () => {
+      window.location.hash = '/';
+    };
+    const backDashboard = document.getElementById('ws-back-dashboard');
+    const btnDashboardNav = document.getElementById('btn-dashboard-nav');
+    if (backDashboard) {
+      backDashboard.onclick = goToDashboard;
+      backDashboard.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          goToDashboard();
+        }
+      };
+    }
+    if (btnDashboardNav) btnDashboardNav.onclick = goToDashboard;
+
     // Top Operation Bar
     const sam3UrlInp = document.getElementById('inp-sam3-url');
     if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
@@ -1062,6 +1078,7 @@ export const ImageWorkspace = {
     if (btnClearAnns) btnClearAnns.onclick = () => this.clearCurrentAnns();
     const btnSubmitPreview = document.getElementById('btn-submit-preview');
     if (btnSubmitPreview) btnSubmitPreview.onclick = () => this.keepAllPreviews();
+    this.bindPreviewListEvents();
 
     // Theme Toggle
     const btnTheme = document.getElementById('btn-toggle-theme');
@@ -1335,7 +1352,7 @@ export const ImageWorkspace = {
     modal.style.cssText = 'position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 9999; background: rgba(0,0,0,0.3); backdrop-filter: blur(4px);';
     modal.innerHTML = `
       <div class="neu-card" style="width: 380px; padding: 28px; border-radius: 20px; position: relative;">
-        <button class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;" onclick="document.getElementById('modal-add-class').remove()">&times;</button>
+        <button id="btn-close-add-class" class="neu-button" style="position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; color: #ef4444;">&times;</button>
         <h3 style="margin: 0 0 20px 0; font-size: 16px;">\u65B0\u589E\u7C7B\u522B</h3>
         <textarea id="inp-new-class-names" class="neu-input" rows="4" placeholder="\u6BCF\u884C\u4E00\u4E2A\u7C7B\u522B\uFF0C\u4E5F\u652F\u6301\u9017\u53F7\u6216\u5206\u53F7\u6279\u91CF\u8F93\u5165" style="width: 100%; resize: vertical; font-size: 13px; padding: 10px;"></textarea>
         <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
@@ -1349,6 +1366,7 @@ export const ImageWorkspace = {
     const inp = document.getElementById('inp-new-class-names');
     inp.focus();
 
+    document.getElementById('btn-close-add-class').onclick = () => modal.remove();
     document.getElementById('btn-cancel-add-class').onclick = () => modal.remove();
     document.getElementById('btn-confirm-add-class').onclick = async () => {
       const names = inp.value.replace(/\r\n?/g, '\n').trim();
@@ -1434,16 +1452,32 @@ export const ImageWorkspace = {
       <div class="neu-box" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--neu-bg); box-shadow: var(--neu-outset-sm);">
          <div style="display: flex; justify-content: space-between; align-items: center;">
             <span style="font-size: 11px; font-weight: 700; color: var(--neu-text-active); text-transform: uppercase;">Preview Result #${idx+1}</span>
-            <button class="neu-button" style="width: 24px; height: 24px; border-radius: 50%; padding: 0; font-size: 10px; color: #ef4444;" onclick="window.currentWorkspace.removePreview('${p.id}')">×</button>
+            <button class="neu-button" data-preview-action="remove" data-preview-id="${escapeAttr(p.id)}" style="width: 24px; height: 24px; border-radius: 50%; padding: 0; font-size: 10px; color: #ef4444;">×</button>
          </div>
          <div style="font-size: 12px; color: var(--neu-text-light);">
             Confidence: <span style="font-weight: 600; color: var(--neu-text);">${(p.score || 0.98).toFixed(3)}</span>
          </div>
          <div style="display: flex; gap: 8px;">
-            <button class="neu-button" style="flex: 1; font-size: 11px; padding: 6px;" onclick="window.currentWorkspace.keepSinglePreview('${p.id}')">Apply to Image</button>
+            <button class="neu-button" data-preview-action="apply" data-preview-id="${escapeAttr(p.id)}" style="flex: 1; font-size: 11px; padding: 6px;">Apply to Image</button>
          </div>
       </div>
     `).join('');
+  },
+
+  bindPreviewListEvents() {
+    const list = document.getElementById('preview-list');
+    if (!list) return;
+    list.onclick = (e) => {
+      const target = e.target.closest('[data-preview-action]');
+      if (!target || !list.contains(target)) return;
+      const id = target.dataset.previewId;
+      if (!id) return;
+      if (target.dataset.previewAction === 'remove') {
+        this.removePreview(id);
+      } else if (target.dataset.previewAction === 'apply') {
+        this.keepSinglePreview(id);
+      }
+    };
   },
 
   removePreview(id) {
