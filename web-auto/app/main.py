@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,13 +26,13 @@ from app.routers.config import create_config_router
 from app.routers.export import create_export_router
 from app.routers.image_files import create_image_files_router
 from app.routers.pose import create_pose_router
+from app.routers.project_images import create_project_images_router
 from app.routers.services import create_services_router
 from app.routers.ui_state import create_ui_state_router
 from app.routers.uploads import create_uploads_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     ImportExistingProjectIn,
-    ImportImagesIn,
     InferBatchIn,
     InferExampleBatchIn,
     InferExamplePreviewIn,
@@ -65,7 +65,7 @@ from app.services.config_service import AppConfigStore, parse_allowed_data_roots
 from app.services.integration_clients import OpsClient, SapiensClient
 from app.services.image_tiles import ImageTileService
 from app.storage import Storage
-from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
+from app.utils import ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -211,6 +211,7 @@ app.include_router(create_export_router(get_storage=_current_storage))
 app.include_router(create_annotations_router(get_storage=_current_storage))
 app.include_router(create_classes_router(get_storage=_current_storage))
 app.include_router(create_image_files_router(get_storage=_current_storage, tile_service=IMAGE_TILE_SERVICE))
+app.include_router(create_project_images_router(get_storage=_current_storage))
 
 
 class InferJobPaused(RuntimeError):
@@ -2160,28 +2161,6 @@ def _get_image_or_404(project: dict[str, Any], image_id: str) -> dict[str, Any]:
     if not img:
         raise HTTPException(status_code=404, detail='image not found')
     return img
-
-
-def _safe_upload_target(root: Path, filename: str) -> Path:
-    base_name = Path(str(filename or '').strip()).name
-    if not base_name:
-        base_name = f'upload_{new_id()}.jpg'
-    suffix = Path(base_name).suffix.lower()
-    if suffix not in IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f'unsupported image extension: {suffix or "(empty)"}')
-
-    target = (root / base_name).resolve()
-    ensure_dir(target.parent)
-    if not target.exists():
-        return target
-
-    stem = target.stem
-    idx = 1
-    while True:
-        candidate = target.with_name(f'{stem}_upload{idx}{suffix}')
-        if not candidate.exists():
-            return candidate
-        idx += 1
 
 
 def _path_within_root(path: Path, root: Path) -> bool:
@@ -4411,43 +4390,6 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post('/api/projects/{project_id}/images/upload')
-async def upload_project_image(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    project = storage.get_project(project_id, enrich=False, include_images=False)
-    if not project:
-        raise HTTPException(status_code=404, detail='project not found')
-
-    if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
-        raise HTTPException(status_code=400, detail='only image or pose projects support uploads')
-
-    image_dir = Path(project['image_dir'])
-    if not image_dir.exists():
-        ensure_dir(image_dir)
-
-    original_filename = file.filename or 'upload.jpg'
-    stem = Path(original_filename).stem
-    suffix = Path(original_filename).suffix
-
-    target_path = image_dir / original_filename
-    if target_path.exists():
-        counter = 1
-        while True:
-            new_name = f'{stem}_upload{counter}{suffix}'
-            target_path = image_dir / new_name
-            if not target_path.exists():
-                break
-            counter += 1
-
-    try:
-        with target_path.open('wb') as f:
-            shutil.copyfileobj(file.file, f)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f'failed to save file: {exc}') from exc
-
-    storage.refresh_project_images(project_id)
-    return {'ok': True, 'filename': target_path.name}
-
-
 @app.delete('/api/projects/{project_id}')
 def delete_project(project_id: str) -> dict[str, Any]:
     try:
@@ -4455,141 +4397,6 @@ def delete_project(project_id: str) -> dict[str, Any]:
         return {'ok': True}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get('/api/projects/{project_id}/images')
-def list_project_images(
-    project_id: str,
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=200, ge=1, le=1000),
-    image_id: str = Query(default=''),
-    status: str = Query(default=''),
-    class_name: str = Query(default=''),
-) -> dict[str, Any]:
-    try:
-        items, total, safe_offset, safe_limit, image_index = storage.get_project_images_page(
-            project_id,
-            offset=offset,
-            limit=limit,
-            image_id=image_id,
-            status=status,
-            class_name=class_name,
-        )
-        return {
-            'items': items,
-            'total': total,
-            'offset': safe_offset,
-            'limit': safe_limit,
-            'image_index': image_index,
-            'status': status,
-            'class_name': class_name,
-        }
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.get('/api/projects/{project_id}/annotation_dashboard')
-def get_annotation_dashboard(project_id: str) -> dict[str, Any]:
-    try:
-        return {'stats': storage.get_annotation_dashboard(project_id)}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/projects/{project_id}/annotation_index/rebuild')
-def rebuild_annotation_index(project_id: str) -> dict[str, Any]:
-    try:
-        return {'ok': True, 'result': storage.rebuild_annotation_index(project_id)}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.get('/api/projects/{project_id}/images/unlabeled')
-def get_unlabeled_project_image(
-    project_id: str,
-    after_image_id: str = Query(default=''),
-    direction: str = Query(default='next', pattern='^(next|prev)$'),
-) -> dict[str, Any]:
-    try:
-        image, image_index = storage.find_unlabeled_image(
-            project_id,
-            after_image_id=after_image_id,
-            direction=direction,
-        )
-        return {'image': image, 'image_index': image_index}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/projects/{project_id}/images/refresh')
-def refresh_project_images(project_id: str) -> dict[str, Any]:
-    try:
-        project, added = storage.refresh_project_images(project_id)
-        return {'project': project, 'added_images': added}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/projects/{project_id}/images/import')
-def import_project_images(project_id: str, payload: ImportImagesIn) -> dict[str, Any]:
-    try:
-        project, copied, added = storage.import_images_from_dir(project_id, payload.source_dir)
-        return {'project': project, 'copied_files': copied, 'added_images': added}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/projects/{project_id}/images/upload')
-async def upload_project_images(project_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
-        raise HTTPException(status_code=400, detail='only image or pose project is supported')
-    image_root = Path(str(project.get('image_dir') or '')).expanduser().resolve()
-    if not image_root.exists() or not image_root.is_dir():
-        raise HTTPException(status_code=400, detail=f'image_dir does not exist: {image_root}')
-    if not files:
-        raise HTTPException(status_code=400, detail='no files uploaded')
-
-    saved = 0
-    for up in files:
-        filename = str(getattr(up, 'filename', '') or '').strip()
-        target = _safe_upload_target(image_root, filename)
-        try:
-            ensure_dir(target.parent)
-            with target.open('wb') as out:
-                shutil.copyfileobj(up.file, out)
-            saved += 1
-        finally:
-            try:
-                await up.close()
-            except Exception:
-                pass
-
-    refreshed, added = storage.refresh_project_images(project_id)
-    return {'project': refreshed, 'saved_files': saved, 'added_images': added}
-
-
-@app.delete('/api/projects/{project_id}/images/{image_id}')
-def delete_image(project_id: str, image_id: str) -> dict[str, Any]:
-    try:
-        project, deleted_image = storage.delete_image(project_id, image_id)
-        return {'ok': True, 'project': project, 'deleted_image': deleted_image}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg in {'project not found', 'image not found'} else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
 
 
 @app.post('/api/infer')
