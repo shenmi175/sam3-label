@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
 
 try:
@@ -34,8 +35,8 @@ from app.utils import (
 
 
 class Storage:
-    PROJECT_MANIFEST_NAME = 'web_auto_project.json'
-    PROJECT_MANIFEST_SCHEMA = 'web-auto.project.v1'
+    PROJECT_MANIFEST_NAME = ProjectManifestRepository.MANIFEST_NAME
+    PROJECT_MANIFEST_SCHEMA = ProjectManifestRepository.MANIFEST_SCHEMA
 
     def __init__(self, base_dir: Path):
         self.base_dir = ensure_dir(base_dir)
@@ -45,6 +46,7 @@ class Storage:
         self._db_lock = threading.RLock()
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
+        self._project_manifests = ProjectManifestRepository(normalize_project=self._normalize_project)
         self._smart_filter_runs = SmartFilterRunRepository(
             db_connect=self._db_connect,
             db_lock=self._db_lock,
@@ -59,71 +61,13 @@ class Storage:
         atomic_write_json(self.projects_file, projects)
 
     def _project_manifest_payload(self, project: dict[str, Any]) -> dict[str, Any]:
-        p = self._normalize_project(project)
-        keys = [
-            'id',
-            'name',
-            'project_type',
-            'image_dir',
-            'video_path',
-            'video_name',
-            'video_meta',
-            'save_base_dir',
-            'project_save_dir',
-            'save_dir',
-            'annotation_dir',
-            'export_dir',
-            'workspace_dir',
-            'cache_dir',
-            'classes',
-            'num_images',
-            'num_frames',
-            'labeled_images',
-            'unlabeled_images',
-            'created_at',
-            'updated_at',
-            'content_rev',
-        ]
-        project_payload = {key: p.get(key) for key in keys if key in p}
-        return {
-            'schema': self.PROJECT_MANIFEST_SCHEMA,
-            'version': 1,
-            'image_id_strategy': 'uuid5:url:rel_path',
-            'annotation_file': 'annotations/{image_id}.json',
-            'project': project_payload,
-            'updated_at': now_ts(),
-        }
+        return self._project_manifests.payload(project)
 
     def _write_project_manifest(self, project: dict[str, Any]) -> None:
-        payload = self._project_manifest_payload(project)
-        p = payload.get('project', {}) if isinstance(payload.get('project'), dict) else {}
-        targets: list[Path] = []
-        for raw in (p.get('project_save_dir'), p.get('workspace_dir')):
-            text = str(raw or '').strip()
-            if not text:
-                continue
-            try:
-                target_dir = ensure_dir(Path(text).expanduser().resolve())
-            except Exception:
-                continue
-            if target_dir not in targets:
-                targets.append(target_dir)
-        for target_dir in targets:
-            atomic_write_json(target_dir / self.PROJECT_MANIFEST_NAME, payload)
+        self._project_manifests.write(project)
 
     def _read_project_manifest(self, manifest_path: Path) -> dict[str, Any] | None:
-        data = read_json(manifest_path, {})
-        if not isinstance(data, dict):
-            return None
-        if str(data.get('schema') or '') != self.PROJECT_MANIFEST_SCHEMA:
-            return None
-        project = data.get('project')
-        if not isinstance(project, dict):
-            return None
-        project_id = str(project.get('id') or '').strip()
-        if not project_id:
-            return None
-        return data
+        return self._project_manifests.read(manifest_path)
 
     def _known_project_ids(self) -> set[str]:
         return {str(p.get('id') or '').strip() for p in self._load_projects() if str(p.get('id') or '').strip()}
