@@ -13,6 +13,7 @@ import { AnnotationController } from '../modules/image-workspace/annotation-cont
 import { DataDashboardController } from '../modules/image-workspace/data-dashboard-controller.js';
 import { ExportController } from '../modules/image-workspace/export-controller.js';
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
+import { PreviewController } from '../modules/image-workspace/preview-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
 import {
   clearBundleState,
@@ -42,6 +43,7 @@ export const ImageWorkspace = {
   dataDashboardController: null,
   exportController: null,
   imageNavigationController: null,
+  previewController: null,
   smartFilterController: null,
   isUnmounted: false,
   promptMode: 'pointer',
@@ -119,6 +121,7 @@ export const ImageWorkspace = {
     this.dataDashboardController = new DataDashboardController(this);
     this.exportController = new ExportController(this);
     this.imageNavigationController = new ImageNavigationController(this);
+    this.previewController = new PreviewController(this);
     this.smartFilterController = new SmartFilterController(this);
     window.currentWorkspace = this;
     
@@ -1078,7 +1081,7 @@ export const ImageWorkspace = {
     if (btnClearAnns) btnClearAnns.onclick = () => this.clearCurrentAnns();
     const btnSubmitPreview = document.getElementById('btn-submit-preview');
     if (btnSubmitPreview) btnSubmitPreview.onclick = () => this.keepAllPreviews();
-    this.bindPreviewListEvents();
+    this.previewController.bindListEvents();
 
     // Theme Toggle
     const btnTheme = document.getElementById('btn-toggle-theme');
@@ -1225,63 +1228,15 @@ export const ImageWorkspace = {
   },
 
   selectAllPreviews() {
-    // In current implementation, "Submit" already keeps all. 
-    // This button could be used to toggle visual selection if we had selective submission.
-    // For now, let's make it a quick way to trigger keepAllPreviews.
-    this.keepAllPreviews();
+    return this.previewController.selectAll();
   },
 
   updateActionBar() {
-    const bar = document.getElementById('ws-action-bar');
-    const btn = document.getElementById('btn-submit-preview');
-    const btnAll = document.getElementById('btn-select-all-previews');
-    if (!bar || !btn) return;
-    if (this.workspaceMode === 'review') {
-      bar.style.display = 'none';
-      if (btnAll) btnAll.style.display = 'none';
-      return;
-    }
-    
-    if (this.previews.length > 0) {
-      bar.style.display = 'block';
-      if (btnAll) btnAll.style.display = 'block';
-      const className = this.selectedClass || (this.projectMeta.classes?.[0] || 'Object');
-      btn.textContent = `Submit ${this.previews.length} Previews to [${className}]`;
-    } else {
-      bar.style.display = 'none';
-      if (btnAll) btnAll.style.display = 'none';
-    }
+    this.previewController.updateActionBar();
   },
 
   async keepAllPreviews() {
-    if (this.previews.length === 0) return;
-    const className = this.selectedClass || (this.projectMeta.classes?.[0] || 'Object');
-    
-    try {
-      const existing = await api.getAnnotations(this.projectId, this.selectedImageId);
-      const newAnns = [...(existing.annotations || []), ...this.previews.map(p => ({
-        ...p,
-        id: 'ann_' + Math.random().toString(36).substr(2, 9),
-        class_name: className
-      }))];
-      
-      await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
-      
-      // Clear previews and refresh
-      this.previews = [];
-      this.currentPrompts = [];
-      this.viewer.setPrompts([]);
-      this.viewer.setPreviews([]);
-      this.renderPreviews();
-      this.updateActionBar();
-      
-      await this.loadProjectInfo(); // Refresh counts
-      this.invalidateImageBundle(this.selectedImageId);
-      await this.selectImage(this.selectedImageId, this.selectedImagePath); // Refresh annotations list
-      
-    } catch(e) {
-      alert("Failed to save: " + e.message);
-    }
+    await this.previewController.keepAll();
   },
 
   renderImageFilterControls() {
@@ -1436,76 +1391,19 @@ export const ImageWorkspace = {
   },
 
   renderPreviews() {
-    const list = document.getElementById('preview-list');
-    if (!list) return;
-    if (this.previews.length === 0) {
-      list.innerHTML = `
-        <div style="text-align: center; padding: 60px 20px; color: var(--neu-text-light);">
-           <div style="font-size: 32px; margin-bottom: 15px; opacity: 0.3;">✨</div>
-           <div style="font-size: 13px;">${i18n.t('preview_results_desc')}</div>
-        </div>
-      `;
-      return;
-    }
-
-    list.innerHTML = this.previews.map((p, idx) => `
-      <div class="neu-box" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--neu-bg); box-shadow: var(--neu-outset-sm);">
-         <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-size: 11px; font-weight: 700; color: var(--neu-text-active); text-transform: uppercase;">Preview Result #${idx+1}</span>
-            <button class="neu-button" data-preview-action="remove" data-preview-id="${escapeAttr(p.id)}" style="width: 24px; height: 24px; border-radius: 50%; padding: 0; font-size: 10px; color: #ef4444;">×</button>
-         </div>
-         <div style="font-size: 12px; color: var(--neu-text-light);">
-            Confidence: <span style="font-weight: 600; color: var(--neu-text);">${(p.score || 0.98).toFixed(3)}</span>
-         </div>
-         <div style="display: flex; gap: 8px;">
-            <button class="neu-button" data-preview-action="apply" data-preview-id="${escapeAttr(p.id)}" style="flex: 1; font-size: 11px; padding: 6px;">Apply to Image</button>
-         </div>
-      </div>
-    `).join('');
+    this.previewController.render();
   },
 
   bindPreviewListEvents() {
-    const list = document.getElementById('preview-list');
-    if (!list) return;
-    list.onclick = (e) => {
-      const target = e.target.closest('[data-preview-action]');
-      if (!target || !list.contains(target)) return;
-      const id = target.dataset.previewId;
-      if (!id) return;
-      if (target.dataset.previewAction === 'remove') {
-        this.removePreview(id);
-      } else if (target.dataset.previewAction === 'apply') {
-        this.keepSinglePreview(id);
-      }
-    };
+    this.previewController.bindListEvents();
   },
 
   removePreview(id) {
-    this.previews = this.previews.filter(p => p.id !== id);
-    this.viewer.setPreviews(this.previews);
-    this.renderPreviews();
-    this.updateActionBar();
+    this.previewController.remove(id);
   },
 
   async keepSinglePreview(id) {
-    const pre = this.previews.find(p => p.id === id);
-    if (!pre) return;
-    
-    const className = this.selectedClass || (this.projectMeta.classes?.[0] || 'Object');
-    try {
-      const existing = await api.getAnnotations(this.projectId, this.selectedImageId);
-      const newAnns = [...(existing.annotations || []), {
-        ...pre,
-        id: 'ann_' + Math.random().toString(36).substr(2, 9),
-        class_name: className
-      }];
-      
-      await api.saveAnnotations(this.projectId, this.selectedImageId, newAnns);
-      this.removePreview(id);
-      await this.loadProjectInfo();
-      this.invalidateImageBundle(this.selectedImageId);
-      await this.selectImage(this.selectedImageId, this.selectedImagePath);
-    } catch(e) { alert(e.message); }
+    await this.previewController.keepSingle(id);
   },
 
   async loadProjectInfo() {
