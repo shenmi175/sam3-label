@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -10,14 +9,13 @@ import subprocess
 import threading
 import time
 import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_video_json
@@ -26,6 +24,7 @@ from app.routers.auth import create_auth_router
 from app.routers.classes import create_classes_router
 from app.routers.config import create_config_router
 from app.routers.export import create_export_router
+from app.routers.image_files import create_image_files_router
 from app.routers.pose import create_pose_router
 from app.routers.services import create_services_router
 from app.routers.ui_state import create_ui_state_router
@@ -64,6 +63,7 @@ from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
 from app.services.integration_clients import OpsClient, SapiensClient
+from app.services.image_tiles import ImageTileService
 from app.storage import Storage
 from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
 
@@ -126,6 +126,7 @@ SMART_FILTER_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 CONFIG_LOCK = threading.Lock()
 PROJECT_DISCOVERY_LOCK = threading.Lock()
 TILE_CACHE_LOCK = threading.Lock()
+IMAGE_TILE_SERVICE = ImageTileService(get_current_data_dir=lambda: CURRENT_DATA_DIR, lock=TILE_CACHE_LOCK)
 PROJECT_DISCOVERY_LAST_SCAN = 0.0
 PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
 
@@ -207,6 +208,7 @@ app.include_router(create_ui_state_router(get_storage=_current_storage))
 app.include_router(create_export_router(get_storage=_current_storage))
 app.include_router(create_annotations_router(get_storage=_current_storage))
 app.include_router(create_classes_router(get_storage=_current_storage))
+app.include_router(create_image_files_router(get_storage=_current_storage, tile_service=IMAGE_TILE_SERVICE))
 
 
 class InferJobPaused(RuntimeError):
@@ -2156,119 +2158,6 @@ def _get_image_or_404(project: dict[str, Any], image_id: str) -> dict[str, Any]:
     if not img:
         raise HTTPException(status_code=404, detail='image not found')
     return img
-
-
-def _image_file_path_or_404(image: dict[str, Any]) -> Path:
-    abs_path_raw = str(image.get('abs_path') or '').strip()
-    if abs_path_raw:
-        path = Path(abs_path_raw).expanduser().resolve()
-        if path.exists() and path.is_file():
-            return path
-    raise HTTPException(status_code=404, detail='image file not found')
-
-
-def _image_tile_cache_dir(project_id: str, image_id: str, image_path: Path) -> Path:
-    stat = image_path.stat()
-    key_raw = f'{project_id}:{image_id}:{image_path}:{stat.st_mtime_ns}:{stat.st_size}'
-    key = hashlib.sha256(key_raw.encode('utf-8')).hexdigest()[:24]
-    return ensure_dir(CURRENT_DATA_DIR / '.tile-cache' / str(project_id) / f'{image_id}_{key}')
-
-
-def _dzi_metadata_path(tile_dir: Path) -> Path:
-    return tile_dir / 'image.dzi'
-
-
-def _read_dzi_metadata(tile_dir: Path) -> dict[str, Any] | None:
-    dzi = _dzi_metadata_path(tile_dir)
-    if not dzi.exists():
-        return None
-    try:
-        root = ET.fromstring(dzi.read_text(encoding='utf-8', errors='ignore'))
-    except ET.ParseError:
-        return None
-    size = None
-    for child in root:
-        if child.tag.split('}', 1)[-1] == 'Size':
-            size = child
-            break
-    if size is None:
-        return None
-    fmt = str(root.attrib.get('Format') or '').strip()
-    overlap = str(root.attrib.get('Overlap') or '').strip()
-    tile_size = str(root.attrib.get('TileSize') or '').strip()
-    height = str(size.attrib.get('Height') or '').strip()
-    width = str(size.attrib.get('Width') or '').strip()
-    if not fmt or not overlap or not tile_size or not height or not width:
-        return None
-    return {
-        'format': fmt,
-        'overlap': int(float(overlap)),
-        'tile_size': int(float(tile_size)),
-        'height': int(float(height)),
-        'width': int(float(width)),
-    }
-
-
-def _ensure_image_tiles(project_id: str, image_id: str, image_path: Path) -> tuple[Path, dict[str, Any]]:
-    tile_dir = _image_tile_cache_dir(project_id, image_id, image_path)
-    metadata = _read_dzi_metadata(tile_dir)
-    if metadata:
-        return tile_dir, metadata
-
-    with TILE_CACHE_LOCK:
-        metadata = _read_dzi_metadata(tile_dir)
-        if metadata:
-            return tile_dir, metadata
-        return _generate_image_tiles(tile_dir, image_path)
-
-
-def _generate_image_tiles(tile_dir: Path, image_path: Path) -> tuple[Path, dict[str, Any]]:
-    if shutil.which('vips') is None:
-        raise HTTPException(
-            status_code=503,
-            detail='tile generation requires libvips. Rebuild web-auto image after updating docker/web-auto.Dockerfile.',
-        )
-
-    tmp_dir = tile_dir.with_name(f'{tile_dir.name}.tmp_{new_id()}')
-    ensure_dir(tmp_dir)
-    output_base = tmp_dir / 'image'
-    try:
-        subprocess.run(
-            [
-                'vips',
-                'dzsave',
-                str(image_path),
-                str(output_base),
-                '--layout',
-                'dz',
-                '--tile-size',
-                '256',
-                '--overlap',
-                '1',
-                '--suffix',
-                '.jpg[Q=90]',
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=300,
-        )
-        metadata = _read_dzi_metadata(tmp_dir)
-        if not metadata:
-            raise RuntimeError('failed to read generated DZI metadata')
-        if tile_dir.exists():
-            shutil.rmtree(tile_dir)
-        os.replace(tmp_dir, tile_dir)
-        return tile_dir, metadata
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or str(exc)).strip()
-        raise HTTPException(status_code=500, detail=f'failed to generate image tiles: {detail[:500]}') from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _safe_upload_target(root: Path, filename: str) -> Path:
@@ -4688,56 +4577,6 @@ async def upload_project_images(project_id: str, files: list[UploadFile] = File(
 
     refreshed, added = storage.refresh_project_images(project_id)
     return {'project': refreshed, 'saved_files': saved, 'added_images': added}
-
-
-@app.get('/api/projects/{project_id}/images/{image_id}/file')
-def get_image_file(project_id: str, image_id: str) -> Response:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    image = _get_image_or_404(project, image_id)
-    return FileResponse(str(_image_file_path_or_404(image)))
-
-
-@app.get('/api/projects/{project_id}/images/{image_id}/tiles/info')
-def get_image_tiles_info(project_id: str, image_id: str) -> dict[str, Any]:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    image = _get_image_or_404(project, image_id)
-    image_path = _image_file_path_or_404(image)
-    tile_dir, metadata = _ensure_image_tiles(project_id, image_id, image_path)
-    return {
-        'width': metadata['width'],
-        'height': metadata['height'],
-        'tile_size': metadata['tile_size'],
-        'overlap': metadata['overlap'],
-        'format': metadata['format'],
-        'dzi_url': f'/api/projects/{project_id}/images/{image_id}/tiles/image.dzi',
-        'tiles_url': f'/api/projects/{project_id}/images/{image_id}/tiles/image_files/',
-        'cache_dir': str(tile_dir),
-    }
-
-
-@app.get('/api/projects/{project_id}/images/{image_id}/tiles/image.dzi')
-def get_image_dzi(project_id: str, image_id: str) -> Response:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    image = _get_image_or_404(project, image_id)
-    tile_dir, _metadata = _ensure_image_tiles(project_id, image_id, _image_file_path_or_404(image))
-    return FileResponse(str(_dzi_metadata_path(tile_dir)), media_type='application/xml')
-
-
-@app.get('/api/projects/{project_id}/images/{image_id}/tiles/image_files/{level}/{tile_name}')
-def get_image_tile(project_id: str, image_id: str, level: str, tile_name: str) -> Response:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    image = _get_image_or_404(project, image_id)
-    tile_dir, _metadata = _ensure_image_tiles(project_id, image_id, _image_file_path_or_404(image))
-    safe_level = Path(str(level)).name
-    safe_tile = Path(str(tile_name)).name
-    tile_path = (tile_dir / 'image_files' / safe_level / safe_tile).resolve()
-    try:
-        tile_path.relative_to(tile_dir.resolve())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail='invalid tile path') from exc
-    if not tile_path.exists() or not tile_path.is_file():
-        raise HTTPException(status_code=404, detail='tile not found')
-    return FileResponse(str(tile_path))
 
 
 @app.delete('/api/projects/{project_id}/images/{image_id}')
