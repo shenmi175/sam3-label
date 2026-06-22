@@ -200,6 +200,8 @@ app.include_router(
         sam3=sam3,
         ops_client=OPS_CLIENT,
         sapiens_client=SAPIENS_CLIENT,
+        default_sam3_api_base_url=DEFAULT_API_BASE_URL,
+        effective_sam3_api_base_url=lambda: _effective_sam3_api_base_url(),
         default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
     )
 )
@@ -4752,16 +4754,6 @@ def pause_infer_job(payload: InferJobControlIn) -> dict[str, Any]:
 @app.post('/api/infer/jobs/resume')
 def resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
     return _resume_infer_job(payload)
-
-
-@app.get('/api/sam3/status')
-def sam3_status(api_base_url: Optional[str] = Query(default=None)) -> dict[str, Any]:
-    target_url = str(api_base_url or _effective_sam3_api_base_url()).strip() or DEFAULT_API_BASE_URL
-    try:
-        result = sam3.health(target_url)
-        return {'ok': True, 'api_base_url': target_url, 'result': result}
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post('/api/filter/intelligent/preview')

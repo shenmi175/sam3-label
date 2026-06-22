@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -14,6 +14,8 @@ def create_services_router(
     sam3: Sam3Client,
     ops_client: OpsClient,
     sapiens_client: SapiensClient,
+    default_sam3_api_base_url: str,
+    effective_sam3_api_base_url: Callable[[], str],
     default_sapiens_api_base_url: str,
 ) -> APIRouter:
     router = APIRouter()
@@ -23,6 +25,15 @@ def create_services_router(
         try:
             result = sam3.health(payload.api_base_url)
             return {'ok': True, 'result': result}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.get('/api/sam3/status')
+    def sam3_status(api_base_url: str | None = Query(default=None)) -> dict[str, Any]:
+        target_url = str(api_base_url or effective_sam3_api_base_url()).strip() or default_sam3_api_base_url
+        try:
+            result = sam3.health(target_url)
+            return {'ok': True, 'api_base_url': target_url, 'result': result}
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
