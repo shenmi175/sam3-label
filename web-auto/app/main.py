@@ -55,6 +55,7 @@ from app.schemas import (
     VideoJobStartIn,
 )
 from app.services.auth_service import AuthStore
+from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
 from app.storage import Storage
 from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
 
@@ -74,77 +75,9 @@ OPS_API_TOKEN = os.getenv('WEB_AUTO_OPS_API_TOKEN', '').strip()
 DEFAULT_SAM3_MAX_BATCH_FILES = 32
 MAX_PENDING_IMAGE_IDS_IN_JOB_STATE = 200
 
-
-def _parse_positive_int_env(key: str, default: int) -> int:
-    try:
-        value = int(os.getenv(key, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(1, value)
-
-
-SAM3_MAX_BATCH_FILES = _parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
-
-
-def _parse_allowed_data_roots() -> list[Path]:
-    roots: list[Path] = []
-    raw = os.getenv('WEB_AUTO_ALLOWED_DATA_ROOTS', '').strip()
-    items = [str(HOST_DATA_ROOT)]
-    if raw:
-        items.extend(item for item in raw.split(os.pathsep) if item.strip())
-    for item in items:
-        try:
-            root = Path(item).expanduser().resolve()
-        except Exception:
-            continue
-        if root not in roots:
-            roots.append(root)
-    return roots or [HOST_DATA_ROOT]
-
-
-ALLOWED_DATA_ROOTS = _parse_allowed_data_roots()
-
-
-def _read_app_config() -> dict[str, Any]:
-    if not APP_CONFIG_FILE.exists():
-        return {}
-    try:
-        with APP_CONFIG_FILE.open('r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _write_app_config(data: dict[str, Any]) -> dict[str, Any]:
-    ensure_dir(APP_CONFIG_FILE.parent)
-    tmp = APP_CONFIG_FILE.with_suffix(APP_CONFIG_FILE.suffix + '.tmp')
-    clean = data if isinstance(data, dict) else {}
-    with tmp.open('w', encoding='utf-8') as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write('\n')
-    os.replace(tmp, APP_CONFIG_FILE)
-    return clean
-
-
-def _update_app_config(values: dict[str, Any]) -> dict[str, Any]:
-    data = _read_app_config()
-    for key, value in values.items():
-        if value is None:
-            data.pop(key, None)
-        else:
-            data[key] = value
-    return _write_app_config(data)
-
-
-def _initial_storage_dir() -> Path:
-    configured = str(_read_app_config().get('cache_dir') or '').strip()
-    if configured:
-        try:
-            return ensure_dir(Path(configured).expanduser().resolve())
-        except Exception:
-            pass
-    return DATA_DIR
+SAM3_MAX_BATCH_FILES = parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
+ALLOWED_DATA_ROOTS = parse_allowed_data_roots(HOST_DATA_ROOT)
+APP_CONFIG = AppConfigStore(APP_CONFIG_FILE)
 
 
 logger = logging.getLogger('web_auto')
@@ -156,7 +89,7 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 
-storage = Storage(_initial_storage_dir())
+storage = Storage(APP_CONFIG.initial_storage_dir(DATA_DIR))
 sam3 = Sam3Client(timeout_sec=180)
 CURRENT_DATA_DIR = Path(storage.base_dir)
 
@@ -185,7 +118,7 @@ PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
 
 AUTH_FILE = DATA_DIR / 'auth.json'
 SESSION_COOKIE_NAME = os.getenv('WEB_AUTO_SESSION_COOKIE_NAME', 'web_auto_session').strip() or 'web_auto_session'
-SESSION_TTL_SECONDS = _parse_positive_int_env('WEB_AUTO_SESSION_TTL_SECONDS', 12 * 60 * 60)
+SESSION_TTL_SECONDS = parse_positive_int_env('WEB_AUTO_SESSION_TTL_SECONDS', 12 * 60 * 60)
 AUTH_ENABLED = os.getenv('WEB_AUTO_AUTH_ENABLED', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 
 
@@ -3084,7 +3017,7 @@ def _allowed_sam3_api_base_urls() -> list[str]:
 
 
 def _effective_sam3_api_base_url() -> str:
-    configured = str(_read_app_config().get('sam3_api_base_url') or '').strip().rstrip('/')
+    configured = str(APP_CONFIG.read().get('sam3_api_base_url') or '').strip().rstrip('/')
     if configured:
         return configured
     return DEFAULT_API_BASE_URL
@@ -3202,7 +3135,7 @@ def _cache_dir_info() -> dict[str, Any]:
 
 
 def _configured_upload_target_dir() -> Path:
-    configured = str(_read_app_config().get('upload_target_dir') or '').strip()
+    configured = str(APP_CONFIG.read().get('upload_target_dir') or '').strip()
     if configured:
         try:
             return _resolve_dataset_upload_dir(configured)
@@ -5174,7 +5107,7 @@ def set_global_config(payload: GlobalConfigUpdateIn) -> dict[str, Any]:
                 changes['sam3_api_base_url'] = api_base_url
 
         if changes:
-            _update_app_config(changes)
+            APP_CONFIG.update(changes)
 
     return {'ok': True, 'config': _global_config_info()}
 
@@ -5202,7 +5135,7 @@ def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
     with CONFIG_LOCK:
         _ensure_no_active_jobs_for_config_change()
         new_dir = _set_storage_data_dir(payload.cache_dir)
-        _update_app_config({'cache_dir': str(new_dir)})
+        APP_CONFIG.update({'cache_dir': str(new_dir)})
     return {
         'ok': True,
         'cache_dir': str(new_dir),
