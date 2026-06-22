@@ -483,7 +483,7 @@ git diff --check
 - 阶段 1 已开始落地：前端 API 已按领域拆分为 `services/`，`api.js` 保留兼容外观；HTML escaping、几何工具、图片 bundle 缓存状态已抽出。
 - 阶段 2 已开始落地：标注创建、删除、类别更新、几何更新、撤销重做、自动保存和手动保存已迁移到 `AnnotationController`。
 - 阶段 3 已开始落地：图片列表组件和 `ImageNavigationController` 已承接分页、筛选、未标注导航和单图删除。
-- 阶段 4 已开始落地：类别面板、标注列表、图片列表、顶部工作台工具栏、数据看板外壳、导出面板、智能过滤面板模板已经组件化；自动标注控制和人工校对工具条已拆到独立组件。智能过滤事件绑定、payload 收集、任务轮询和结果摘要已迁移到 `SmartFilterController`，数据看板内容渲染和重建索引事件已迁移到 `DataDashboardController`，导出弹窗事件绑定和导出调用已迁移到 `ExportController`，预览结果渲染、事件绑定和保存逻辑已迁移到 `PreviewController`，单图推理、示例预览、批量任务启动/轮询/暂停恢复、批量配置和结果弹窗已迁移到 `InferenceController`。`image-workspace.js` 页面内 inline `onclick` 已清理；全局任务浮窗也已改为事件委托并对任务文本做 HTML 转义。
+- 阶段 4 已开始落地：类别面板、标注列表、图片列表、顶部工作台工具栏、数据看板外壳、导出面板、智能过滤面板模板已经组件化；自动标注控制和人工校对工具条已拆到独立组件。类别面板渲染、选择、删除和新增弹窗已迁移到 `ClassController`；智能过滤事件绑定、payload 收集、任务轮询和结果摘要已迁移到 `SmartFilterController`，数据看板内容渲染和重建索引事件已迁移到 `DataDashboardController`，导出弹窗事件绑定和导出调用已迁移到 `ExportController`，预览结果渲染、事件绑定和保存逻辑已迁移到 `PreviewController`，单图推理、示例预览、批量任务启动/轮询/暂停恢复、批量配置和结果弹窗已迁移到 `InferenceController`。`image-workspace.js` 页面内 inline `onclick` 已清理；全局任务浮窗也已改为事件委托并对任务文本做 HTML 转义。
 - 阶段 5 已开始落地：现有图片工作台已增加“自动标注/人工校对”同页模式。人工校对模式会隐藏自动推理配置，提供当前类别、连续标注、快速改类/删标注、保存下一张、下一张未标注入口，并支持数字键快速切换类别。
 
 后续优先继续阶段 4 的面板拆分，把自动推理相关 UI 和项目/pose 页面剩余 inline DOM 事件继续移出；等共享控制器稳定后再进入阶段 6 的独立路由拆分。
