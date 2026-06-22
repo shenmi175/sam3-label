@@ -14,6 +14,7 @@ import { DataDashboardController } from '../modules/image-workspace/data-dashboa
 import { ExportController } from '../modules/image-workspace/export-controller.js';
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
 import { InferenceController } from '../modules/image-workspace/inference-controller.js';
+import { KeyboardCommandManager } from '../modules/image-workspace/keyboard-command-manager.js';
 import { PreviewController } from '../modules/image-workspace/preview-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
 import {
@@ -46,6 +47,7 @@ export const ImageWorkspace = {
   exportController: null,
   imageNavigationController: null,
   inferenceController: null,
+  keyboardCommandManager: null,
   previewController: null,
   smartFilterController: null,
   isUnmounted: false,
@@ -130,6 +132,7 @@ export const ImageWorkspace = {
     this.exportController = new ExportController(this);
     this.imageNavigationController = new ImageNavigationController(this);
     this.inferenceController = new InferenceController(this);
+    this.keyboardCommandManager = new KeyboardCommandManager(this);
     this.previewController = new PreviewController(this);
     this.smartFilterController = new SmartFilterController(this);
     window.currentWorkspace = this;
@@ -534,10 +537,7 @@ export const ImageWorkspace = {
       this.uiStateSaveTimer = null;
     }
     if (this.annotationController) this.annotationController.clearSaveTimer();
-    if (this._keyHandler) {
-      document.removeEventListener('keydown', this._keyHandler);
-      this._keyHandler = null;
-    }
+    if (this.keyboardCommandManager) this.keyboardCommandManager.detach();
     this.container = null;
     window.currentWorkspace = null;
   },
@@ -1101,74 +1101,7 @@ export const ImageWorkspace = {
       if (icon) icon.innerText = next === 'dark' ? '☀️' : '🌓';
     };
 
-    // Keyboard navigation: ArrowUp/Left = prev image, ArrowDown/Right = next image
-    let lastNavAt = 0;
-    this._keyHandler = (e) => {
-      const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      const now = performance.now();
-      if (now - lastNavAt < 45) return;
-      const key = String(e.key || '').toLowerCase();
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'v') {
-        e.preventDefault();
-        this.setPromptMode('pointer');
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'b') {
-        e.preventDefault();
-        this.setPromptMode('manual-box');
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'p') {
-        e.preventDefault();
-        this.setPromptMode('manual-polygon');
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 's') {
-        e.preventDefault();
-        this.setPromptMode('box');
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && key === 'f') {
-        e.preventDefault();
-        if (this.viewer) this.viewer.fitToScreen();
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(key)) {
-        e.preventDefault();
-        this.selectClassByIndex(Number(key) - 1);
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Escape') {
-        if (this.promptMode !== 'pointer') {
-          e.preventDefault();
-          this.setPromptMode('pointer');
-        } else if (this.focusedAnnotationId) {
-          e.preventDefault();
-          this.clearAnnotationFocus();
-        }
-      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-        e.preventDefault();
-        lastNavAt = now;
-        this.navigateImage(-1);
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        lastNavAt = now;
-        this.navigateImage(1);
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        this.saveCurrentAnns();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        this.undoAnnotationChange();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-        e.preventDefault();
-        this.redoAnnotationChange();
-      } else if (e.key === 'Delete') {
-        const activeImageItem = document.activeElement?.closest?.('.image-item');
-        if (this.focusedAnnotationId) {
-          e.preventDefault();
-          this.deleteAnnotation(this.focusedAnnotationId);
-        } else if (activeImageItem?.dataset?.id) {
-          e.preventDefault();
-          this.deleteProjectImage(activeImageItem.dataset.id, activeImageItem.dataset.rel);
-        }
-      } else if (e.key === 'Backspace') {
-        if (this.focusedAnnotationId) {
-          e.preventDefault();
-          this.deleteAnnotation(this.focusedAnnotationId);
-        }
-      }
-    };
-    document.addEventListener('keydown', this._keyHandler);
+    this.keyboardCommandManager.bind();
   },
 
   navigateImage(delta) {
