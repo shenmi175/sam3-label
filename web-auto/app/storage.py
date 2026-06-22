@@ -40,7 +40,6 @@ class Storage:
         self.projects_file = self.base_dir / 'projects.json'
         self.projects_root = ensure_dir(self.base_dir / 'projects')
         self.ui_state_global_file = self.base_dir / 'ui_state_global.json'
-        self._video_state_lock = threading.RLock()
         self._db_lock = threading.RLock()
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
@@ -2918,36 +2917,6 @@ class Storage:
         for image_id in self._iter_project_image_ids_db(project_id):
             out[image_id] = self.load_annotations(project_id, image_id)
         return out
-
-    def video_job_state_path(self, project_id: str) -> Path:
-        project = self.get_project(project_id, include_images=False)
-        if not project:
-            raise ValueError('project not found')
-        if project.get('project_type') != 'video':
-            raise ValueError('project is not video type')
-        return Path(project['workspace_dir']) / 'video_job_state.json'
-
-    def get_video_job_state(self, project_id: str) -> dict[str, Any]:
-        with self._video_state_lock:
-            try:
-                path = self.video_job_state_path(project_id)
-            except ValueError:
-                return {}
-            data = read_json(path, {})
-            return data if isinstance(data, dict) else {}
-
-    def set_video_job_state(self, project_id: str, state: dict[str, Any]) -> None:
-        with self._video_state_lock:
-            path = self.video_job_state_path(project_id)
-            payload = state if isinstance(state, dict) else {}
-            atomic_write_json(path, payload)
-
-    def video_annotation_json_path(self, project_id: str) -> Path:
-        project = self.get_project(project_id, include_images=False)
-        if not project:
-            raise ValueError('project not found')
-        video_name = str(project.get('video_name') or 'video')
-        return Path(project['project_save_dir']) / f'{video_name}_annotations.json'
 
     def get_ui_state(self, project_id: str | None = None) -> dict[str, Any]:
         if project_id:

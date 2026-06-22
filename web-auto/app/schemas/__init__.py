@@ -14,7 +14,6 @@ from app.schemas.inference import (
 )
 from app.schemas.pose import PoseInferIn
 from app.schemas.projects import ImportExistingProjectIn, ImportImagesIn, OpenProjectIn, UpdateClassesIn
-from app.schemas.video import VideoAnnotationsSaveIn, VideoJobControlIn, VideoJobResumeIn, VideoJobStartIn
 
 __all__ = [
     'AppendAnnIn',
@@ -39,8 +38,4 @@ __all__ = [
     'SmartFilterIn',
     'UIStateIn',
     'UpdateClassesIn',
-    'VideoAnnotationsSaveIn',
-    'VideoJobControlIn',
-    'VideoJobResumeIn',
-    'VideoJobStartIn',
 ]
