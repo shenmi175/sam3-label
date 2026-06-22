@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import mimetypes
 import os
 import shutil
 import subprocess
@@ -16,7 +15,6 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -66,6 +64,7 @@ from app.services.annotation_geometry import (
 from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
+from app.services.integration_clients import OpsClient, SapiensClient, service_management_unavailable
 from app.storage import Storage
 from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
 
@@ -101,6 +100,8 @@ if not logger.handlers:
 
 storage = Storage(APP_CONFIG.initial_storage_dir(DATA_DIR))
 sam3 = Sam3Client(timeout_sec=180)
+OPS_CLIENT = OpsClient(OPS_API_BASE_URL, OPS_API_TOKEN)
+SAPIENS_CLIENT = SapiensClient(DEFAULT_SAPIENS_API_BASE_URL, SAPIENS_API_TOKEN)
 CURRENT_DATA_DIR = Path(storage.base_dir)
 
 
@@ -2605,110 +2606,6 @@ def _effective_sam3_api_base_url() -> str:
     if configured:
         return configured
     return DEFAULT_API_BASE_URL
-
-
-def _ops_headers() -> dict[str, str]:
-    headers = {'Accept': 'application/json'}
-    if OPS_API_TOKEN:
-        headers['Authorization'] = f'Bearer {OPS_API_TOKEN}'
-    return headers
-
-
-def _ops_request(method: str, path: str, payload: Optional[dict[str, Any]] = None, timeout: float = 10.0) -> dict[str, Any]:
-    if not OPS_API_BASE_URL:
-        raise RuntimeError('ops-api is not configured')
-    url = OPS_API_BASE_URL + '/' + path.lstrip('/')
-    try:
-        response = requests.request(
-            method.upper(),
-            url,
-            json=payload,
-            headers=_ops_headers(),
-            timeout=timeout,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(f'ops-api request failed: {exc}') from exc
-    try:
-        data = response.json() if response.text else {}
-    except Exception:
-        data = {'raw': response.text[:400]}
-    if not response.ok:
-        detail = data.get('detail') if isinstance(data, dict) else None
-        raise RuntimeError(f'ops-api HTTP {response.status_code}: {detail or data}')
-    return data if isinstance(data, dict) else {}
-
-
-def _sapiens_headers() -> dict[str, str]:
-    headers = {'Accept': 'application/json'}
-    if SAPIENS_API_TOKEN:
-        headers['Authorization'] = f'Bearer {SAPIENS_API_TOKEN}'
-    return headers
-
-
-def _sapiens_request(method: str, path: str, payload: Optional[dict[str, Any]] = None, timeout: float = 10.0) -> dict[str, Any]:
-    base_url = DEFAULT_SAPIENS_API_BASE_URL.rstrip('/')
-    url = base_url + '/' + path.lstrip('/')
-    try:
-        response = requests.request(
-            method.upper(),
-            url,
-            json=payload,
-            headers=_sapiens_headers(),
-            timeout=timeout,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(f'sapiens-api request failed: {exc}') from exc
-    try:
-        data = response.json() if response.text else {}
-    except Exception:
-        data = {'raw': response.text[:400]}
-    if not response.ok:
-        detail = data.get('detail') if isinstance(data, dict) else None
-        raise RuntimeError(f'sapiens-api HTTP {response.status_code}: {detail or data}')
-    return data if isinstance(data, dict) else {}
-
-
-def _sapiens_file_request(
-    path: str,
-    *,
-    file_path: Path,
-    fields: Optional[dict[str, Any]] = None,
-    timeout: float = 300.0,
-) -> dict[str, Any]:
-    base_url = DEFAULT_SAPIENS_API_BASE_URL.rstrip('/')
-    url = base_url + '/' + path.lstrip('/')
-    try:
-        with file_path.open('rb') as f:
-            response = requests.post(
-                url,
-                files={'file': (file_path.name, f, mimetypes.guess_type(str(file_path))[0] or 'application/octet-stream')},
-                data={key: str(value) for key, value in (fields or {}).items()},
-                headers=_sapiens_headers(),
-                timeout=timeout,
-            )
-    except requests.RequestException as exc:
-        raise RuntimeError(f'sapiens-api request failed: {exc}') from exc
-    try:
-        data = response.json() if response.text else {}
-    except Exception:
-        data = {'raw': response.text[:400]}
-    if not response.ok:
-        detail = data.get('detail') if isinstance(data, dict) else None
-        raise RuntimeError(f'sapiens-api HTTP {response.status_code}: {detail or data}')
-    return data if isinstance(data, dict) else {}
-
-
-def _service_management_unavailable(error: str) -> dict[str, Any]:
-    return {
-        'ok': False,
-        'ops_available': False,
-        'error': error,
-        'services': [
-            {'service': 'sam3-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart sam3-api'},
-            {'service': 'sapiens-api', 'status': 'unknown', 'manage_command': './deploy.sh sapiens enable'},
-            {'service': 'caddy', 'status': 'unknown', 'manage_command': './deploy.sh install --proxy'},
-        ],
-    }
 
 
 def _cache_dir_info() -> dict[str, Any]:
@@ -5272,12 +5169,12 @@ def sam3_health(payload: HealthApiIn) -> dict[str, Any]:
 @app.get('/api/services/status')
 def services_status() -> dict[str, Any]:
     try:
-        result = _ops_request('GET', '/v1/services', timeout=8.0)
+        result = OPS_CLIENT.request('GET', '/v1/services', timeout=8.0)
         result['ok'] = True
         result['ops_available'] = True
         return result
     except Exception as exc:  # noqa: BLE001
-        return _service_management_unavailable(str(exc))
+        return service_management_unavailable(str(exc))
 
 
 @app.post('/api/services/{service}/{action}')
@@ -5291,7 +5188,7 @@ def control_service(service: str, action: str) -> dict[str, Any]:
     if clean_action not in {'start', 'stop', 'restart'}:
         raise HTTPException(status_code=400, detail='action must be start, stop, or restart')
     try:
-        return _ops_request('POST', f'/v1/services/{clean_service}/{clean_action}', timeout=35.0)
+        return OPS_CLIENT.request('POST', f'/v1/services/{clean_service}/{clean_action}', timeout=35.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5302,7 +5199,7 @@ def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) ->
     if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
         raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
     try:
-        return _ops_request('GET', f'/v1/services/{clean_service}/logs?tail={tail}', timeout=12.0)
+        return OPS_CLIENT.request('GET', f'/v1/services/{clean_service}/logs?tail={tail}', timeout=12.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5310,8 +5207,8 @@ def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) ->
 @app.get('/api/sapiens/status')
 def sapiens_status() -> dict[str, Any]:
     try:
-        health_data = _sapiens_request('GET', '/health', timeout=8.0)
-        pose_data = _sapiens_request('GET', '/v1/pose/status', timeout=8.0)
+        health_data = SAPIENS_CLIENT.request('GET', '/health', timeout=8.0)
+        pose_data = SAPIENS_CLIENT.request('GET', '/v1/pose/status', timeout=8.0)
         return {
             'ok': True,
             'health': health_data,
@@ -5326,7 +5223,7 @@ def sapiens_status() -> dict[str, Any]:
 @app.post('/api/sapiens/checkpoint/download')
 def sapiens_checkpoint_download() -> dict[str, Any]:
     try:
-        return _sapiens_request('POST', '/v1/pose/checkpoints/download', {}, timeout=12.0)
+        return SAPIENS_CLIENT.request('POST', '/v1/pose/checkpoints/download', {}, timeout=12.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5334,7 +5231,7 @@ def sapiens_checkpoint_download() -> dict[str, Any]:
 @app.get('/api/sapiens/checkpoint/download/{job_id}')
 def sapiens_checkpoint_download_status(job_id: str) -> dict[str, Any]:
     try:
-        return _sapiens_request('GET', f'/v1/pose/checkpoints/download/{job_id}', timeout=8.0)
+        return SAPIENS_CLIENT.request('GET', f'/v1/pose/checkpoints/download/{job_id}', timeout=8.0)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -5370,7 +5267,7 @@ def infer_pose(payload: PoseInferIn) -> dict[str, Any]:
     if not image_path.exists() or not image_path.is_file():
         raise HTTPException(status_code=404, detail=f'image file not found: {image_path}')
     try:
-        result = _sapiens_file_request(
+        result = SAPIENS_CLIENT.file_request(
             '/v1/pose/infer',
             file_path=image_path,
             fields={
