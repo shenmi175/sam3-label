@@ -5,6 +5,7 @@ import {
   updateAnnotationListFocus,
 } from '../components/annotation-list.js';
 import { bindClassPanelEvents, renderClassPanel } from '../components/class-panel.js';
+import { renderDataDashboardPanel } from '../components/data-dashboard-panel.js';
 import { renderExportPanel } from '../components/export-panel.js';
 import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
@@ -2436,13 +2437,12 @@ export const ImageWorkspace = {
     const modal = document.getElementById('modal-dashboard-full');
     if (!modal) return;
     modal.style.display = 'flex';
-    modal.innerHTML = `
-      <div class="neu-card" style="width: 920px; max-width: calc(100vw - 40px); padding: 28px; position: relative; max-height: 90vh; overflow-y: auto;">
-        <button class="neu-button" style="position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 18px; color: #ef4444;" onclick="document.getElementById('modal-dashboard-full').style.display='none'">&times;</button>
-        <h2 style="margin: 0 0 8px 0;">${i18n.t('data_dashboard')}</h2>
-        <div id="dashboard-body" style="font-size: 12px; color: var(--neu-text-light); padding: 30px 0;">${i18n.t('loading_images')}</div>
-      </div>
-    `;
+    modal.innerHTML = renderDataDashboardPanel();
+    const closeDashboardBtn = document.getElementById('btn-close-dashboard-modal');
+    if (closeDashboardBtn) closeDashboardBtn.onclick = () => {
+      modal.style.display = 'none';
+      modal.innerHTML = '';
+    };
     const body = document.getElementById('dashboard-body');
     const fmt = (value) => Number(value || 0).toLocaleString();
     const pct = (part, total) => total > 0 ? `${((Number(part || 0) / Number(total || 1)) * 100).toFixed(1)}%` : '0.0%';
