@@ -87,11 +87,13 @@ export const ImageWorkspace = {
   annotationHistory: null,
   annotationRedoStack: null,
   workspaceMode: 'auto',
+  routeWorkspaceMode: 'auto',
   reviewContinuousMode: true,
   
   async render(container, params) {
     this.container = container;
     this.projectId = params.id;
+    this.routeWorkspaceMode = params.workspaceMode === 'review' ? 'review' : 'auto';
     this.isUnmounted = false;
     this.projectMeta = null;
     this.images = [];
@@ -386,6 +388,7 @@ export const ImageWorkspace = {
     
     await this.loadProjectInfo();
     await this.restoreProjectUIState();
+    this.workspaceMode = this.routeWorkspaceMode;
     this.syncWorkspaceModeUI();
     this.renderImageFilterControls();
     this.applyLayoutState();
@@ -452,8 +455,25 @@ export const ImageWorkspace = {
     return this.imageNavigationController.hasFilter();
   },
 
-  setWorkspaceMode(mode) {
-    this.reviewController.setWorkspaceMode(mode);
+  async setWorkspaceMode(mode) {
+    const nextMode = mode === 'review' ? 'review' : 'auto';
+    if (this.projectId && this.routeWorkspaceMode !== nextMode) {
+      await this.navigateWorkspaceRoute(nextMode);
+      return;
+    }
+    this.reviewController.setWorkspaceMode(nextMode);
+  },
+
+  async navigateWorkspaceRoute(mode) {
+    const nextMode = mode === 'review' ? 'review' : 'auto';
+    if (this.annotationDirty) {
+      await this.flushAnnotationAutosave('workspace-mode-route-switch');
+      if (this.annotationDirty) {
+        showToast('当前图片标注尚未保存，保存成功后再切换工作台', 'error');
+        return;
+      }
+    }
+    window.location.hash = `/project/image/${encodeURIComponent(this.projectId)}/${nextMode}`;
   },
 
   setModeElementVisibility(selector, visible) {

@@ -1,6 +1,7 @@
 import { ProjectsPage } from './pages/projects.js';
 import { SettingsPage } from './pages/settings.js';
-import { ImageWorkspace } from './pages/image-workspace.js';
+import { ImageAutoWorkspace } from './pages/image-auto-workspace.js';
+import { ImageReviewWorkspace } from './pages/image-review-workspace.js';
 import { PoseWorkspace } from './pages/pose-workspace.js';
 import { router } from './router.js';
 import { TaskManager } from './components/tasks.js';
@@ -33,7 +34,9 @@ export async function bootstrap() {
 
   router.addRoute('/', ProjectsPage);
   router.addRoute('/settings', SettingsPage);
-  router.addRoute('/project/image/:id', ImageWorkspace);
+  router.addRoute('/project/image/:id', ImageAutoWorkspace);
+  router.addRoute('/project/image/:id/auto', ImageAutoWorkspace);
+  router.addRoute('/project/image/:id/review', ImageReviewWorkspace);
   router.addRoute('/project/pose/:id', PoseWorkspace);
   router.init();
   TaskManager.init();
