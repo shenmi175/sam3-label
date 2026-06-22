@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_coco, export_video_json, export_yolo
 from app.routers.auth import create_auth_router
+from app.routers.pose import create_pose_router
 from app.routers.services import create_services_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
@@ -38,7 +39,6 @@ from app.schemas import (
     InferJobControlIn,
     InferJobResumeIn,
     OpenProjectIn,
-    PoseInferIn,
     SaveAnnIn,
     SmartFilterIn,
     UIStateIn,
@@ -199,6 +199,7 @@ app.include_router(
         default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
     )
 )
+app.include_router(create_pose_router(storage=storage, sapiens_client=SAPIENS_CLIENT))
 
 
 class InferJobPaused(RuntimeError):
@@ -5163,64 +5164,6 @@ def pause_infer_job(payload: InferJobControlIn) -> dict[str, Any]:
 @app.post('/api/infer/jobs/resume')
 def resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
     return _resume_infer_job(payload)
-
-
-def _pose_annotations_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
-    links = result.get('skeleton_links') if isinstance(result.get('skeleton_links'), list) else []
-    annotations: list[dict[str, Any]] = []
-    instances = result.get('instances', []) if isinstance(result.get('instances'), list) else []
-    for raw in instances:
-        if not isinstance(raw, dict):
-            continue
-        item = dict(raw)
-        item['id'] = new_id('pose_')
-        item['type'] = 'pose'
-        item['label'] = str(item.get('label') or item.get('class_name') or 'person_pose')
-        item['class_name'] = str(item.get('class_name') or item.get('label') or 'person_pose')
-        if links and not isinstance(item.get('skeleton_links'), list):
-            item['skeleton_links'] = links
-        annotations.append(item)
-    return annotations
-
-
-@app.post('/api/pose/infer')
-def infer_pose(payload: PoseInferIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    if str(project.get('project_type') or 'image').strip().lower() != 'pose':
-        raise HTTPException(status_code=400, detail='only pose project is supported')
-    image = _get_image_or_404(project, payload.image_id)
-    abs_path_raw = str(image.get('abs_path') or '').strip()
-    if not abs_path_raw:
-        raise HTTPException(status_code=404, detail='image file not found')
-    image_path = Path(abs_path_raw).expanduser().resolve()
-    if not image_path.exists() or not image_path.is_file():
-        raise HTTPException(status_code=404, detail=f'image file not found: {image_path}')
-    try:
-        result = SAPIENS_CLIENT.file_request(
-            '/v1/pose/infer',
-            file_path=image_path,
-            fields={
-                'bbox_threshold': max(0.0, min(1.0, float(payload.bbox_threshold))),
-                'nms_threshold': max(0.0, min(1.0, float(payload.nms_threshold))),
-                'keypoint_threshold': max(0.0, min(1.0, float(payload.keypoint_threshold))),
-            },
-            timeout=600.0,
-        )
-        annotations = _pose_annotations_from_result(result)
-        storage.save_annotations(payload.project_id, payload.image_id, annotations)
-        saved = storage.load_annotations(payload.project_id, payload.image_id)
-        return {
-            'project_id': payload.project_id,
-            'image_id': payload.image_id,
-            'num_instances': len(saved),
-            'annotations': saved,
-            'saved_annotations': saved,
-            'raw': result,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get('/api/sam3/status')
