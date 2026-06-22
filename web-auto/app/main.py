@@ -20,15 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.exports import export_coco, export_video_json, export_yolo
+from app.exports import export_video_json
 from app.routers.auth import create_auth_router
+from app.routers.export import create_export_router
 from app.routers.pose import create_pose_router
 from app.routers.services import create_services_router
+from app.routers.ui_state import create_ui_state_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     AppendAnnIn,
     CacheDirUpdateIn,
-    ExportIn,
     GlobalConfigUpdateIn,
     ImportExistingProjectIn,
     ImportImagesIn,
@@ -41,7 +42,6 @@ from app.schemas import (
     OpenProjectIn,
     SaveAnnIn,
     SmartFilterIn,
-    UIStateIn,
     UpdateClassesIn,
     VideoAnnotationsSaveIn,
     VideoJobControlIn,
@@ -200,6 +200,8 @@ app.include_router(
     )
 )
 app.include_router(create_pose_router(storage=storage, sapiens_client=SAPIENS_CLIENT))
+app.include_router(create_ui_state_router(storage=storage))
+app.include_router(create_export_router(storage=storage))
 
 
 class InferJobPaused(RuntimeError):
@@ -2362,14 +2364,6 @@ def _safe_dataset_relative_path(relative_path: str, filename: str) -> Path:
             raise HTTPException(status_code=400, detail='invalid relative_path')
         parts.append(part)
     return Path(*parts)
-
-
-def _resolve_output_dir(project: dict[str, Any], output_dir: Optional[str]) -> Path:
-    if output_dir and str(output_dir).strip():
-        return ensure_dir(Path(str(output_dir)).expanduser().resolve())
-    if project.get('project_type') == 'video':
-        return ensure_dir(Path(project.get('project_save_dir') or project.get('save_dir')).expanduser().resolve())
-    return ensure_dir(Path(project.get('image_dir') or project.get('project_save_dir')).expanduser().resolve())
 
 
 def _resolve_project_video_file(project: dict[str, Any]) -> Path:
@@ -5379,69 +5373,6 @@ def rollback_smart_filter_run(run_id: str, project_id: str = Query(..., min_leng
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {'result': result}
-
-
-@app.get('/api/ui_state')
-def get_ui_state(project_id: Optional[str] = Query(default=None)) -> dict[str, Any]:
-    return {'state': storage.get_ui_state(project_id)}
-
-
-@app.post('/api/ui_state')
-def set_ui_state(payload: UIStateIn) -> dict[str, Any]:
-    storage.set_ui_state(state=payload.state, project_id=payload.project_id)
-    return {'ok': True}
-
-
-@app.post('/api/export')
-def export_project(payload: ExportIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id)
-    if project.get('project_type') == 'video':
-        _raise_video_annotation_removed()
-
-    images = project.get('images', [])
-    all_annotations = storage.all_annotations(payload.project_id)
-
-    include_bbox = bool(payload.include_bbox)
-    include_mask = bool(payload.include_mask)
-    if not include_bbox and not include_mask:
-        raise HTTPException(status_code=400, detail='at least one of include_bbox/include_mask must be true')
-    if payload.format == 'yolo' and include_bbox and include_mask:
-        raise HTTPException(status_code=400, detail='YOLO cannot export bbox and mask together')
-
-    out_dir = _resolve_output_dir(project, payload.output_dir)
-    fmt = str(payload.format).lower()
-
-    if fmt == 'json':
-        out = export_coco(
-            project=project,
-            images=images,
-            all_annotations=all_annotations,
-            output_dir=out_dir,
-            include_bbox=include_bbox,
-            include_mask=include_mask,
-        )
-    elif fmt == 'coco':
-        out = export_coco(
-            project=project,
-            images=images,
-            all_annotations=all_annotations,
-            output_dir=out_dir,
-            include_bbox=include_bbox,
-            include_mask=include_mask,
-        )
-    elif fmt == 'yolo':
-        mode = 'seg' if include_mask else 'det'
-        out = export_yolo(
-            project=project,
-            images=images,
-            all_annotations=all_annotations,
-            output_dir=out_dir,
-            mode=mode,
-        )
-    else:
-        raise HTTPException(status_code=400, detail='unsupported export format')
-
-    return {'ok': True, 'output': str(out)}
 
 
 def create_app() -> FastAPI:
