@@ -9,6 +9,7 @@ from typing import Any
 
 from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
+from app.repositories.ui_state import UIStateRepository
 
 try:
     import sqlite3
@@ -51,6 +52,10 @@ class Storage:
             db_connect=self._db_connect,
             db_lock=self._db_lock,
             save_annotations=self.save_annotations,
+        )
+        self._ui_state = UIStateRepository(
+            global_state_file=self.ui_state_global_file,
+            get_project=lambda project_id: self.get_project(project_id, include_images=False),
         )
 
     def _load_projects(self) -> list[dict[str, Any]]:
@@ -2727,23 +2732,7 @@ class Storage:
         return out
 
     def get_ui_state(self, project_id: str | None = None) -> dict[str, Any]:
-        if project_id:
-            project = self.get_project(project_id, include_images=False)
-            if not project:
-                return {}
-            path = Path(project['workspace_dir']) / 'ui_state.json'
-            data = read_json(path, {})
-            return data if isinstance(data, dict) else {}
-        data = read_json(self.ui_state_global_file, {})
-        return data if isinstance(data, dict) else {}
+        return self._ui_state.get(project_id)
 
     def set_ui_state(self, *, state: dict[str, Any], project_id: str | None = None) -> None:
-        payload = state if isinstance(state, dict) else {}
-        if project_id:
-            project = self.get_project(project_id, include_images=False)
-            if not project:
-                return
-            path = Path(project['workspace_dir']) / 'ui_state.json'
-            atomic_write_json(path, payload)
-            return
-        atomic_write_json(self.ui_state_global_file, payload)
+        self._ui_state.set(state=state, project_id=project_id)
