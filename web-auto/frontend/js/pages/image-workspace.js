@@ -16,6 +16,7 @@ import { GpuStatusController } from '../modules/image-workspace/gpu-status-contr
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
 import { InferenceController } from '../modules/image-workspace/inference-controller.js';
 import { KeyboardCommandManager } from '../modules/image-workspace/keyboard-command-manager.js';
+import { LayoutController } from '../modules/image-workspace/layout-controller.js';
 import { PreviewController } from '../modules/image-workspace/preview-controller.js';
 import { ReviewController } from '../modules/image-workspace/review-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
@@ -51,6 +52,7 @@ export const ImageWorkspace = {
   imageNavigationController: null,
   inferenceController: null,
   keyboardCommandManager: null,
+  layoutController: null,
   previewController: null,
   reviewController: null,
   smartFilterController: null,
@@ -134,6 +136,7 @@ export const ImageWorkspace = {
     this.imageNavigationController = new ImageNavigationController(this);
     this.inferenceController = new InferenceController(this);
     this.keyboardCommandManager = new KeyboardCommandManager(this);
+    this.layoutController = new LayoutController(this);
     this.previewController = new PreviewController(this);
     this.reviewController = new ReviewController(this);
     this.smartFilterController = new SmartFilterController(this);
@@ -390,133 +393,11 @@ export const ImageWorkspace = {
   },
 
   initializeLayoutControls() {
-    const canvasContainer = document.getElementById('canvas-container');
-    const centerPanel = document.getElementById('center-panel');
-    const fitBtn = document.getElementById('btn-tool-fit');
-    const leftPanel = document.getElementById('left-panel');
-    const rightPanel = document.getElementById('right-panel');
-
-    const ensureSideToggle = (id, text, styleText) => {
-      if (!canvasContainer || document.getElementById(id)) return;
-      const btn = document.createElement('button');
-      btn.id = id;
-      btn.className = 'neu-button';
-      btn.style.cssText = styleText;
-      btn.textContent = text;
-      canvasContainer.appendChild(btn);
-    };
-    ensureSideToggle(
-      'btn-toggle-left-panel',
-      '⟨',
-      'position: absolute; top: 50%; left: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 17px; font-size: 16px; border: 1px solid rgba(0,0,0,0.05);'
-    );
-    ensureSideToggle(
-      'btn-toggle-right-panel',
-      '⟩',
-      'position: absolute; top: 50%; right: 14px; transform: translateY(-50%); width: 34px; height: 64px; z-index: 95; border-radius: 17px; font-size: 16px; border: 1px solid rgba(0,0,0,0.05);'
-    );
-
-    if (leftPanel) {
-      leftPanel.style.minWidth = '320px';
-    }
-    if (rightPanel) {
-      rightPanel.style.minWidth = '320px';
-    }
-
-    const pointerBtn = document.getElementById('btn-tool-pointer');
-    if (pointerBtn) pointerBtn.textContent = 'P';
-    if (fitBtn) fitBtn.textContent = 'F';
-
-    const leftToggle = document.getElementById('btn-toggle-left-panel');
-    const rightToggle = document.getElementById('btn-toggle-right-panel');
-    if (centerPanel && leftToggle && leftToggle.parentElement !== centerPanel) centerPanel.appendChild(leftToggle);
-    if (centerPanel && rightToggle && rightToggle.parentElement !== centerPanel) centerPanel.appendChild(rightToggle);
-    if (leftToggle) leftToggle.textContent = '<';
-    if (rightToggle) rightToggle.textContent = '>';
-
-    const classesSection = rightPanel?.children?.[0] || null;
-    if (classesSection && !document.getElementById('classes-section-body')) {
-      classesSection.id = 'classes-section';
-      const title = classesSection.querySelector('h3');
-      const classesList = document.getElementById('classes-list');
-      const addClassBtn = document.getElementById('btn-add-class-ws');
-      if (title && classesList && addClassBtn) {
-        const header = document.createElement('div');
-        header.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px;';
-        title.parentNode.insertBefore(header, title);
-        header.appendChild(title);
-
-        const toggleBtn = document.createElement('button');
-        toggleBtn.id = 'btn-toggle-classes-section';
-        toggleBtn.className = 'neu-button';
-        toggleBtn.style.cssText = 'width: 30px; height: 30px; padding: 0; font-size: 14px;';
-        toggleBtn.textContent = '−';
-        header.appendChild(toggleBtn);
-
-        const body = document.createElement('div');
-        body.id = 'classes-section-body';
-        body.style.cssText = 'display: flex; flex-direction: column; gap: 8px; min-height: 0;';
-        classesSection.appendChild(body);
-        body.appendChild(classesList);
-        body.appendChild(addClassBtn);
-      }
-    }
-
-    const classesToggleBtn = document.getElementById('btn-toggle-classes-section');
-    if (classesToggleBtn) classesToggleBtn.textContent = '-';
-
-    const previewList = document.getElementById('preview-list');
-    const previewCard = previewList?.closest('.neu-box') || null;
-    if (previewCard && !document.getElementById('btn-collapse-preview')) {
-      previewCard.style.flexShrink = '0';
-      const headerRow = previewCard.firstElementChild;
-      if (headerRow) {
-        const toggleBtn = document.createElement('button');
-        toggleBtn.id = 'btn-collapse-preview';
-        toggleBtn.className = 'neu-button';
-        toggleBtn.style.cssText = 'width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px; flex-shrink: 0;';
-        toggleBtn.textContent = '-';
-        headerRow.appendChild(toggleBtn);
-      }
-      const previewBody = document.createElement('div');
-      previewBody.id = 'preview-section-body';
-      previewBody.style.cssText = 'display: flex; flex-direction: column; min-height: 0;';
-      previewCard.appendChild(previewBody);
-      previewBody.appendChild(previewList);
-    }
-
-    // Note: annotations section collapse is handled by btn-collapse-anns already in the HTML template
-    // and bound in bindEvents(). No dynamic injection needed here.
+    this.layoutController.initialize();
   },
 
   applyLayoutState() {
-    const leftPanel = document.getElementById('left-panel');
-    const rightPanel = document.getElementById('right-panel');
-    const leftBtn = document.getElementById('btn-toggle-left-panel');
-    const rightBtn = document.getElementById('btn-toggle-right-panel');
-    if (leftPanel) leftPanel.style.display = this.leftPanelHidden ? 'none' : 'flex';
-    if (rightPanel) rightPanel.style.display = this.rightPanelHidden ? 'none' : 'flex';
-    if (leftBtn) leftBtn.textContent = this.leftPanelHidden ? '>' : '<';
-    if (rightBtn) rightBtn.textContent = this.rightPanelHidden ? '<' : '>';
-
-    const classesBody = document.getElementById('classes-section-body');
-    const classesBtn = document.getElementById('btn-toggle-classes-section');
-    if (classesBody) classesBody.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
-    if (classesBtn) classesBtn.textContent = this.classesSectionCollapsed ? '+' : '-';
-
-    const annWrapper = document.getElementById('annotation-list-wrapper');
-    const annBtn = document.getElementById('btn-collapse-anns');
-    if (annWrapper) annWrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
-    if (annBtn) annBtn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
-
-    const previewWrapper = document.getElementById('preview-section-body');
-    const previewBtn = document.getElementById('btn-collapse-preview');
-    if (previewWrapper) previewWrapper.style.display = this.previewSectionCollapsed ? 'none' : 'flex';
-    if (previewBtn) previewBtn.textContent = this.previewSectionCollapsed ? '+' : '-';
-
-    requestAnimationFrame(() => {
-      if (this.viewer) this.viewer.onResize();
-    });
+    this.layoutController.applyState();
   },
 
   unmount() {
@@ -993,52 +874,11 @@ export const ImageWorkspace = {
   },
 
   toggleSidePanel(side) {
-    const panelId = side === 'left' ? 'left-panel' : 'right-panel';
-    const btnId = side === 'left' ? 'btn-toggle-left-panel' : 'btn-toggle-right-panel';
-    const panel = document.getElementById(panelId);
-    const btn = document.getElementById(btnId);
-    if (!panel) return;
-    const hidden = panel.style.display === 'none';
-    panel.style.display = hidden ? 'flex' : 'none';
-    if (side === 'left') this.leftPanelHidden = !hidden;
-    else this.rightPanelHidden = !hidden;
-    if (btn) btn.textContent = side === 'left'
-      ? (hidden ? '<' : '>')
-      : (hidden ? '>' : '<');
-    this.scheduleProjectUIStateSave();
-    requestAnimationFrame(() => {
-      if (this.viewer) this.viewer.onResize();
-    });
+    this.layoutController.toggleSidePanel(side);
   },
 
   toggleSection(section) {
-    if (section === 'classes') {
-      const body = document.getElementById('classes-section-body');
-      const btn = document.getElementById('btn-toggle-classes-section');
-      if (!body) return;
-      this.classesSectionCollapsed = !this.classesSectionCollapsed;
-      body.style.display = this.classesSectionCollapsed ? 'none' : 'flex';
-      const classesSection = document.getElementById('classes-section');
-      if (classesSection) classesSection.style.maxHeight = this.classesSectionCollapsed ? 'auto' : '40%';
-      if (btn) btn.textContent = this.classesSectionCollapsed ? '+' : '-';
-      this.scheduleProjectUIStateSave();
-    } else if (section === 'annotations') {
-      const wrapper = document.getElementById('annotation-list-wrapper');
-      const btn = document.getElementById('btn-collapse-anns') || document.getElementById('btn-toggle-annotations-section');
-      if (!wrapper) return;
-      this.annotationsSectionCollapsed = !this.annotationsSectionCollapsed;
-      wrapper.style.display = this.annotationsSectionCollapsed ? 'none' : 'flex';
-      if (btn) btn.textContent = this.annotationsSectionCollapsed ? '+' : '-';
-      this.scheduleProjectUIStateSave();
-    } else if (section === 'preview') {
-      const wrapper = document.getElementById('preview-section-body');
-      const btn = document.getElementById('btn-collapse-preview');
-      if (!wrapper) return;
-      this.previewSectionCollapsed = !this.previewSectionCollapsed;
-      wrapper.style.display = this.previewSectionCollapsed ? 'none' : 'flex';
-      if (btn) btn.textContent = this.previewSectionCollapsed ? '+' : '-';
-      this.scheduleProjectUIStateSave();
-    }
+    this.layoutController.toggleSection(section);
   },
 
   selectAllPreviews() {
