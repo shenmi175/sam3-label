@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
 import shutil
 import threading
 import json
 from pathlib import Path
 from typing import Any
 
+from app.repositories.project_files import ProjectFileRepository
 from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
 from app.repositories.ui_state import UIStateRepository
@@ -48,6 +48,7 @@ class Storage:
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
         self._project_manifests = ProjectManifestRepository(normalize_project=self._normalize_project)
+        self._project_files = ProjectFileRepository(annotation_class_name=self._annotation_class_name)
         self._smart_filter_runs = SmartFilterRunRepository(
             db_connect=self._db_connect,
             db_lock=self._db_lock,
@@ -1341,26 +1342,10 @@ class Storage:
         return q
 
     def _annotation_path(self, project: dict[str, Any], image_id: str) -> Path:
-        ann_dir = ensure_dir(Path(project['annotation_dir']).expanduser().resolve())
-        return ann_dir / f'{image_id}.json'
+        return self._project_files.annotation_path(project, image_id)
 
-    @staticmethod
-    def _annotation_has_items(path: Path) -> bool:
-        if not path.exists():
-            return False
-        try:
-            size = os.path.getsize(path)
-            if size <= 2:
-                return False
-            if size > 64:
-                return True
-            with path.open('r', encoding='utf-8', errors='ignore') as f:
-                content = f.read(256).strip()
-            if not content or content == '[]':
-                return False
-            return True
-        except Exception:
-            return False
+    def _annotation_has_items(self, path: Path) -> bool:
+        return self._project_files.annotation_has_items(path)
 
     def _image_status(self, project: dict[str, Any], image_id: str) -> str:
         path = self._annotation_path(project, image_id)
@@ -1475,69 +1460,17 @@ class Storage:
         project['labeled_images'] = labeled
         project['unlabeled_images'] = max(0, len(normalized_images) - labeled)
 
-    @staticmethod
-    def _annotation_json_count(annotation_dir: Path) -> int:
-        if not annotation_dir.exists() or not annotation_dir.is_dir():
-            return 0
-        try:
-            return sum(1 for p in annotation_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json')
-        except OSError:
-            return 0
+    def _annotation_json_count(self, annotation_dir: Path) -> int:
+        return self._project_files.annotation_json_count(annotation_dir)
 
-    @staticmethod
-    def _legacy_annotation_dir(project_dir: Path) -> Path | None:
-        candidates = [
-            project_dir / 'annotations',
-            project_dir / 'output' / 'annotations',
-        ]
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_dir():
-                return candidate
-        return None
+    def _legacy_annotation_dir(self, project_dir: Path) -> Path | None:
+        return self._project_files.legacy_annotation_dir(project_dir)
 
-    @staticmethod
-    def _existing_project_save_dir(project_dir: Path, base: dict[str, Any]) -> Path:
-        candidates: list[Path] = []
-        raw_save_dir = str(base.get('project_save_dir') or base.get('save_dir') or '').strip() if isinstance(base, dict) else ''
-        if raw_save_dir:
-            try:
-                candidates.append(Path(raw_save_dir).expanduser().resolve())
-            except Exception:
-                pass
-        candidates.append(project_dir)
-        candidates.append(project_dir / 'output')
-        for candidate in candidates:
-            try:
-                resolved = candidate.expanduser().resolve()
-            except Exception:
-                continue
-            if (resolved / 'annotations').is_dir():
-                return resolved
-        return project_dir.expanduser().resolve()
+    def _existing_project_save_dir(self, project_dir: Path, base: dict[str, Any]) -> Path:
+        return self._project_files.existing_project_save_dir(project_dir, base)
 
     def _infer_classes_from_annotations(self, annotation_dir: Path, *, max_files: int = 2000) -> list[str]:
-        out: list[str] = []
-        seen: set[str] = set()
-        if not annotation_dir.exists() or not annotation_dir.is_dir():
-            return out
-        try:
-            files = [p for p in sorted(annotation_dir.glob('*.json')) if p.is_file()]
-        except OSError:
-            return out
-        for path in files[:max(1, max_files)]:
-            data = read_json(path, [])
-            if not isinstance(data, list):
-                continue
-            for ann in data:
-                if not isinstance(ann, dict):
-                    continue
-                class_name = self._annotation_class_name(ann)
-                key = norm_text(class_name)
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                out.append(class_name)
-        return out
+        return self._project_files.infer_classes_from_annotations(annotation_dir, max_files=max_files)
 
     def _project_candidate_dirs(self, roots: list[Path], *, max_depth: int = 3) -> list[Path]:
         candidates: list[Path] = []
@@ -2501,22 +2434,8 @@ class Storage:
             'items': items,
         }
 
-    @staticmethod
-    def _unique_import_target(root: Path, rel_path: str) -> Path:
-        rel_obj = Path(rel_path)
-        target = (root / rel_obj).resolve()
-        ensure_dir(target.parent)
-        if not target.exists():
-            return target
-
-        stem = target.stem
-        suffix = target.suffix
-        idx = 1
-        while True:
-            candidate = target.with_name(f'{stem}_import{idx}{suffix}')
-            if not candidate.exists():
-                return candidate
-            idx += 1
+    def _unique_import_target(self, root: Path, rel_path: str) -> Path:
+        return self._project_files.unique_import_target(root, rel_path)
 
     def import_images_from_dir(self, project_id: str, source_dir: str) -> tuple[dict[str, Any], int, int]:
         project = self.get_project(project_id, enrich=False, include_images=False)
@@ -2596,30 +2515,11 @@ class Storage:
     def update_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
         return self.add_classes(project_id, classes_text)
 
-    @staticmethod
-    def _safe_rmtree(path: Path, source_path: Path) -> None:
-        if not path.exists() or not path.is_dir():
-            return
-        path = path.resolve()
-        source_path = source_path.resolve()
-        if path == source_path:
-            return
-        if source_path.is_relative_to(path):
-            return
-        shutil.rmtree(path, ignore_errors=True)
+    def _safe_rmtree(self, path: Path, source_path: Path) -> None:
+        self._project_files.safe_rmtree(path, source_path)
 
-    @staticmethod
-    def _safe_unlink(path: Path, source_path: Path) -> None:
-        if not path.exists() or not path.is_file():
-            return
-        rp = path.resolve()
-        source_path = source_path.resolve()
-        if rp == source_path or source_path.is_relative_to(rp.parent):
-            return
-        try:
-            rp.unlink(missing_ok=True)
-        except Exception:
-            pass
+    def _safe_unlink(self, path: Path, source_path: Path) -> None:
+        self._project_files.safe_unlink(path, source_path)
 
     def delete_project(self, project_id: str) -> None:
         projects = self._load_projects()
