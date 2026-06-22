@@ -19,16 +19,14 @@ from urllib.parse import urlparse
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_coco, export_video_json, export_yolo
+from app.routers.auth import create_auth_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     AppendAnnIn,
-    AuthLoginIn,
-    AuthPasswordChangeIn,
-    AuthSetupIn,
     CacheDirUpdateIn,
     ExportIn,
     GlobalConfigUpdateIn,
@@ -65,6 +63,7 @@ from app.services.annotation_geometry import (
     _point_in_bbox,
     _polygon_from_mask,
 )
+from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
 from app.storage import Storage
@@ -139,174 +138,12 @@ AUTH_STORE = AuthStore(
     session_ttl_seconds=SESSION_TTL_SECONDS,
     logger=logger,
 )
-
-
-def _secure_cookie_for_request(request: Request) -> bool:
-    raw = os.getenv('WEB_AUTO_SESSION_COOKIE_SECURE', 'auto').strip().lower()
-    if raw in {'1', 'true', 'yes', 'on'}:
-        return True
-    if raw in {'0', 'false', 'no', 'off'}:
-        return False
-    proto = str(request.headers.get('x-forwarded-proto') or request.url.scheme or '').split(',')[0].strip().lower()
-    return proto == 'https'
-
-
-def _set_session_cookie(response: Response, request: Request, token: str) -> None:
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=token,
-        max_age=SESSION_TTL_SECONDS,
-        httponly=True,
-        secure=_secure_cookie_for_request(request),
-        samesite='lax',
-        path='/',
-    )
-
-
-def _clear_session_cookie(response: Response, request: Request) -> None:
-    response.delete_cookie(
-        key=SESSION_COOKIE_NAME,
-        path='/',
-        secure=_secure_cookie_for_request(request),
-        httponly=True,
-        samesite='lax',
-    )
-
-
-def _request_username(request: Request) -> str | None:
-    if not AUTH_ENABLED:
-        return 'auth-disabled'
-    return AUTH_STORE.validate_session(str(request.cookies.get(SESSION_COOKIE_NAME) or ''))
-
-
-def _auth_public_path(path: str) -> bool:
-    if path in {'/login', '/logout', '/api/health'}:
-        return True
-    return path.startswith('/api/auth/') and path != '/api/auth/setup'
-
-
-def _auth_page_html(mode: str) -> str:
-    is_setup = mode == 'setup'
-    title = 'Initialize web-auto admin' if is_setup else 'Sign in to web-auto'
-    button = 'Create administrator' if is_setup else 'Sign in'
-    endpoint = '/api/auth/setup' if is_setup else '/api/auth/login'
-    extra = ''
-    username_autocomplete = 'username'
-    password_autocomplete = 'new-password' if is_setup else 'current-password'
-    html = """<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>__TITLE__</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #eef2f6;
-      color: #243042;
-    }
-    main {
-      width: min(420px, calc(100vw - 32px));
-      background: #fff;
-      border: 1px solid #d8e0ea;
-      border-radius: 8px;
-      box-shadow: 0 18px 50px rgba(23, 37, 54, 0.16);
-      padding: 28px;
-    }
-    h1 { margin: 0 0 6px; font-size: 24px; }
-    p { margin: 0 0 24px; color: #657287; font-size: 14px; line-height: 1.5; }
-    label { display: block; margin: 14px 0 7px; font-weight: 650; font-size: 13px; }
-    input {
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 11px 12px;
-      font-size: 15px;
-      outline: none;
-    }
-    input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14); }
-    button {
-      margin-top: 22px;
-      width: 100%;
-      border: 0;
-      border-radius: 6px;
-      padding: 12px 14px;
-      font-weight: 700;
-      font-size: 15px;
-      color: #fff;
-      background: #2563eb;
-      cursor: pointer;
-    }
-    button:disabled { opacity: 0.7; cursor: wait; }
-    .error { display: none; margin-top: 14px; color: #b91c1c; font-size: 13px; line-height: 1.4; }
-    .link { display: inline-block; margin-top: 16px; color: #2563eb; font-size: 13px; text-decoration: none; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111827; color: #e5e7eb; }
-      main { background: #1f2937; border-color: #374151; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35); }
-      p { color: #a7b0c0; }
-      input { background: #111827; color: #e5e7eb; border-color: #4b5563; }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>__TITLE__</h1>
-    <p>Use this account to access the web-auto workspace and API.</p>
-    <form id="auth-form">
-      <label for="username">Username</label>
-      <input id="username" name="username" autocomplete="__USERNAME_AUTOCOMPLETE__" required autofocus>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="__PASSWORD_AUTOCOMPLETE__" required>
-      <button id="submit" type="submit">__BUTTON__</button>
-      <div id="error" class="error"></div>
-      __EXTRA__
-    </form>
-  </main>
-  <script>
-    const form = document.getElementById('auth-form');
-    const errorBox = document.getElementById('error');
-    const submit = document.getElementById('submit');
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      errorBox.style.display = 'none';
-      submit.disabled = true;
-      try {
-        const response = await fetch('__ENDPOINT__', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            username: document.getElementById('username').value,
-            password: document.getElementById('password').value
-          })
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || response.statusText);
-        window.location.href = '/';
-      } catch (err) {
-        errorBox.textContent = err.message || String(err);
-        errorBox.style.display = 'block';
-      } finally {
-        submit.disabled = false;
-      }
-    });
-  </script>
-</body>
-</html>
-"""
-    return (
-        html.replace('__TITLE__', title)
-        .replace('__BUTTON__', button)
-        .replace('__ENDPOINT__', endpoint)
-        .replace('__EXTRA__', extra)
-        .replace('__USERNAME_AUTOCOMPLETE__', username_autocomplete)
-        .replace('__PASSWORD_AUTOCOMPLETE__', password_autocomplete)
-    )
+AUTH_HTTP = AuthHttp(
+    AUTH_STORE,
+    auth_enabled=AUTH_ENABLED,
+    cookie_name=SESSION_COOKIE_NAME,
+    session_ttl_seconds=SESSION_TTL_SECONDS,
+)
 
 
 def _parse_allowed_origins(raw: str) -> list[str]:
@@ -335,7 +172,7 @@ app.add_middleware(
 
 @app.middleware('http')
 async def require_web_auto_session(request: Request, call_next):
-    if not AUTH_ENABLED or request.method.upper() == 'OPTIONS' or _auth_public_path(request.url.path):
+    if not AUTH_ENABLED or request.method.upper() == 'OPTIONS' or AUTH_HTTP.public_path(request.url.path):
         return await call_next(request)
 
     admin_missing = not AUTH_STORE.has_admin()
@@ -344,12 +181,15 @@ async def require_web_auto_session(request: Request, call_next):
             return JSONResponse(status_code=503, content={'detail': 'admin credentials are not configured', 'code': 'admin_not_configured'})
         return RedirectResponse('/login', status_code=303)
 
-    if not _request_username(request):
+    if not AUTH_HTTP.request_username(request):
         if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
             return JSONResponse(status_code=401, content={'detail': 'login required', 'code': 'login_required'})
         return RedirectResponse('/login', status_code=303)
 
     return await call_next(request)
+
+
+app.include_router(create_auth_router(AUTH_HTTP))
 
 
 class InferJobPaused(RuntimeError):
@@ -4703,84 +4543,6 @@ def _run_infer_batch_example(
 def on_startup() -> None:
     AUTH_STORE.ensure_admin_from_env()
     return None
-
-
-@app.get('/setup', response_class=HTMLResponse)
-def setup_page(request: Request) -> Response:
-    return RedirectResponse('/login', status_code=303)
-
-
-@app.get('/login', response_class=HTMLResponse)
-def login_page(request: Request) -> Response:
-    if not AUTH_ENABLED:
-        return RedirectResponse('/', status_code=303)
-    AUTH_STORE.ensure_admin_from_env()
-    if _request_username(request):
-        return RedirectResponse('/', status_code=303)
-    return HTMLResponse(_auth_page_html('login'))
-
-
-@app.get('/logout')
-def logout_page(request: Request) -> Response:
-    token = str(request.cookies.get(SESSION_COOKIE_NAME) or '')
-    AUTH_STORE.destroy_session(token)
-    response = RedirectResponse('/login', status_code=303)
-    _clear_session_cookie(response, request)
-    return response
-
-
-@app.get('/api/auth/status')
-def auth_status(request: Request) -> dict[str, Any]:
-    username = _request_username(request)
-    return {
-        'enabled': AUTH_ENABLED,
-        'admin_configured': (not AUTH_ENABLED) or AUTH_STORE.has_admin(),
-        'authenticated': bool(username),
-        'username': username or '',
-        'session_ttl_seconds': SESSION_TTL_SECONDS,
-    }
-
-
-@app.post('/api/auth/setup')
-def auth_setup(payload: AuthSetupIn, request: Request) -> Response:
-    raise HTTPException(status_code=404, detail='interactive setup is disabled; use deployment admin credentials')
-
-
-@app.post('/api/auth/login')
-def auth_login(payload: AuthLoginIn, request: Request) -> Response:
-    if not AUTH_ENABLED:
-        return JSONResponse({'ok': True, 'enabled': False})
-    try:
-        username = AUTH_STORE.verify_login(payload.username, payload.password)
-        token = AUTH_STORE.create_session(username)
-        response = JSONResponse({'ok': True, 'username': username})
-        _set_session_cookie(response, request, token)
-        return response
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-
-@app.post('/api/auth/logout')
-def auth_logout(request: Request) -> Response:
-    token = str(request.cookies.get(SESSION_COOKIE_NAME) or '')
-    AUTH_STORE.destroy_session(token)
-    response = JSONResponse({'ok': True})
-    _clear_session_cookie(response, request)
-    return response
-
-
-@app.post('/api/auth/password')
-def auth_change_password(payload: AuthPasswordChangeIn, request: Request) -> Response:
-    username = _request_username(request)
-    if not username:
-        raise HTTPException(status_code=401, detail='login required')
-    try:
-        AUTH_STORE.change_password(username, payload.current_password, payload.new_password)
-        response = JSONResponse({'ok': True})
-        _clear_session_cookie(response, request)
-        return response
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get('/api/info')
