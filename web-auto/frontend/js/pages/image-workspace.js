@@ -12,6 +12,7 @@ import { AnnotationController } from '../modules/image-workspace/annotation-cont
 import { ClassController } from '../modules/image-workspace/class-controller.js';
 import { DataDashboardController } from '../modules/image-workspace/data-dashboard-controller.js';
 import { ExportController } from '../modules/image-workspace/export-controller.js';
+import { GpuStatusController } from '../modules/image-workspace/gpu-status-controller.js';
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
 import { InferenceController } from '../modules/image-workspace/inference-controller.js';
 import { KeyboardCommandManager } from '../modules/image-workspace/keyboard-command-manager.js';
@@ -46,6 +47,7 @@ export const ImageWorkspace = {
   classController: null,
   dataDashboardController: null,
   exportController: null,
+  gpuStatusController: null,
   imageNavigationController: null,
   inferenceController: null,
   keyboardCommandManager: null,
@@ -68,8 +70,6 @@ export const ImageWorkspace = {
   imageBundlePromises: null,
   imageBundleCacheLimit: 8,
   imagePrefetchRadius: 3,
-  gpuStatusInterval: null,
-  gpuStatusFailures: 0,
   uiStateSaveTimer: null,
   activeJobId: '',
   isPolling: false,
@@ -113,8 +113,6 @@ export const ImageWorkspace = {
     this.isImageLoading = false;
     this.imageBundleCache = new Map();
     this.imageBundlePromises = new Map();
-    this.gpuStatusInterval = null;
-    this.gpuStatusFailures = 0;
     this.activeJobId = '';
     this.isPolling = false;
     this.batchResultShownForJobId = '';
@@ -132,6 +130,7 @@ export const ImageWorkspace = {
     this.classController = new ClassController(this);
     this.dataDashboardController = new DataDashboardController(this);
     this.exportController = new ExportController(this);
+    this.gpuStatusController = new GpuStatusController(this);
     this.imageNavigationController = new ImageNavigationController(this);
     this.inferenceController = new InferenceController(this);
     this.keyboardCommandManager = new KeyboardCommandManager(this);
@@ -533,7 +532,7 @@ export const ImageWorkspace = {
       this.viewer = null;
     }
     if (this.healthInterval) clearInterval(this.healthInterval);
-    if (this.gpuStatusInterval) clearInterval(this.gpuStatusInterval);
+    if (this.gpuStatusController) this.gpuStatusController.stop();
     if (this.smartFilterController) this.smartFilterController.clearTimer();
     if (this.uiStateSaveTimer) {
       clearTimeout(this.uiStateSaveTimer);
@@ -708,94 +707,23 @@ export const ImageWorkspace = {
   },
 
   formatGpuMemory(mb) {
-    const value = Number(mb || 0);
-    if (!Number.isFinite(value) || value <= 0) return '--';
-    if (value >= 1024) return `${(value / 1024).toFixed(value >= 10240 ? 0 : 1)}G`;
-    return `${Math.round(value)}M`;
+    return this.gpuStatusController.formatMemory(mb);
   },
 
   setGpuWidgetUnavailable(message = 'GPU unavailable') {
-    const dot = document.getElementById('gpu-status-dot');
-    const utilFill = document.getElementById('gpu-util-fill');
-    const memFill = document.getElementById('gpu-mem-fill');
-    const utilText = document.getElementById('gpu-util-text');
-    const memText = document.getElementById('gpu-mem-text');
-    const widget = document.getElementById('gpu-status-widget');
-    if (dot) dot.style.background = '#94a3b8';
-    if (utilFill) utilFill.style.width = '0%';
-    if (memFill) memFill.style.width = '0%';
-    if (utilText) utilText.textContent = '--';
-    if (memText) memText.textContent = '--';
-    if (widget) widget.title = message;
+    this.gpuStatusController.setUnavailable(message);
   },
 
   markGpuWidgetStale(message = 'GPU status refresh delayed') {
-    const dot = document.getElementById('gpu-status-dot');
-    const widget = document.getElementById('gpu-status-widget');
-    if (dot) dot.style.background = '#f59e0b';
-    if (widget) widget.title = message;
+    this.gpuStatusController.markStale(message);
   },
 
   renderGpuWidget(status) {
-    const gpu = status?.result?.gpu || status?.gpu || {};
-    const summary = gpu.summary || {};
-    const gpus = Array.isArray(gpu.gpus) ? gpu.gpus : [];
-    if (!gpu.available || gpus.length === 0) {
-      this.setGpuWidgetUnavailable('sam3-api GPU status unavailable');
-      return;
-    }
-
-    const gpuUtilRaw = summary.gpu_utilization_percent;
-    const gpuUtil = Number.isFinite(Number(gpuUtilRaw)) ? Math.max(0, Math.min(100, Number(gpuUtilRaw))) : null;
-    const memUsed = Number(summary.memory_used_mb || 0);
-    const memTotal = Number(summary.memory_total_mb || 0);
-    const memPctRaw = Number(summary.memory_utilization_percent);
-    const memPct = Number.isFinite(memPctRaw) ? Math.max(0, Math.min(100, memPctRaw)) : 0;
-    const stale = Boolean(gpu.stale);
-    const age = Number(gpu.age_seconds || 0);
-    const dot = document.getElementById('gpu-status-dot');
-    const utilFill = document.getElementById('gpu-util-fill');
-    const memFill = document.getElementById('gpu-mem-fill');
-    const utilText = document.getElementById('gpu-util-text');
-    const memText = document.getElementById('gpu-mem-text');
-    const widget = document.getElementById('gpu-status-widget');
-    if (dot) dot.style.background = stale ? '#f59e0b' : (memPct >= 90 ? '#ef4444' : (memPct >= 75 ? '#f59e0b' : '#10b981'));
-    if (utilFill) utilFill.style.width = gpuUtil === null ? '0%' : `${gpuUtil.toFixed(0)}%`;
-    if (memFill) memFill.style.width = `${memPct.toFixed(0)}%`;
-    if (utilText) utilText.textContent = gpuUtil === null ? '--' : `${gpuUtil.toFixed(0)}%`;
-    if (memText) memText.textContent = `${this.formatGpuMemory(memUsed)}/${this.formatGpuMemory(memTotal)}`;
-    if (widget) {
-      const lines = gpus.map((item) => {
-        const util = item.gpu_utilization_percent === null || item.gpu_utilization_percent === undefined
-          ? '--'
-          : `${Number(item.gpu_utilization_percent).toFixed(0)}%`;
-        return `GPU${item.index} ${item.name}: ${util}, ${this.formatGpuMemory(item.memory_used_mb)}/${this.formatGpuMemory(item.memory_total_mb)}`;
-      });
-      widget.title = `${stale ? `GPU status is stale (${age.toFixed(0)}s old)\n` : ''}${lines.join('\n')}`;
-    }
+    this.gpuStatusController.render(status);
   },
 
   startGpuStatusPolling() {
-    if (this.gpuStatusInterval) clearInterval(this.gpuStatusInterval);
-    const poll = async () => {
-      try {
-        const status = await api.getSam3Status(store.state.config.sam3ApiUrl);
-        if (this.isUnmounted) return;
-        this.gpuStatusFailures = 0;
-        this.renderGpuWidget(status);
-      } catch (err) {
-        if (this.isUnmounted) return;
-        this.gpuStatusFailures = (this.gpuStatusFailures || 0) + 1;
-        const message = String(err?.message || err || 'GPU status unavailable');
-        if (this.gpuStatusFailures >= 3) {
-          this.setGpuWidgetUnavailable(message);
-        } else {
-          this.markGpuWidgetStale(message);
-        }
-      }
-    };
-    poll();
-    this.gpuStatusInterval = setInterval(poll, 1000);
+    this.gpuStatusController.start();
   },
 
   bindEvents() {
