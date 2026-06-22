@@ -9,6 +9,7 @@ import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { renderWorkspaceToolbar } from '../components/workspace-toolbar.js';
 import { i18n } from '../i18n.js';
 import { AnnotationController } from '../modules/image-workspace/annotation-controller.js';
+import { AutoConfigController } from '../modules/image-workspace/auto-config-controller.js';
 import { ClassController } from '../modules/image-workspace/class-controller.js';
 import { DataDashboardController } from '../modules/image-workspace/data-dashboard-controller.js';
 import { ExportController } from '../modules/image-workspace/export-controller.js';
@@ -45,6 +46,7 @@ export const ImageWorkspace = {
   selectedImagePath: null,
   viewer: null,
   annotationController: null,
+  autoConfigController: null,
   classController: null,
   dataDashboardController: null,
   exportController: null,
@@ -129,6 +131,7 @@ export const ImageWorkspace = {
     this.workspaceMode = 'auto';
     this.reviewContinuousMode = true;
     this.annotationController = new AnnotationController(this);
+    this.autoConfigController = new AutoConfigController();
     this.classController = new ClassController(this);
     this.dataDashboardController = new DataDashboardController(this);
     this.exportController = new ExportController(this);
@@ -624,35 +627,7 @@ export const ImageWorkspace = {
     }
     if (btnDashboardNav) btnDashboardNav.onclick = goToDashboard;
 
-    // Top Operation Bar
-    const sam3UrlInp = document.getElementById('inp-sam3-url');
-    if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
-
-    const syncTopConfigControls = () => {
-      const thresholdLabel = document.getElementById('lbl-threshold-value');
-      const batchLabel = document.getElementById('lbl-batch-size-value');
-      if (thresholdLabel) thresholdLabel.innerText = Number(store.state.config.threshold).toFixed(2);
-      if (batchLabel) batchLabel.innerText = String(store.state.config.batchSize);
-    };
-    const adjustThreshold = (delta) => {
-      const next = Number((Number(store.state.config.threshold || 0.5) + delta).toFixed(2));
-      store.setConfig('threshold', next);
-      syncTopConfigControls();
-    };
-    const adjustBatchSize = (delta) => {
-      const next = Number(store.state.config.batchSize || 1) + delta;
-      store.setConfig('batchSize', next);
-      syncTopConfigControls();
-    };
-    const btnThresholdDec = document.getElementById('btn-threshold-dec');
-    const btnThresholdInc = document.getElementById('btn-threshold-inc');
-    const btnBatchDec = document.getElementById('btn-batch-dec');
-    const btnBatchInc = document.getElementById('btn-batch-inc');
-    if (btnThresholdDec) btnThresholdDec.onclick = () => adjustThreshold(-0.05);
-    if (btnThresholdInc) btnThresholdInc.onclick = () => adjustThreshold(0.05);
-    if (btnBatchDec) btnBatchDec.onclick = () => adjustBatchSize(-1);
-    if (btnBatchInc) btnBatchInc.onclick = () => adjustBatchSize(1);
-    syncTopConfigControls();
+    this.autoConfigController.bind();
 
     const btnWorkspaceAuto = document.getElementById('btn-workspace-mode-auto');
     const btnWorkspaceReview = document.getElementById('btn-workspace-mode-review');
@@ -672,21 +647,6 @@ export const ImageWorkspace = {
     if (btnReviewSaveNext) btnReviewSaveNext.onclick = () => this.saveAndNavigate(1);
     const btnReviewNextUnlabeled = document.getElementById('btn-review-next-unlabeled');
     if (btnReviewNextUnlabeled) btnReviewNextUnlabeled.onclick = () => this.navigateUnlabeledImage(1);
-
-    const btnTest = document.getElementById('btn-test-api');
-    if (btnTest) btnTest.onclick = async () => {
-      try {
-        btnTest.disabled = true;
-        btnTest.innerText = 'Testing...';
-        await api.testSam3(store.state.config.sam3ApiUrl);
-        showToast("SAM3 API is Online", "success");
-      } catch(e) {
-        showToast("SAM3 API Connection Failed: " + e.message, "error");
-      } finally {
-        btnTest.disabled = false;
-        btnTest.innerText = i18n.t('test_api');
-      }
-    };
 
     const btnInfer = document.getElementById('btn-infer-current');
     if (btnInfer) btnInfer.onclick = () => this.runSingleInfer();
