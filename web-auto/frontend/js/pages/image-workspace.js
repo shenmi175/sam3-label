@@ -5,13 +5,13 @@ import {
   updateAnnotationListFocus,
 } from '../components/annotation-list.js';
 import { bindClassPanelEvents, renderClassPanel } from '../components/class-panel.js';
-import { renderExportPanel } from '../components/export-panel.js';
 import { bindImageListEvents, setImageListItemLabeledState } from '../components/image-list.js';
 import { ImageViewerV2 } from '../components/image-viewer-v2.js';
 import { renderWorkspaceToolbar } from '../components/workspace-toolbar.js';
 import { i18n } from '../i18n.js';
 import { AnnotationController } from '../modules/image-workspace/annotation-controller.js';
 import { DataDashboardController } from '../modules/image-workspace/data-dashboard-controller.js';
+import { ExportController } from '../modules/image-workspace/export-controller.js';
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
 import {
@@ -40,6 +40,7 @@ export const ImageWorkspace = {
   viewer: null,
   annotationController: null,
   dataDashboardController: null,
+  exportController: null,
   imageNavigationController: null,
   smartFilterController: null,
   isUnmounted: false,
@@ -116,6 +117,7 @@ export const ImageWorkspace = {
     this.reviewContinuousMode = true;
     this.annotationController = new AnnotationController(this);
     this.dataDashboardController = new DataDashboardController(this);
+    this.exportController = new ExportController(this);
     this.imageNavigationController = new ImageNavigationController(this);
     this.smartFilterController = new SmartFilterController(this);
     window.currentWorkspace = this;
@@ -2445,58 +2447,6 @@ export const ImageWorkspace = {
   },
 
   openExport() {
-    const modal = document.getElementById('modal-export-full');
-    if (!modal) return;
-    modal.innerHTML = renderExportPanel();
-    modal.style.display = 'flex';
-    
-    const closeExportModal = () => {
-      modal.style.display = 'none';
-      modal.innerHTML = '';
-    };
-    const closeBtn = document.getElementById('btn-close-export-modal');
-    const cancelBtn = document.getElementById('btn-cancel-export-modal');
-    const formatEl = document.getElementById('exp-format');
-    const bboxEl = document.getElementById('exp-bbox');
-    const maskEl = document.getElementById('exp-mask');
-    const statusEl = document.getElementById('export-status');
-    const exportBtn = document.getElementById('btn-do-export');
-    if (closeBtn) closeBtn.onclick = closeExportModal;
-    if (cancelBtn) cancelBtn.onclick = closeExportModal;
-    const updateExportOptions = () => {
-      if (formatEl.value === 'yolo' && bboxEl.checked && maskEl.checked) {
-        maskEl.checked = false;
-      }
-      statusEl.innerText = formatEl.value === 'yolo'
-        ? 'YOLO 仅支持框检测或掩码分割其中一种导出形式。'
-        : '将使用后端导出接口生成数据集文件。';
-    };
-    formatEl.onchange = updateExportOptions;
-    bboxEl.onchange = updateExportOptions;
-    maskEl.onchange = updateExportOptions;
-    updateExportOptions();
-
-    exportBtn.onclick = async () => {
-      const dir = document.getElementById('exp-dir').value.trim();
-      try {
-        exportBtn.disabled = true;
-        statusEl.innerText = '正在导出，请稍候...';
-        const res = await api.exportProject({
-          project_id: this.projectId,
-          format: formatEl.value,
-          include_bbox: bboxEl.checked,
-          include_mask: maskEl.checked,
-          output_dir: dir || null
-        });
-        const output = res?.output || '';
-        statusEl.innerText = output ? `导出完成: ${output}` : '导出完成';
-        showToast("Export successful", "success");
-      } catch(e) {
-        statusEl.innerText = e.message;
-        showToast(e.message, "error");
-      } finally {
-        exportBtn.disabled = false;
-      }
-    };
+    this.exportController.open();
   }
 };
