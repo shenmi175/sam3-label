@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { escapeAttr, escapeHtml } from '../utils/html.js';
 
 export const TaskManager = {
   container: null,
@@ -26,6 +27,23 @@ export const TaskManager = {
       pointer-events: none; /* Let clicks pass through empty space */
     `;
     document.body.appendChild(this.container);
+    this.container.onclick = (e) => this.handleClick(e);
+  },
+
+  handleClick(e) {
+    const actionEl = e.target.closest('[data-task-action]');
+    if (!actionEl || !this.container?.contains(actionEl)) return;
+    const action = actionEl.dataset.taskAction;
+    const jobId = actionEl.dataset.jobId || '';
+    const jobType = actionEl.dataset.jobType || '';
+    const projectId = actionEl.dataset.projectId || '';
+    if (action === 'dismiss') {
+      this.dismissJob(jobId);
+    } else if (action === 'stop') {
+      this.stopJob(jobId, jobType, projectId);
+    } else if (action === 'resume') {
+      this.resumeJob(jobId, jobType, projectId);
+    }
   },
   
   startPolling() {
@@ -78,23 +96,30 @@ export const TaskManager = {
     let html = '';
     this.activeJobs.forEach((job, jobId) => {
       if (this.dismissedJobs.has(jobId)) return;
-      const pct = job.progress_pct != null ? job.progress_pct : 0;
+      const pctRaw = Number(job.progress_pct != null ? job.progress_pct : 0);
+      const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, pctRaw)) : 0;
       const running = ['queued', 'running'].includes(job.status);
       const pausing = job.status === 'pausing';
       const failed = job.status === 'error';
+      const jobType = String(job.job_type || 'Task');
+      const jobStatus = String(job.status || '').toUpperCase();
+      const jobMessage = String(job.message || 'Processing...');
+      const jobIdAttr = escapeAttr(jobId);
+      const jobTypeAttr = escapeAttr(job.job_type || '');
+      const projectIdAttr = escapeAttr(job.project_id || '');
       // Make elements clickable inside the non-clickable container
       html += `
         <div class="neu-card" style="pointer-events: auto; padding: 16px; position: relative;">
            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-              <span style="font-weight: 600; font-size: 14px;">${job.job_type || 'Task'}</span>
+              <span style="font-weight: 600; font-size: 14px;">${escapeHtml(jobType)}</span>
               <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="font-size: 12px; color: var(--neu-text-light);">${job.status.toUpperCase()}</span>
-                <button class="neu-button" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px;" onclick="window.taskManager.dismissJob('${jobId}')">×</button>
+                <span style="font-size: 12px; color: var(--neu-text-light);">${escapeHtml(jobStatus)}</span>
+                <button class="neu-button" data-task-action="dismiss" data-job-id="${jobIdAttr}" style="width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11px;">×</button>
               </div>
            </div>
            
            <div style="font-size: 12px; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-             ${job.message || 'Processing...'}
+             ${escapeHtml(jobMessage)}
            </div>
            
            <div style="width: 100%; height: 8px; background: var(--neu-inset); border-radius: 4px; overflow: hidden; margin-bottom: 12px;">
@@ -102,9 +127,9 @@ export const TaskManager = {
            </div>
            
            <div style="display: flex; gap: 8px; justify-content: flex-end;">
-             ${running ? `<button class="neu-button" style="padding: 4px 8px; font-size: 11px;" onclick="window.taskManager.stopJob('${jobId}', '${job.job_type}', '${job.project_id}')">Stop</button>` : ''}
+             ${running ? `<button class="neu-button" data-task-action="stop" data-job-id="${jobIdAttr}" data-job-type="${jobTypeAttr}" data-project-id="${projectIdAttr}" style="padding: 4px 8px; font-size: 11px;">Stop</button>` : ''}
              ${pausing ? `<span style="font-size: 11px; color: var(--neu-text-light); align-self: center;">Stopping...</span>` : ''}
-             ${job.status === 'paused' ? `<button class="neu-button" style="padding: 4px 8px; font-size: 11px; color: var(--neu-text-active);" onclick="window.taskManager.resumeJob('${jobId}', '${job.job_type}', '${job.project_id}')">Resume</button>` : ''}
+             ${job.status === 'paused' ? `<button class="neu-button" data-task-action="resume" data-job-id="${jobIdAttr}" data-job-type="${jobTypeAttr}" data-project-id="${projectIdAttr}" style="padding: 4px 8px; font-size: 11px; color: var(--neu-text-active);">Resume</button>` : ''}
            </div>
         </div>
       `;
@@ -115,7 +140,7 @@ export const TaskManager = {
   
   async stopJob(jobId, type, projectId) {
     try {
-      if (type.includes('filter')) {
+      if (String(type || '').includes('filter')) {
          // Filter doesn't have an explicit stop in doc, but infer does
          console.warn('Filter job cannot be stopped manually per API docs currently.');
       } else {
