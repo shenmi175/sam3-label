@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_video_json
 from app.routers.auth import create_auth_router
+from app.routers.config import create_config_router
 from app.routers.export import create_export_router
 from app.routers.pose import create_pose_router
 from app.routers.services import create_services_router
@@ -29,8 +30,6 @@ from app.routers.ui_state import create_ui_state_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     AppendAnnIn,
-    CacheDirUpdateIn,
-    GlobalConfigUpdateIn,
     ImportExistingProjectIn,
     ImportImagesIn,
     InferBatchIn,
@@ -2615,13 +2614,6 @@ def _effective_sam3_api_base_url() -> str:
     return DEFAULT_API_BASE_URL
 
 
-def _cache_dir_info() -> dict[str, Any]:
-    return {
-        'cache_dir': str(CURRENT_DATA_DIR),
-        'default_dir': str(BASE_DIR),
-    }
-
-
 def _configured_upload_target_dir() -> Path:
     configured = str(APP_CONFIG.read().get('upload_target_dir') or '').strip()
     if configured:
@@ -4449,108 +4441,24 @@ def on_startup() -> None:
     return None
 
 
-@app.get('/api/info')
-def root_info() -> dict[str, Any]:
-    return {
-        'service': 'web-auto-api',
-        'mode': 'api_only',
-        'docs_url': '/docs',
-        'openapi_url': '/openapi.json',
-        'health_url': '/api/health',
-        'allowed_origins': ALLOWED_ORIGINS,
-        'frontend_bundled': False,
-    }
-
-
-@app.get('/api/health')
-def health() -> dict[str, Any]:
-    return {
-        'status': 'ok',
-        'service': 'web-auto-api',
-        'mode': 'api_only',
-        'timestamp': now_ts(),
-        'allowed_origins': ALLOWED_ORIGINS,
-    }
-
-
-@app.get('/api/config/defaults')
-def get_default_config() -> dict[str, Any]:
-    return {
-        'sam3_api_base_url': _effective_sam3_api_base_url(),
-        'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
-        'sapiens_api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
-        'ops_api_configured': bool(OPS_API_BASE_URL),
-        'data_dir': str(CURRENT_DATA_DIR),
-        'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
-    }
-
-
-@app.get('/api/config/global')
-def get_global_config() -> dict[str, Any]:
-    return {'config': _global_config_info()}
-
-
-@app.post('/api/config/global')
-def set_global_config(payload: GlobalConfigUpdateIn) -> dict[str, Any]:
-    changes: dict[str, Any] = {}
-    with CONFIG_LOCK:
-        if payload.cache_dir is not None:
-            cache_dir = str(payload.cache_dir or '').strip()
-            if cache_dir:
-                _ensure_no_active_jobs_for_config_change()
-                new_dir = _set_storage_data_dir(cache_dir)
-                changes['cache_dir'] = str(new_dir)
-
-        if payload.upload_target_dir is not None:
-            upload_target = str(payload.upload_target_dir or '').strip()
-            if upload_target:
-                target = _resolve_dataset_upload_dir(upload_target)
-                changes['upload_target_dir'] = str(target)
-
-        if payload.sam3_api_base_url is not None:
-            api_base_url = str(payload.sam3_api_base_url or '').strip().rstrip('/')
-            if api_base_url:
-                try:
-                    api_base_url = Sam3Client._api_root(api_base_url)
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-                changes['sam3_api_base_url'] = api_base_url
-
-        if changes:
-            APP_CONFIG.update(changes)
-
-    return {'ok': True, 'config': _global_config_info()}
-
-
-@app.post('/api/system/restart')
-def restart_web_auto() -> dict[str, Any]:
-    _ensure_no_active_jobs_for_config_change()
-
-    def _delayed_exit() -> None:
-        time.sleep(0.5)
-        os._exit(0)
-
-    thread = threading.Thread(target=_delayed_exit, daemon=True)
-    thread.start()
-    return {'ok': True, 'message': 'web-auto is restarting'}
-
-
-@app.get('/api/config/cache_dir')
-def get_cache_dir_config() -> dict[str, Any]:
-    return _cache_dir_info()
-
-
-@app.post('/api/config/cache_dir')
-def set_cache_dir_config(payload: CacheDirUpdateIn) -> dict[str, Any]:
-    with CONFIG_LOCK:
-        _ensure_no_active_jobs_for_config_change()
-        new_dir = _set_storage_data_dir(payload.cache_dir)
-        APP_CONFIG.update({'cache_dir': str(new_dir)})
-    return {
-        'ok': True,
-        'cache_dir': str(new_dir),
-        'message': 'Storage directory updated successfully.',
-    }
+app.include_router(
+    create_config_router(
+        allowed_origins=ALLOWED_ORIGINS,
+        base_dir=BASE_DIR,
+        default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
+        ops_api_configured=bool(OPS_API_BASE_URL),
+        sam3_max_batch_files=SAM3_MAX_BATCH_FILES,
+        app_config=APP_CONFIG,
+        config_lock=CONFIG_LOCK,
+        get_current_data_dir=lambda: CURRENT_DATA_DIR,
+        ensure_no_active_jobs_for_config_change=_ensure_no_active_jobs_for_config_change,
+        set_storage_data_dir=_set_storage_data_dir,
+        resolve_dataset_upload_dir=_resolve_dataset_upload_dir,
+        global_config_info=_global_config_info,
+        effective_sam3_api_base_url=_effective_sam3_api_base_url,
+        allowed_sam3_api_base_urls=_allowed_sam3_api_base_urls,
+    )
+)
 
 
 @app.get('/api/projects')
