@@ -13,6 +13,7 @@ import { AnnotationController } from '../modules/image-workspace/annotation-cont
 import { DataDashboardController } from '../modules/image-workspace/data-dashboard-controller.js';
 import { ExportController } from '../modules/image-workspace/export-controller.js';
 import { ImageNavigationController } from '../modules/image-workspace/image-navigation-controller.js';
+import { InferenceController } from '../modules/image-workspace/inference-controller.js';
 import { PreviewController } from '../modules/image-workspace/preview-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
 import {
@@ -43,6 +44,7 @@ export const ImageWorkspace = {
   dataDashboardController: null,
   exportController: null,
   imageNavigationController: null,
+  inferenceController: null,
   previewController: null,
   smartFilterController: null,
   isUnmounted: false,
@@ -64,6 +66,8 @@ export const ImageWorkspace = {
   gpuStatusInterval: null,
   gpuStatusFailures: 0,
   uiStateSaveTimer: null,
+  activeJobId: '',
+  isPolling: false,
   batchResultShownForJobId: '',
   annotationAutosaveEnabled: true,
   annotationSaveTimer: null,
@@ -106,6 +110,8 @@ export const ImageWorkspace = {
     this.imageBundlePromises = new Map();
     this.gpuStatusInterval = null;
     this.gpuStatusFailures = 0;
+    this.activeJobId = '';
+    this.isPolling = false;
     this.batchResultShownForJobId = '';
     this.annotationAutosaveEnabled = true;
     this.annotationSaveTimer = null;
@@ -121,6 +127,7 @@ export const ImageWorkspace = {
     this.dataDashboardController = new DataDashboardController(this);
     this.exportController = new ExportController(this);
     this.imageNavigationController = new ImageNavigationController(this);
+    this.inferenceController = new InferenceController(this);
     this.previewController = new PreviewController(this);
     this.smartFilterController = new SmartFilterController(this);
     window.currentWorkspace = this;
@@ -1665,246 +1672,27 @@ export const ImageWorkspace = {
   },
 
   async runSingleInfer() {
-    if (!this.selectedImageId) return showToast("Select an image first", "error");
-    if (this.annotationDirty) {
-      await this.flushAnnotationAutosave('before-infer');
-      if (this.annotationDirty) return showToast('当前图片标注尚未保存，保存成功后再推理', 'error');
-    }
-    
-    const btn = document.getElementById('btn-infer-current');
-    try {
-      btn.disabled = true;
-      btn.innerText = i18n.t('inferring');
-      
-      const payload = {
-        project_id: this.projectId,
-        image_id: this.selectedImageId,
-        mode: 'text',
-        classes: this.getSelectedClassesForInference(),
-        threshold: store.state.config.threshold,
-        api_base_url: store.state.config.sam3ApiUrl
-      };
-      
-      const res = await api.infer(payload);
-      showToast(i18n.t('save_success'), "success");
-      this.invalidateImageBundle(this.selectedImageId);
-      await this.selectImage(this.selectedImageId, this.selectedImagePath);
-      await this.loadProjectInfo();
-    } catch(e) {
-      showToast(e.message, "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerText = i18n.t('infer_current');
-    }
+    await this.inferenceController.runSingle();
   },
 
   async runExamplePreview() {
-    if (!this.selectedImageId) return showToast(i18n.t('select_image_first'), "error");
-    
-    const boxes = this.currentPrompts
-      .filter(p => p.type === 'box')
-      .map(p => p.data);
-    const btn = document.getElementById('btn-example-segment');
-    if (boxes.length === 0) {
-      this.setPromptMode('box');
-      return showToast(i18n.t('box_exemplar_mode_hint'), "info");
-    }
-    if (!this.selectedClass) return showToast(i18n.t('select_class_first'), "error");
-
-    try {
-      btn.disabled = true;
-      btn.innerText = i18n.t('finding_similar');
-      
-      const payload = {
-        project_id: this.projectId,
-        image_id: this.selectedImageId,
-        active_class: this.selectedClass,
-        boxes: boxes,
-        pure_visual: false,
-        threshold: store.state.config.threshold,
-        api_base_url: store.state.config.sam3ApiUrl
-      };
-      
-      const res = await api.inferExample(payload);
-      const detections = res.detections || [];
-      this.previews = detections.map(d => ({
-        ...d,
-        id: 'preview_' + Math.random().toString(36).substr(2, 9),
-        class_name: this.selectedClass
-      }));
-      
-      this.viewer.setPreviews(this.previews);
-      this.renderPreviews(); // Although this panel is hidden, we use it for keeping
-      this.updateActionBar();
-      showToast(i18n.t('found_matches', { count: this.previews.length }), "info");
-    } catch(e) {
-      showToast(e.message, "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerText = i18n.t('example_segment');
-    }
+    await this.inferenceController.runExamplePreview();
   },
 
   async startBatchTask() {
-    const classes = this.getSelectedClassesForInference();
-    if (classes.length === 0) return showToast("Select at least one class for text inference", "error");
-
-    const payload = {
-      project_id: this.projectId,
-      threshold: store.state.config.threshold,
-      batch_size: store.state.config.batchSize,
-      api_base_url: store.state.config.sam3ApiUrl
-    };
-
-    const batchConfig = await this.openBatchConfigModal(classes);
-    if (!batchConfig) return;
-    payload.classes = classes;
-    payload.scope_mode = batchConfig.scope_mode;
-    payload.related_classes = batchConfig.related_classes || [];
-    payload.image_ids = batchConfig.image_ids || [];
-    payload.retry_image_ids = batchConfig.retry_image_ids || [];
-    payload.all_images = batchConfig.scope_mode === 'all' && payload.image_ids.length === 0 && payload.retry_image_ids.length === 0;
-
-    try {
-      const res = await api.startBatchInfer(payload);
-        
-      this.activeJobId = res?.job?.job_id || '';
-      if (!this.activeJobId) throw new Error('batch task did not return job_id');
-      this.batchResultShownForJobId = '';
-      this.pollTaskStatus();
-      showToast("Batch task started", "success");
-    } catch(e) {
-       showToast(e.message, "error");
-    }
+    await this.inferenceController.startBatchTask();
   },
 
   async pollTaskStatus() {
-    if (this.isPolling) return;
-    this.isPolling = true;
-    
-    const bar = document.getElementById('ws-task-bar');
-    const nameEl = document.getElementById('task-name');
-    const fillEl = document.getElementById('task-progress-fill');
-    const statusEl = document.getElementById('task-status-text');
-    const stopBtn = document.getElementById('btn-task-stop');
-    const resumeBtn = document.getElementById('btn-task-resume');
-    
-    bar.style.display = 'flex';
-    
-    const poll = async () => {
-      if (this.isUnmounted || !this.activeJobId) {
-        this.isPolling = false;
-        return;
-      }
-      
-      try {
-        const res = await api.getInferJob(this.activeJobId);
-        const job = res?.job || null;
-        if (!job) {
-          this.activeJobId = null;
-          this.isPolling = false;
-          bar.style.display = 'none';
-          return;
-        }
-        const pct = Number(job.progress_pct || 0);
-        nameEl.innerText = i18n.t(job.job_type === 'example_batch' ? 'example_propagate' : 'batch_infer');
-        fillEl.style.width = `${pct}%`;
-        statusEl.innerText = `${job.message || `${Math.round(pct)}%`}`;
-        
-        if (job.status === 'done' || job.status === 'error') {
-          setTimeout(() => bar.style.display = 'none', 3000);
-          if (job.job_type === 'text_batch' && job.status === 'done') {
-            this.showBatchResultModal(job);
-          }
-          if (job.status === 'done') {
-            this.clearImageBundleCache();
-          }
-          this.activeJobId = null;
-          this.isPolling = false;
-          if (resumeBtn) resumeBtn.style.display = 'none';
-          if (stopBtn) {
-            stopBtn.style.display = 'block';
-            stopBtn.disabled = false;
-            stopBtn.innerText = 'Stop';
-          }
-          await this.loadProjectInfo();
-          if (this.selectedImageId && this.selectedImagePath) {
-            await this.selectImage(this.selectedImageId, this.selectedImagePath);
-          }
-          return;
-        } else if (job.status === 'pausing') {
-          if (resumeBtn) resumeBtn.style.display = 'none';
-          if (stopBtn) {
-            stopBtn.style.display = 'block';
-            stopBtn.disabled = true;
-            stopBtn.innerText = 'Stopping...';
-          }
-        } else if (job.status === 'paused') {
-          if (resumeBtn) resumeBtn.style.display = 'block';
-          if (stopBtn) {
-            stopBtn.style.display = 'none';
-            stopBtn.disabled = false;
-            stopBtn.innerText = 'Stop';
-          }
-        } else {
-          if (resumeBtn) resumeBtn.style.display = 'none';
-          if (stopBtn) {
-            stopBtn.style.display = 'block';
-            stopBtn.disabled = false;
-            stopBtn.innerText = 'Stop';
-          }
-        }
-        
-        setTimeout(poll, 1000);
-      } catch(e) {
-        console.error("Poll error", e);
-        this.isPolling = false;
-      }
-    };
-    
-    poll();
+    await this.inferenceController.pollTaskStatus();
   },
 
   async stopActiveTask() {
-    try {
-      const res = await api.stopInferJob(this.projectId);
-      const job = res?.job || null;
-      const stopBtn = document.getElementById('btn-task-stop');
-      const statusEl = document.getElementById('task-status-text');
-      if (job?.job_id) this.activeJobId = job.job_id;
-      if (stopBtn) {
-        stopBtn.disabled = true;
-        stopBtn.innerText = 'Stopping...';
-      }
-      if (statusEl) statusEl.innerText = 'Stopping task...';
-      showToast("Stopping task...");
-    } catch(e) { showToast(e.message, "error"); }
+    await this.inferenceController.stopActiveTask();
   },
 
   async resumeActiveTask() {
-    try {
-      const payload = {
-        project_id: this.projectId,
-        threshold: store.state.config.threshold,
-        batch_size: store.state.config.batchSize,
-        api_base_url: store.state.config.sam3ApiUrl
-      };
-      const res = await api.resumeInferJob(payload);
-      const job = res?.job || null;
-      if (job?.job_id) this.activeJobId = job.job_id;
-      const stopBtn = document.getElementById('btn-task-stop');
-      const resumeBtn = document.getElementById('btn-task-resume');
-      const statusEl = document.getElementById('task-status-text');
-      if (resumeBtn) resumeBtn.style.display = 'none';
-      if (stopBtn) {
-        stopBtn.style.display = 'block';
-        stopBtn.disabled = false;
-        stopBtn.innerText = 'Stop';
-      }
-      if (statusEl) statusEl.innerText = 'Resuming task...';
-      if (!this.isPolling && this.activeJobId) this.pollTaskStatus();
-      showToast("Resuming task...");
-    } catch(e) { showToast(e.message, "error"); }
+    await this.inferenceController.resumeActiveTask();
   },
 
   renderAnnotations() {
