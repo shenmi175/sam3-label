@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from app.exports import export_video_json
 from app.routers.annotations import create_annotations_router
 from app.routers.auth import create_auth_router
+from app.routers.classes import create_classes_router
 from app.routers.config import create_config_router
 from app.routers.export import create_export_router
 from app.routers.pose import create_pose_router
@@ -40,7 +41,6 @@ from app.schemas import (
     InferJobResumeIn,
     OpenProjectIn,
     SmartFilterIn,
-    UpdateClassesIn,
     VideoAnnotationsSaveIn,
     VideoJobControlIn,
     VideoJobResumeIn,
@@ -205,6 +205,7 @@ app.include_router(create_pose_router(get_storage=_current_storage, sapiens_clie
 app.include_router(create_ui_state_router(get_storage=_current_storage))
 app.include_router(create_export_router(get_storage=_current_storage))
 app.include_router(create_annotations_router(get_storage=_current_storage))
+app.include_router(create_classes_router(get_storage=_current_storage))
 
 
 class InferJobPaused(RuntimeError):
@@ -4754,39 +4755,6 @@ async def upload_project_images(project_id: str, files: list[UploadFile] = File(
 
     refreshed, added = storage.refresh_project_images(project_id)
     return {'project': refreshed, 'saved_files': saved, 'added_images': added}
-
-
-@app.post('/api/projects/{project_id}/classes')
-def update_classes(project_id: str, payload: UpdateClassesIn) -> dict[str, Any]:
-    try:
-        project = storage.add_classes(project_id, payload.classes_text)
-        return {'project': project}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/projects/{project_id}/classes/add')
-def add_classes(project_id: str, payload: UpdateClassesIn) -> dict[str, Any]:
-    try:
-        project = storage.add_classes(project_id, payload.classes_text)
-        return {'project': project}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.delete('/api/projects/{project_id}/classes/{class_name}')
-def delete_class(project_id: str, class_name: str) -> dict[str, Any]:
-    try:
-        project = storage.delete_class(project_id, class_name)
-        return {'project': project}
-    except ValueError as exc:
-        msg = str(exc)
-        code = 404 if msg == 'project not found' else 400
-        raise HTTPException(status_code=code, detail=msg) from exc
 
 
 @app.get('/api/projects/{project_id}/images/{image_id}/file')
