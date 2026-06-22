@@ -109,6 +109,10 @@ def _raise_video_annotation_removed() -> None:
     raise HTTPException(status_code=410, detail='video annotation has been removed; image projects only')
 
 
+def _current_storage() -> Storage:
+    return storage
+
+
 VIDEO_JOB_LOCK = threading.Lock()
 VIDEO_JOB_THREADS: dict[str, dict[str, Any]] = {}
 INFER_JOB_LOCK = threading.Lock()
@@ -199,9 +203,9 @@ app.include_router(
         default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
     )
 )
-app.include_router(create_pose_router(storage=storage, sapiens_client=SAPIENS_CLIENT))
-app.include_router(create_ui_state_router(storage=storage))
-app.include_router(create_export_router(storage=storage))
+app.include_router(create_pose_router(get_storage=_current_storage, sapiens_client=SAPIENS_CLIENT))
+app.include_router(create_ui_state_router(get_storage=_current_storage))
+app.include_router(create_export_router(get_storage=_current_storage))
 
 
 class InferJobPaused(RuntimeError):

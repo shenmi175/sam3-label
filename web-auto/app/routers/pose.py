@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
@@ -29,11 +29,12 @@ def _pose_annotations_from_result(result: dict[str, Any]) -> list[dict[str, Any]
     return annotations
 
 
-def create_pose_router(*, storage: Storage, sapiens_client: SapiensClient) -> APIRouter:
+def create_pose_router(*, get_storage: Callable[[], Storage], sapiens_client: SapiensClient) -> APIRouter:
     router = APIRouter()
 
     @router.post('/api/pose/infer')
     def infer_pose(payload: PoseInferIn) -> dict[str, Any]:
+        storage = get_storage()
         project = storage.get_project(payload.project_id, include_images=False)
         if not project:
             raise HTTPException(status_code=404, detail='project not found')

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -26,11 +26,12 @@ def _resolve_output_dir(project: dict[str, Any], output_dir: Optional[str]) -> P
     return ensure_dir(Path(project.get('image_dir') or project.get('project_save_dir')).expanduser().resolve())
 
 
-def create_export_router(*, storage: Storage) -> APIRouter:
+def create_export_router(*, get_storage: Callable[[], Storage]) -> APIRouter:
     router = APIRouter()
 
     @router.post('/api/export')
     def export_project(payload: ExportIn) -> dict[str, Any]:
+        storage = get_storage()
         project = _get_project_or_404(storage, payload.project_id)
         if project.get('project_type') == 'video':
             raise HTTPException(status_code=410, detail='video annotation has been removed; image projects only')
