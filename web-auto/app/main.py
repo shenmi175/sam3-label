@@ -25,6 +25,7 @@ from app.routers.classes import create_classes_router
 from app.routers.config import create_config_router
 from app.routers.export import create_export_router
 from app.routers.image_files import create_image_files_router
+from app.routers.inference import create_inference_router
 from app.routers.pose import create_pose_router
 from app.routers.project_images import create_project_images_router
 from app.routers.projects import create_projects_router
@@ -35,9 +36,6 @@ from app.sam3_client import Sam3Client
 from app.schemas import (
     InferBatchIn,
     InferExampleBatchIn,
-    InferExamplePreviewIn,
-    InferIn,
-    InferJobControlIn,
     InferJobResumeIn,
     SmartFilterIn,
     VideoAnnotationsSaveIn,
@@ -4308,168 +4306,23 @@ app.include_router(
     )
 )
 
-@app.post('/api/infer')
-def infer_single(payload: InferIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='only image project is supported')
-    image = _get_image_or_404(project, payload.image_id)
-    out = _infer_single(
-        project=project,
-        image=image,
-        mode=payload.mode,
-        classes=payload.classes,
-        active_class=payload.active_class,
-        points=payload.points,
-        boxes=payload.boxes,
-        threshold=payload.threshold,
-        api_base_url=payload.api_base_url,
-        save_result=True,
+app.include_router(
+    create_inference_router(
+        get_project_or_404=_get_project_or_404,
+        get_image_or_404=_get_image_or_404,
+        infer_single_impl=_infer_single,
+        infer_example_preview_impl=_infer_example_preview,
+        run_infer_batch=_run_infer_batch,
+        run_infer_batch_example=_run_infer_batch_example,
+        spawn_infer_job=_spawn_infer_job,
+        get_active_infer_job_for_project=_get_active_infer_job_for_project,
+        get_latest_infer_job_for_project=_get_latest_infer_job_for_project,
+        get_infer_job_state_or_404=_get_infer_job_state_or_404,
+        pause_infer_job=_pause_infer_job,
+        update_infer_job_state=_update_infer_job_state,
+        resume_infer_job=_resume_infer_job,
     )
-    return {
-        'project_id': payload.project_id,
-        'image_id': payload.image_id,
-        'mode': payload.mode,
-        'num_detections': len(out['detections']),
-        'detections': out['detections'],
-        'saved_annotations': out['saved_annotations'],
-        'impacted_classes': out['impacted_classes'],
-        'raw': out['result'],
-    }
-
-
-@app.post('/api/infer/preview')
-def infer_preview(payload: InferIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='only image project is supported')
-    image = _get_image_or_404(project, payload.image_id)
-    out = _infer_single(
-        project=project,
-        image=image,
-        mode=payload.mode,
-        classes=payload.classes,
-        active_class=payload.active_class,
-        points=payload.points,
-        boxes=payload.boxes,
-        threshold=payload.threshold,
-        api_base_url=payload.api_base_url,
-        save_result=False,
-    )
-    return {
-        'project_id': payload.project_id,
-        'image_id': payload.image_id,
-        'mode': payload.mode,
-        'num_detections': len(out['detections']),
-        'detections': out['detections'],
-        'saved_annotations': out['saved_annotations'],
-        'impacted_classes': out['impacted_classes'],
-        'raw': out['result'],
-    }
-
-
-@app.post('/api/infer/example_preview')
-def infer_example_preview(payload: InferExamplePreviewIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='only image project is supported')
-    image = _get_image_or_404(project, payload.image_id)
-    out = _infer_example_preview(
-        project=project,
-        image=image,
-        active_class=payload.active_class,
-        boxes=payload.boxes,
-        pure_visual=bool(payload.pure_visual),
-        threshold=payload.threshold,
-        api_base_url=payload.api_base_url,
-    )
-    return {
-        'project_id': payload.project_id,
-        'image_id': payload.image_id,
-        'mode': 'example_preview',
-        'num_detections': len(out['detections']),
-        'detections': out['detections'],
-        'saved_annotations': out['saved_annotations'],
-        'impacted_classes': out['impacted_classes'],
-        'raw': out['result'],
-    }
-
-
-@app.post('/api/infer/batch')
-def infer_batch(payload: InferBatchIn) -> dict[str, Any]:
-    return _run_infer_batch(payload)
-
-
-@app.post('/api/infer/batch_example')
-def infer_batch_example(payload: InferExampleBatchIn) -> dict[str, Any]:
-    return _run_infer_batch_example(payload)
-
-
-@app.post('/api/infer/jobs/start_batch')
-def start_infer_batch_job(payload: InferBatchIn) -> dict[str, Any]:
-    job = _spawn_infer_job(
-        project_id=payload.project_id,
-        job_type='text_batch',
-        payload_dict=payload.model_dump(),
-        worker=lambda data, progress_cb, should_stop, resume_state: _run_infer_batch(
-            InferBatchIn(**data),
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            resume_state=resume_state,
-        ),
-    )
-    return {'job': job}
-
-
-@app.post('/api/infer/jobs/start_batch_example')
-def start_infer_batch_example_job(payload: InferExampleBatchIn) -> dict[str, Any]:
-    job = _spawn_infer_job(
-        project_id=payload.project_id,
-        job_type='example_batch',
-        payload_dict=payload.model_dump(),
-        worker=lambda data, progress_cb, should_stop, resume_state: _run_infer_batch_example(
-            InferExampleBatchIn(**data),
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            resume_state=resume_state,
-        ),
-    )
-    return {'job': job}
-
-
-@app.get('/api/infer/jobs/active')
-def get_active_infer_job(project_id: str = Query(..., min_length=1)) -> dict[str, Any]:
-    _get_project_or_404(project_id, enrich=False, include_images=False)
-    job = _get_active_infer_job_for_project(project_id)
-    if not job:
-        job = _get_latest_infer_job_for_project(project_id, statuses={'paused', 'pausing'})
-    return {'job': job}
-
-
-@app.get('/api/infer/jobs/{job_id}')
-def get_infer_job(job_id: str) -> dict[str, Any]:
-    return {'job': _get_infer_job_state_or_404(job_id)}
-
-
-@app.post('/api/infer/jobs/pause')
-@app.post('/api/infer/jobs/stop')
-def pause_infer_job(payload: InferJobControlIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, enrich=False, include_images=False)
-    if project.get('project_type') != 'image':
-        raise HTTPException(status_code=400, detail='infer pause currently supports image project only')
-
-    state = _get_active_infer_job_for_project(payload.project_id)
-    if not _pause_infer_job(payload.project_id):
-        paused = _get_latest_infer_job_for_project(payload.project_id, statuses={'paused', 'pausing'})
-        return {'job': paused or state}
-    if state and str(state.get('job_id') or '').strip():
-        _update_infer_job_state(str(state.get('job_id') or ''), status='pausing')
-    return {'job': _get_active_infer_job_for_project(payload.project_id) or _get_latest_infer_job_for_project(payload.project_id, statuses={'pausing'})}
-
-
-@app.post('/api/infer/jobs/resume')
-def resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
-    return _resume_infer_job(payload)
+)
 
 
 @app.post('/api/filter/intelligent/preview')
