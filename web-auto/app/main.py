@@ -29,6 +29,7 @@ from app.routers.export import create_export_router
 from app.routers.pose import create_pose_router
 from app.routers.services import create_services_router
 from app.routers.ui_state import create_ui_state_router
+from app.routers.uploads import create_uploads_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     ImportExistingProjectIn,
@@ -2327,23 +2328,6 @@ def _resolve_dataset_upload_dir(target_dir: str) -> Path:
     return target
 
 
-def _safe_dataset_relative_path(relative_path: str, filename: str) -> Path:
-    raw = str(relative_path or filename or '').replace('\\', '/').strip().lstrip('/')
-    if not raw:
-        raw = str(filename or '').replace('\\', '/').strip().lstrip('/')
-    if not raw:
-        raw = f'upload_{new_id()}'
-
-    parts: list[str] = []
-    for part in raw.split('/'):
-        if part in {'', '.', '..'}:
-            raise HTTPException(status_code=400, detail='invalid relative_path')
-        if '\x00' in part:
-            raise HTTPException(status_code=400, detail='invalid relative_path')
-        parts.append(part)
-    return Path(*parts)
-
-
 def _resolve_project_video_file(project: dict[str, Any]) -> Path:
     raw = str(project.get('video_path') or '').strip()
     p = Path(raw).expanduser().resolve() if raw else Path('')
@@ -4434,6 +4418,15 @@ app.include_router(
         allowed_sam3_api_base_urls=_allowed_sam3_api_base_urls,
     )
 )
+app.include_router(
+    create_uploads_router(
+        host_data_root=HOST_DATA_ROOT,
+        allowed_data_roots=ALLOWED_DATA_ROOTS,
+        configured_upload_target_dir=_configured_upload_target_dir,
+        resolve_dataset_upload_dir=_resolve_dataset_upload_dir,
+        path_within_root=_path_within_root,
+    )
+)
 
 
 @app.get('/api/projects')
@@ -4525,66 +4518,6 @@ def open_project(payload: OpenProjectIn) -> dict[str, Any]:
         return {'project': project}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get('/api/uploads/config')
-def get_upload_config() -> dict[str, Any]:
-    target = _configured_upload_target_dir()
-    return {
-        'host_data_root': str(HOST_DATA_ROOT),
-        'allowed_data_roots': [str(root) for root in ALLOWED_DATA_ROOTS],
-        'default_target_dir': str(target),
-    }
-
-
-@app.post('/api/uploads/dataset')
-async def upload_dataset_file(
-    file: UploadFile = File(...),
-    target_dir: str = Form(...),
-    relative_path: str = Form(default=''),
-    overwrite: bool = Form(default=False),
-) -> dict[str, Any]:
-    upload_root = _resolve_dataset_upload_dir(target_dir)
-    safe_rel = _safe_dataset_relative_path(relative_path, file.filename or '')
-    target_path = (upload_root / safe_rel).resolve()
-    if not _path_within_root(target_path, upload_root):
-        raise HTTPException(status_code=400, detail='relative_path escapes target_dir')
-    if target_path.exists() and not overwrite:
-        raise HTTPException(status_code=409, detail=f'file already exists: {target_path}')
-
-    ensure_dir(target_path.parent)
-    tmp_path = target_path.with_name(f'.{target_path.name}.upload-{new_id()}.tmp')
-    bytes_written = 0
-    try:
-        with tmp_path.open('wb') as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                bytes_written += len(chunk)
-        os.replace(tmp_path, target_path)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail=f'failed to save file: {exc}') from exc
-    finally:
-        try:
-            await file.close()
-        except Exception:
-            pass
-
-    return {
-        'ok': True,
-        'path': str(target_path),
-        'relative_path': safe_rel.as_posix(),
-        'size': bytes_written,
-    }
 
 
 @app.post('/api/projects/{project_id}/images/upload')
