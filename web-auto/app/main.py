@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_video_json
+from app.routers.annotations import create_annotations_router
 from app.routers.auth import create_auth_router
 from app.routers.config import create_config_router
 from app.routers.export import create_export_router
@@ -29,7 +30,6 @@ from app.routers.services import create_services_router
 from app.routers.ui_state import create_ui_state_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
-    AppendAnnIn,
     ImportExistingProjectIn,
     ImportImagesIn,
     InferBatchIn,
@@ -39,7 +39,6 @@ from app.schemas import (
     InferJobControlIn,
     InferJobResumeIn,
     OpenProjectIn,
-    SaveAnnIn,
     SmartFilterIn,
     UpdateClassesIn,
     VideoAnnotationsSaveIn,
@@ -205,6 +204,7 @@ app.include_router(
 app.include_router(create_pose_router(get_storage=_current_storage, sapiens_client=SAPIENS_CLIENT))
 app.include_router(create_ui_state_router(get_storage=_current_storage))
 app.include_router(create_export_router(get_storage=_current_storage))
+app.include_router(create_annotations_router(get_storage=_current_storage))
 
 
 class InferJobPaused(RuntimeError):
@@ -421,32 +421,6 @@ def _smart_filter_annotation_allowed(
             return False
 
     return True
-
-
-def _assign_unique_annotation_ids(
-    *,
-    existing: list[dict[str, Any]],
-    incoming: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    used: set[str] = set()
-    for a in existing:
-        sid = str(a.get('id') or '').strip()
-        if sid:
-            used.add(sid)
-
-    out: list[dict[str, Any]] = []
-    for idx, ann in enumerate(incoming, start=1):
-        item = dict(ann) if isinstance(ann, dict) else {}
-        sid = str(item.get('id') or '').strip()
-        if (not sid) or (sid in used):
-            sid = new_id('ann_')
-        # Extra guard in case random collision happens.
-        while sid in used:
-            sid = f'{sid}_{idx}'
-        used.add(sid)
-        item['id'] = sid
-        out.append(item)
-    return out
 
 
 def _chunked(items: list[Any], size: int) -> list[list[Any]]:
@@ -4865,14 +4839,6 @@ def get_image_tile(project_id: str, image_id: str, level: str, tile_name: str) -
     return FileResponse(str(tile_path))
 
 
-@app.get('/api/projects/{project_id}/images/{image_id}/annotations')
-def get_annotations(project_id: str, image_id: str) -> dict[str, Any]:
-    project = _get_project_or_404(project_id, enrich=False, include_images=False)
-    _get_image_or_404(project, image_id)
-    anns = storage.load_annotations(project_id, image_id)
-    return {'annotations': anns}
-
-
 @app.delete('/api/projects/{project_id}/images/{image_id}')
 def delete_image(project_id: str, image_id: str) -> dict[str, Any]:
     try:
@@ -4882,30 +4848,6 @@ def delete_image(project_id: str, image_id: str) -> dict[str, Any]:
         msg = str(exc)
         code = 404 if msg in {'project not found', 'image not found'} else 400
         raise HTTPException(status_code=code, detail=msg) from exc
-
-
-@app.post('/api/annotations/save')
-def save_annotations(payload: SaveAnnIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    _get_image_or_404(project, payload.image_id)
-    storage.save_annotations(payload.project_id, payload.image_id, payload.annotations)
-    saved = storage.load_annotations(payload.project_id, payload.image_id)
-    return {'ok': True, 'saved_annotations': saved}
-
-
-@app.post('/api/annotations/append')
-def append_annotations(payload: AppendAnnIn) -> dict[str, Any]:
-    project = _get_project_or_404(payload.project_id, include_images=False)
-    _get_image_or_404(project, payload.image_id)
-
-    old = storage.load_annotations(payload.project_id, payload.image_id)
-    incoming = payload.annotations if isinstance(payload.annotations, list) else []
-    incoming = [a for a in incoming if isinstance(a, dict)]
-    incoming = _assign_unique_annotation_ids(existing=old, incoming=incoming)
-    merged = list(old) + incoming
-    storage.save_annotations(payload.project_id, payload.image_id, merged)
-    saved = storage.load_annotations(payload.project_id, payload.image_id)
-    return {'ok': True, 'saved_annotations': saved, 'added': len(incoming)}
 
 
 @app.post('/api/infer')
