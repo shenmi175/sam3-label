@@ -16,6 +16,7 @@ import { ImageNavigationController } from '../modules/image-workspace/image-navi
 import { InferenceController } from '../modules/image-workspace/inference-controller.js';
 import { KeyboardCommandManager } from '../modules/image-workspace/keyboard-command-manager.js';
 import { PreviewController } from '../modules/image-workspace/preview-controller.js';
+import { ReviewController } from '../modules/image-workspace/review-controller.js';
 import { SmartFilterController } from '../modules/image-workspace/smart-filter-controller.js';
 import {
   clearBundleState,
@@ -49,6 +50,7 @@ export const ImageWorkspace = {
   inferenceController: null,
   keyboardCommandManager: null,
   previewController: null,
+  reviewController: null,
   smartFilterController: null,
   isUnmounted: false,
   promptMode: 'pointer',
@@ -134,6 +136,7 @@ export const ImageWorkspace = {
     this.inferenceController = new InferenceController(this);
     this.keyboardCommandManager = new KeyboardCommandManager(this);
     this.previewController = new PreviewController(this);
+    this.reviewController = new ReviewController(this);
     this.smartFilterController = new SmartFilterController(this);
     window.currentWorkspace = this;
     
@@ -567,94 +570,35 @@ export const ImageWorkspace = {
   },
 
   setWorkspaceMode(mode) {
-    const nextMode = mode === 'review' ? 'review' : 'auto';
-    this.workspaceMode = nextMode;
-    if (nextMode === 'review' && this.promptMode === 'box') {
-      this.setPromptMode('pointer');
-    }
-    this.syncWorkspaceModeUI();
-    this.scheduleProjectUIStateSave();
+    this.reviewController.setWorkspaceMode(mode);
   },
 
   setModeElementVisibility(selector, visible) {
-    document.querySelectorAll(selector).forEach((el) => {
-      const defaultDisplay = el.dataset.defaultDisplay || 'flex';
-      el.style.display = visible ? defaultDisplay : 'none';
-    });
+    this.reviewController.setModeElementVisibility(selector, visible);
   },
 
   syncWorkspaceModeUI() {
-    const isReview = this.workspaceMode === 'review';
-    this.setModeElementVisibility('.ws-auto-only', !isReview);
-    this.setModeElementVisibility('.ws-review-only', isReview);
-
-    const autoBtn = document.getElementById('btn-workspace-mode-auto');
-    const reviewBtn = document.getElementById('btn-workspace-mode-review');
-    const syncModeButton = (btn, active) => {
-      if (!btn) return;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-      btn.style.boxShadow = active ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
-      btn.style.color = active ? 'var(--neu-text-active)' : 'var(--neu-text)';
-    };
-    syncModeButton(autoBtn, !isReview);
-    syncModeButton(reviewBtn, isReview);
-
-    const btnReviewContinuous = document.getElementById('btn-review-continuous');
-    if (btnReviewContinuous) {
-      btnReviewContinuous.textContent = this.reviewContinuousMode ? '连续: 开' : '连续: 关';
-      btnReviewContinuous.style.boxShadow = this.reviewContinuousMode ? 'var(--neu-inset)' : 'var(--neu-outset-sm)';
-      btnReviewContinuous.style.color = this.reviewContinuousMode ? 'var(--neu-text-active)' : 'var(--neu-text)';
-    }
-    this.syncReviewModeSummary();
-    this.updateAnnotationSelectionControls();
-    this.updateActionBar();
+    this.reviewController.syncWorkspaceModeUI();
   },
 
   syncReviewModeSummary() {
-    const currentClassEl = document.getElementById('review-current-class');
-    if (currentClassEl) {
-      const selected = this.selectedClass || this.projectMeta?.classes?.[0] || '';
-      currentClassEl.textContent = selected || '未选择';
-      currentClassEl.title = selected || '未选择类别';
-    }
+    this.reviewController.syncReviewModeSummary();
   },
 
   toggleReviewContinuousMode() {
-    this.reviewContinuousMode = !this.reviewContinuousMode;
-    this.syncWorkspaceModeUI();
-    this.scheduleProjectUIStateSave();
+    this.reviewController.toggleContinuousMode();
   },
 
   async saveAndNavigate(delta = 1) {
-    if (!this.selectedImageId) return showToast('请先选择图片', 'error');
-    try {
-      if (this.annotationDirty) {
-        await this.flushAnnotationAutosave('review-save-next');
-      } else {
-        const saved = await this.annotationController.saveCurrent();
-        if (saved) showToast(i18n.t('save_success'), 'success');
-      }
-      if (this.annotationDirty) return showToast('当前图片标注尚未保存，保存成功后再切换图片', 'error');
-      this.navigateImage(delta);
-    } catch (e) {
-      showToast(e.message, 'error');
-    }
+    await this.reviewController.saveAndNavigate(delta);
   },
 
   selectClassByIndex(index) {
-    const classes = this.projectMeta?.classes || [];
-    const cls = classes[index];
-    if (!cls) return;
-    this.selectClass(cls);
-    showToast(`当前类别: ${cls}`, 'info');
+    this.reviewController.selectClassByIndex(index);
   },
 
   async applySelectedClassToFocusedAnnotation() {
-    if (!this.focusedAnnotationId) return showToast('请先选中一个标注', 'info');
-    const nextClass = this.selectedClass || this.projectMeta?.classes?.[0] || '';
-    if (!nextClass) return showToast('请先选择类别', 'error');
-    await this.updateAnnotationClass(this.focusedAnnotationId, nextClass);
+    await this.reviewController.applySelectedClassToFocusedAnnotation();
   },
 
   async restoreProjectUIState() {
