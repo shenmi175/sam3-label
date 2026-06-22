@@ -22,13 +22,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.exports import export_coco, export_video_json, export_yolo
 from app.routers.auth import create_auth_router
+from app.routers.services import create_services_router
 from app.sam3_client import Sam3Client
 from app.schemas import (
     AppendAnnIn,
     CacheDirUpdateIn,
     ExportIn,
     GlobalConfigUpdateIn,
-    HealthApiIn,
     ImportExistingProjectIn,
     ImportImagesIn,
     InferBatchIn,
@@ -64,7 +64,7 @@ from app.services.annotation_geometry import (
 from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
-from app.services.integration_clients import OpsClient, SapiensClient, service_management_unavailable
+from app.services.integration_clients import OpsClient, SapiensClient
 from app.storage import Storage
 from app.utils import IMAGE_EXTENSIONS, ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
 
@@ -191,6 +191,14 @@ async def require_web_auto_session(request: Request, call_next):
 
 
 app.include_router(create_auth_router(AUTH_HTTP))
+app.include_router(
+    create_services_router(
+        sam3=sam3,
+        ops_client=OPS_CLIENT,
+        sapiens_client=SAPIENS_CLIENT,
+        default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
+    )
+)
 
 
 class InferJobPaused(RuntimeError):
@@ -5155,85 +5163,6 @@ def pause_infer_job(payload: InferJobControlIn) -> dict[str, Any]:
 @app.post('/api/infer/jobs/resume')
 def resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
     return _resume_infer_job(payload)
-
-
-@app.post('/api/sam3/health')
-def sam3_health(payload: HealthApiIn) -> dict[str, Any]:
-    try:
-        result = sam3.health(payload.api_base_url)
-        return {'ok': True, 'result': result}
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get('/api/services/status')
-def services_status() -> dict[str, Any]:
-    try:
-        result = OPS_CLIENT.request('GET', '/v1/services', timeout=8.0)
-        result['ok'] = True
-        result['ops_available'] = True
-        return result
-    except Exception as exc:  # noqa: BLE001
-        return service_management_unavailable(str(exc))
-
-
-@app.post('/api/services/{service}/{action}')
-def control_service(service: str, action: str) -> dict[str, Any]:
-    clean_service = str(service or '').strip()
-    clean_action = str(action or '').strip().lower()
-    if clean_service == 'web-auto':
-        raise HTTPException(status_code=400, detail='web-auto cannot be controlled from the web UI')
-    if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
-        raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
-    if clean_action not in {'start', 'stop', 'restart'}:
-        raise HTTPException(status_code=400, detail='action must be start, stop, or restart')
-    try:
-        return OPS_CLIENT.request('POST', f'/v1/services/{clean_service}/{clean_action}', timeout=35.0)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get('/api/services/{service}/logs')
-def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) -> dict[str, Any]:
-    clean_service = str(service or '').strip()
-    if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
-        raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
-    try:
-        return OPS_CLIENT.request('GET', f'/v1/services/{clean_service}/logs?tail={tail}', timeout=12.0)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get('/api/sapiens/status')
-def sapiens_status() -> dict[str, Any]:
-    try:
-        health_data = SAPIENS_CLIENT.request('GET', '/health', timeout=8.0)
-        pose_data = SAPIENS_CLIENT.request('GET', '/v1/pose/status', timeout=8.0)
-        return {
-            'ok': True,
-            'health': health_data,
-            'pose': pose_data,
-            'checkpoint': pose_data.get('checkpoint', {}),
-            'api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': str(exc), 'api_base_url': DEFAULT_SAPIENS_API_BASE_URL}
-
-
-@app.post('/api/sapiens/checkpoint/download')
-def sapiens_checkpoint_download() -> dict[str, Any]:
-    try:
-        return SAPIENS_CLIENT.request('POST', '/v1/pose/checkpoints/download', {}, timeout=12.0)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get('/api/sapiens/checkpoint/download/{job_id}')
-def sapiens_checkpoint_download_status(job_id: str) -> dict[str, Any]:
-    try:
-        return SAPIENS_CLIENT.request('GET', f'/v1/pose/checkpoints/download/{job_id}', timeout=8.0)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _pose_annotations_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
