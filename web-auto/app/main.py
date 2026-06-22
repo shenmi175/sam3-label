@@ -58,6 +58,7 @@ from app.services.inference_visual_prompts import (
     _reduce_points_to_single_instance,
 )
 from app.services.inference_results import _convert_detections, _replace_by_classes
+from app.services.inference_jobs import InferenceJobService, InferJobPaused
 from app.services.integration_clients import OpsClient, SapiensClient
 from app.services.image_tiles import ImageTileService
 from app.services.smart_filter_service import (
@@ -66,7 +67,7 @@ from app.services.smart_filter_service import (
     SmartFilterJobService,
 )
 from app.storage import Storage
-from app.utils import ensure_dir, list_video_files_recursive, new_id, norm_text, now_ts
+from app.utils import ensure_dir, list_video_files_recursive, now_ts
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -115,10 +116,7 @@ def _current_storage() -> Storage:
 
 VIDEO_JOB_LOCK = threading.Lock()
 VIDEO_JOB_THREADS: dict[str, dict[str, Any]] = {}
-INFER_JOB_LOCK = threading.Lock()
-INFER_JOB_THREADS: dict[str, dict[str, Any]] = {}
-INFER_JOB_STATES: dict[str, dict[str, Any]] = {}
-INFER_PROJECT_ACTIVE: dict[str, str] = {}
+INFER_JOBS = InferenceJobService(max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE, logger=logger)
 SMART_FILTER_JOBS = SmartFilterJobService(get_storage=_current_storage, logger=logger)
 CONFIG_LOCK = threading.Lock()
 PROJECT_DISCOVERY_LOCK = threading.Lock()
@@ -211,10 +209,6 @@ app.include_router(create_image_files_router(get_storage=_current_storage, tile_
 app.include_router(create_project_images_router(get_storage=_current_storage))
 
 
-class InferJobPaused(RuntimeError):
-    """Cooperative stop for long-running infer jobs."""
-
-
 def _chunked(items: list[Any], size: int) -> list[list[Any]]:
     chunk_size = max(1, int(size))
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
@@ -229,222 +223,6 @@ def _requested_batch_size(raw: Any) -> int:
 
 def _effective_sam3_batch_size(raw: Any) -> int:
     return min(_requested_batch_size(raw), SAM3_MAX_BATCH_FILES)
-
-
-def _infer_job_state_default(*, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
-    return {
-        'job_id': job_id,
-        'project_id': project_id,
-        'job_type': job_type,
-        'status': 'queued',
-        'running': False,
-        'message': 'waiting',
-        'progress_done': 0,
-        'progress_total': 0,
-        'progress_pct': 0.0,
-        'requested': 0,
-        'batch_size': 0,
-        'succeeded': 0,
-        'failed': 0,
-        'skipped': 0,
-        'new_annotations': 0,
-        'current_image_id': '',
-        'current_image_rel_path': '',
-        'started_at': '',
-        'updated_at': now_ts(),
-        'finished_at': '',
-        'error': '',
-        'errors': [],
-        'failed_image_ids': [],
-        'skipped_image_ids': [],
-        'class_additions': {},
-        'image_results': [],
-        'params': {},
-        'payload_dict': {},
-        'pending_image_ids': [],
-        'pending_image_count': 0,
-        'pending_image_ids_truncated': False,
-        'resume_count': 0,
-        'result': {},
-    }
-
-
-def _cleanup_infer_project_slot(project_id: str) -> None:
-    active_job_id = str(INFER_PROJECT_ACTIVE.get(project_id) or '').strip()
-    if not active_job_id:
-        return
-    holder = INFER_JOB_THREADS.get(active_job_id) or {}
-    thread = holder.get('thread')
-    if thread and thread.is_alive():
-        return
-    INFER_JOB_THREADS.pop(active_job_id, None)
-    if INFER_PROJECT_ACTIVE.get(project_id) == active_job_id:
-        INFER_PROJECT_ACTIVE.pop(project_id, None)
-    state = INFER_JOB_STATES.get(active_job_id)
-    if isinstance(state, dict):
-        state['running'] = False
-        state['updated_at'] = now_ts()
-
-
-def _update_infer_job_state(job_id: str, **updates: Any) -> None:
-    with INFER_JOB_LOCK:
-        state = INFER_JOB_STATES.get(job_id)
-        if not isinstance(state, dict):
-            return
-        state.update(updates)
-        progress_total = int(state.get('progress_total') or 0)
-        progress_done = int(state.get('progress_done') or 0)
-        if progress_total > 0 and 'progress_pct' not in updates:
-            state['progress_pct'] = float(max(0, min(progress_done, progress_total)) * 100.0 / max(progress_total, 1))
-        state['updated_at'] = now_ts()
-
-
-def _compact_infer_job_state_for_response(state: dict[str, Any]) -> dict[str, Any]:
-    out = dict(state)
-    pending = [str(x).strip() for x in out.get('pending_image_ids', []) if str(x).strip()] if isinstance(out.get('pending_image_ids'), list) else []
-    pending_count = int(out.get('pending_image_count') or len(pending))
-    if len(pending) > MAX_PENDING_IMAGE_IDS_IN_JOB_STATE:
-        out['pending_image_ids'] = pending[:MAX_PENDING_IMAGE_IDS_IN_JOB_STATE]
-        out['pending_image_ids_truncated'] = True
-    else:
-        out['pending_image_ids'] = pending
-        out['pending_image_ids_truncated'] = bool(out.get('pending_image_ids_truncated')) and pending_count > len(pending)
-    out['pending_image_count'] = pending_count
-    return out
-
-
-def _get_infer_job_state_or_404(job_id: str) -> dict[str, Any]:
-    with INFER_JOB_LOCK:
-        state = INFER_JOB_STATES.get(job_id)
-        if not isinstance(state, dict):
-            raise HTTPException(status_code=404, detail='infer job not found')
-        holder = INFER_JOB_THREADS.get(job_id) or {}
-        thread = holder.get('thread')
-        running = bool(thread and thread.is_alive())
-        out = dict(state)
-        out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return _compact_infer_job_state_for_response(out)
-
-
-def _get_active_infer_job_for_project(project_id: str) -> dict[str, Any] | None:
-    with INFER_JOB_LOCK:
-        _cleanup_infer_project_slot(project_id)
-        job_id = str(INFER_PROJECT_ACTIVE.get(project_id) or '').strip()
-        if not job_id:
-            return None
-        state = INFER_JOB_STATES.get(job_id)
-        if not isinstance(state, dict):
-            INFER_PROJECT_ACTIVE.pop(project_id, None)
-            return None
-        holder = INFER_JOB_THREADS.get(job_id) or {}
-        thread = holder.get('thread')
-        running = bool(thread and thread.is_alive())
-        out = dict(state)
-        out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return _compact_infer_job_state_for_response(out)
-
-
-def _get_latest_infer_job_for_project(
-    project_id: str,
-    *,
-    statuses: Optional[set[str]] = None,
-) -> dict[str, Any] | None:
-    with INFER_JOB_LOCK:
-        matches: list[dict[str, Any]] = []
-        for state in INFER_JOB_STATES.values():
-            if str(state.get('project_id') or '').strip() != project_id:
-                continue
-            status = str(state.get('status') or '').strip().lower()
-            if statuses and status not in statuses:
-                continue
-            matches.append(dict(state))
-        if not matches:
-            return None
-        matches.sort(key=lambda item: (str(item.get('updated_at') or ''), str(item.get('job_id') or '')), reverse=True)
-        out = matches[0]
-        holder = INFER_JOB_THREADS.get(str(out.get('job_id') or '')) or {}
-        thread = holder.get('thread')
-        running = bool(thread and thread.is_alive())
-        out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-        return _compact_infer_job_state_for_response(out)
-
-
-def _pause_infer_job(project_id: str) -> bool:
-    with INFER_JOB_LOCK:
-        _cleanup_infer_project_slot(project_id)
-        job_id = str(INFER_PROJECT_ACTIVE.get(project_id) or '').strip()
-        if not job_id:
-            return False
-        holder = INFER_JOB_THREADS.get(job_id) or {}
-        ev = holder.get('stop_event')
-        if not ev:
-            return False
-        ev.set()
-        return True
-
-
-def _count_prompt_labels(items: Any, label_index: int) -> tuple[int, int]:
-    pos = 0
-    neg = 0
-    if not isinstance(items, list):
-        return (pos, neg)
-    for raw in items:
-        if not isinstance(raw, list) or len(raw) <= label_index:
-            continue
-        try:
-            is_pos = bool(int(float(raw[label_index])))
-        except (TypeError, ValueError):
-            is_pos = bool(raw[label_index])
-        if is_pos:
-            pos += 1
-        else:
-            neg += 1
-    return (pos, neg)
-
-
-def _infer_job_params_from_payload(job_type: str, payload_dict: dict[str, Any]) -> dict[str, Any]:
-    payload = payload_dict if isinstance(payload_dict, dict) else {}
-    classes = [str(x).strip() for x in payload.get('classes', []) if str(x).strip()]
-    image_ids = [str(x).strip() for x in payload.get('image_ids', []) if str(x).strip()]
-    try:
-        threshold = float(payload.get('threshold') if payload.get('threshold') is not None else 0.5)
-    except (TypeError, ValueError):
-        threshold = 0.5
-    try:
-        batch_size = max(0, int(payload.get('batch_size') or 0))
-    except (TypeError, ValueError):
-        batch_size = 0
-    active_class = str(payload.get('active_class') or '').strip()
-    source_image_id = str(payload.get('source_image_id') or '').strip()
-    pure_visual = bool(payload.get('pure_visual'))
-    pos_points, neg_points = _count_prompt_labels(payload.get('points'), 2)
-    pos_boxes, neg_boxes = _count_prompt_labels(payload.get('boxes'), 4)
-
-    params: dict[str, Any] = {
-        'job_type': str(job_type or '').strip(),
-        'threshold': threshold,
-        'batch_size': batch_size,
-        'classes': classes,
-        'active_class': active_class,
-        'selected_image_count': len(image_ids),
-        'all_images': bool(payload.get('all_images')),
-        'source_image_id': source_image_id,
-        'pure_visual': pure_visual,
-        'positive_points': pos_points,
-        'negative_points': neg_points,
-        'positive_boxes': pos_boxes,
-        'negative_boxes': neg_boxes,
-    }
-    if job_type == 'text_batch':
-        params['mode_label'] = '全图文本批推'
-        params['scope_label'] = '全部图片' if bool(payload.get('all_images')) else '选中图片'
-    elif job_type == 'example_batch':
-        params['mode_label'] = '全图集范例传播'
-        params['scope_label'] = '全部图片'
-    else:
-        params['mode_label'] = str(job_type or '').strip() or '推理任务'
-        params['scope_label'] = ''
-    return params
 
 
 def _infer_job_image_ids(items: list[dict[str, Any]], *, limit: int = 0) -> list[str]:
@@ -496,117 +274,12 @@ def _merge_infer_resume_payload(job_type: str, base_payload: dict[str, Any], ove
     return payload
 
 
-def _spawn_infer_job(
-    *,
-    project_id: str,
-    job_type: str,
-    payload_dict: dict[str, Any],
-    worker: Callable[[dict[str, Any], Callable[..., None], Callable[[], bool], Optional[dict[str, Any]]], dict[str, Any]],
-    existing_job_id: Optional[str] = None,
-) -> dict[str, Any]:
-    with INFER_JOB_LOCK:
-        _cleanup_infer_project_slot(project_id)
-        active_job_id = str(INFER_PROJECT_ACTIVE.get(project_id) or '').strip()
-        if active_job_id:
-            raise HTTPException(status_code=409, detail='another infer job is already running for this project')
-
-        if existing_job_id:
-            job_id = str(existing_job_id).strip()
-            state = INFER_JOB_STATES.get(job_id)
-            if not isinstance(state, dict):
-                raise HTTPException(status_code=404, detail='infer job not found')
-            if str(state.get('project_id') or '').strip() != project_id:
-                raise HTTPException(status_code=400, detail='infer job does not belong to this project')
-            state['resume_count'] = int(state.get('resume_count') or 0) + 1
-        else:
-            job_id = new_id('ijob_')
-            state = _infer_job_state_default(job_id=job_id, project_id=project_id, job_type=job_type)
-            INFER_JOB_STATES[job_id] = state
-
-        state['job_type'] = job_type
-        state['payload_dict'] = dict(payload_dict)
-        state['params'] = _infer_job_params_from_payload(job_type, payload_dict)
-        state['status'] = 'queued'
-        state['running'] = False
-        state['message'] = 'waiting'
-        state['error'] = ''
-        state['finished_at'] = ''
-        state['updated_at'] = now_ts()
-        INFER_PROJECT_ACTIVE[project_id] = job_id
-        resume_state = dict(state)
-        stop_event = threading.Event()
-
-        def _worker_entry() -> None:
-            _update_infer_job_state(
-                job_id,
-                status='running',
-                running=True,
-                started_at=now_ts(),
-                message='job started',
-            )
-            try:
-                result = worker(
-                    payload_dict,
-                    lambda **kw: _update_infer_job_state(job_id, **kw),
-                    lambda: bool(stop_event.is_set()),
-                    resume_state,
-                )
-                _update_infer_job_state(
-                    job_id,
-                    status='done',
-                    running=False,
-                    finished_at=now_ts(),
-                    message=str(result.get('message') or 'done'),
-                    result=result,
-                    requested=int(result.get('requested') or 0),
-                    batch_size=int(result.get('batch_size') or 0),
-                    succeeded=int(result.get('succeeded') or 0),
-                    failed=int(result.get('failed') or 0),
-                    new_annotations=int(result.get('new_annotations') or 0),
-                    errors=result.get('errors', []),
-                    progress_done=int(result.get('requested') or 0),
-                    progress_total=int(result.get('requested') or 0),
-                    progress_pct=100.0,
-                    pending_image_ids=[],
-                    pending_image_count=0,
-                    pending_image_ids_truncated=False,
-                )
-            except InferJobPaused as exc:
-                _update_infer_job_state(
-                    job_id,
-                    status='paused',
-                    running=False,
-                    message=str(exc) or 'job paused',
-                    error='',
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception('infer job failed project=%s type=%s', project_id, job_type)
-                _update_infer_job_state(
-                    job_id,
-                    status='error',
-                    running=False,
-                    finished_at=now_ts(),
-                    message=str(exc),
-                    error=str(exc),
-                )
-            finally:
-                with INFER_JOB_LOCK:
-                    INFER_JOB_THREADS.pop(job_id, None)
-                    if INFER_PROJECT_ACTIVE.get(project_id) == job_id:
-                        INFER_PROJECT_ACTIVE.pop(project_id, None)
-
-        thread = threading.Thread(target=_worker_entry, daemon=True)
-        INFER_JOB_THREADS[job_id] = {'thread': thread, 'project_id': project_id, 'stop_event': stop_event}
-        thread.start()
-        return dict(state)
-
-
 def _resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
     project = _get_project_or_404(payload.project_id, include_images=False)
     if project.get('project_type') != 'image':
         raise HTTPException(status_code=400, detail='infer resume currently supports image project only')
 
-    paused = _get_latest_infer_job_for_project(payload.project_id, statuses={'paused'})
+    paused = INFER_JOBS.get_latest_job_for_project(payload.project_id, statuses={'paused'})
     if not paused:
         raise HTTPException(status_code=409, detail='no paused infer job found for this project')
 
@@ -633,7 +306,7 @@ def _resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
         else:
             merged['image_ids'] = pending_image_ids
         merged['all_images'] = False
-        job = _spawn_infer_job(
+        job = INFER_JOBS.spawn_job(
             project_id=payload.project_id,
             job_type='text_batch',
             payload_dict=merged,
@@ -649,7 +322,7 @@ def _resume_infer_job(payload: InferJobResumeIn) -> dict[str, Any]:
 
     if job_type == 'example_batch':
         merged['image_ids'] = pending_image_ids
-        job = _spawn_infer_job(
+        job = INFER_JOBS.spawn_job(
             project_id=payload.project_id,
             job_type='example_batch',
             payload_dict=merged,
@@ -911,13 +584,7 @@ def _read_video_frame_jpeg(video_path: str, frame_index: int) -> bytes:
 
 
 def _count_running_infer_jobs() -> int:
-    with INFER_JOB_LOCK:
-        total = 0
-        for holder in INFER_JOB_THREADS.values():
-            thread = holder.get('thread') if isinstance(holder, dict) else None
-            if thread and thread.is_alive():
-                total += 1
-        return total
+    return INFER_JOBS.count_running_jobs()
 
 
 def _count_running_smart_filter_jobs() -> int:
@@ -2842,12 +2509,12 @@ app.include_router(
         infer_example_preview_impl=_infer_example_preview,
         run_infer_batch=_run_infer_batch,
         run_infer_batch_example=_run_infer_batch_example,
-        spawn_infer_job=_spawn_infer_job,
-        get_active_infer_job_for_project=_get_active_infer_job_for_project,
-        get_latest_infer_job_for_project=_get_latest_infer_job_for_project,
-        get_infer_job_state_or_404=_get_infer_job_state_or_404,
-        pause_infer_job=_pause_infer_job,
-        update_infer_job_state=_update_infer_job_state,
+        spawn_infer_job=INFER_JOBS.spawn_job,
+        get_active_infer_job_for_project=INFER_JOBS.get_active_job_for_project,
+        get_latest_infer_job_for_project=INFER_JOBS.get_latest_job_for_project,
+        get_infer_job_state_or_404=INFER_JOBS.get_job_state_or_404,
+        pause_infer_job=INFER_JOBS.pause_job,
+        update_infer_job_state=INFER_JOBS.update_job_state,
         resume_infer_job=_resume_infer_job,
     )
 )
