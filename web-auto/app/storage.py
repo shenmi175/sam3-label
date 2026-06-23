@@ -8,6 +8,7 @@ from typing import Any
 from app.repositories.annotation_index import AnnotationIndexRepository
 from app.repositories.annotation_records import AnnotationRecordRepository
 from app.repositories.project_files import ProjectFileRepository
+from app.repositories.project_images import ProjectImageRepository
 from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
 from app.repositories.ui_state import UIStateRepository
@@ -44,6 +45,7 @@ class Storage:
         self._db_lock = threading.RLock()
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
+        self._project_images = ProjectImageRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._annotation_index = AnnotationIndexRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._annotation_records = AnnotationRecordRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._project_manifests = ProjectManifestRepository(normalize_project=self._normalize_project)
@@ -197,7 +199,7 @@ class Storage:
 
     @staticmethod
     def _normalize_image_status(raw: Any) -> str:
-        return 'labeled' if str(raw or '').strip().lower() == 'labeled' else 'unlabeled'
+        return ProjectImageRepository.normalize_status(raw)
 
     @staticmethod
     def _annotation_class_name(ann: dict[str, Any]) -> str:
@@ -227,180 +229,35 @@ class Storage:
         self._annotation_index.replace(project_id, image_id, annotations, conn=conn, updated_at=updated_at)
 
     def _normalize_image_rows(self, project_type: str, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        for idx, img in enumerate(images):
-            if not isinstance(img, dict):
-                continue
-            item = dict(img)
-            rel_path = str(item.get('rel_path') or '').strip()
-            image_id = str(item.get('id') or '').strip()
-            if not rel_path or not image_id:
-                continue
-            row: dict[str, Any] = {
-                'id': image_id,
-                'rel_path': rel_path,
-                'abs_path': str(item.get('abs_path') or '').strip(),
-                'status': self._normalize_image_status(item.get('status')),
-                'sort_index': idx,
-                'frame_index': None,
-            }
-            out.append(row)
-        return out
+        return ProjectImageRepository.normalize_rows(project_type, images)
 
     def _replace_project_images_db(self, project_id: str, project_type: str, images: list[dict[str, Any]]) -> None:
-        rows = self._normalize_image_rows(project_type, images)
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                conn.execute('DELETE FROM project_images WHERE project_id = ?', (str(project_id),))
-                conn.executemany(
-                    '''
-                    INSERT INTO project_images (
-                        project_id, sort_index, image_id, rel_path, abs_path, status, frame_index
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    [
-                        (
-                            str(project_id),
-                            int(row['sort_index']),
-                            str(row['id']),
-                            str(row['rel_path']),
-                            str(row['abs_path']),
-                            str(row['status']),
-                            row['frame_index'],
-                        )
-                        for row in rows
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.replace(project_id, project_type, images)
 
     def _insert_project_images_db(self, project_id: str, project_type: str, images: list[dict[str, Any]], *, start_index: int) -> None:
-        rows = self._normalize_image_rows(project_type, images)
-        for offset, row in enumerate(rows):
-            row['sort_index'] = int(start_index + offset)
-        if not rows:
-            return
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                conn.executemany(
-                    '''
-                    INSERT OR REPLACE INTO project_images (
-                        project_id, sort_index, image_id, rel_path, abs_path, status, frame_index
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    [
-                        (
-                            str(project_id),
-                            int(row['sort_index']),
-                            str(row['id']),
-                            str(row['rel_path']),
-                            str(row['abs_path']),
-                            str(row['status']),
-                            row['frame_index'],
-                        )
-                        for row in rows
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.insert(project_id, project_type, images, start_index=start_index)
 
     def _update_project_image_abs_path_db(self, project_id: str, image_id: str, abs_path: str) -> None:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                conn.execute(
-                    'UPDATE project_images SET abs_path = ? WHERE project_id = ? AND image_id = ?',
-                    (str(abs_path or ''), str(project_id), str(image_id)),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.update_abs_path(project_id, image_id, abs_path)
 
-    def _update_project_image_status_db(self, project_id: str, image_id: str, status: str) -> bool:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                cur = conn.execute(
-                    'UPDATE project_images SET status = ? WHERE project_id = ? AND image_id = ?',
-                    (self._normalize_image_status(status), str(project_id), str(image_id)),
-                )
-                conn.commit()
-                return int(cur.rowcount or 0) > 0
-            finally:
-                conn.close()
+    def _update_project_image_status_db(
+        self,
+        project_id: str,
+        image_id: str,
+        status: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        return self._project_images.update_status(project_id, image_id, status, conn=conn)
 
     def _delete_project_image_db(self, project_id: str, image_id: str) -> None:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                conn.execute(
-                    'DELETE FROM project_images WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.execute(
-                    'DELETE FROM annotation_ids WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.execute(
-                    'DELETE FROM image_annotations WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.execute(
-                    'DELETE FROM image_annotation_stats WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.execute(
-                    'DELETE FROM image_class_index WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.delete_one(project_id, image_id)
 
     def _delete_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> None:
-        ids = list(dict.fromkeys(str(item).strip() for item in image_ids if str(item).strip()))
-        if not ids:
-            return
-        tables = [
-            'project_images',
-            'annotation_ids',
-            'image_annotations',
-            'image_annotation_stats',
-            'image_class_index',
-        ]
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                for table in tables:
-                    for start in range(0, len(ids), 500):
-                        chunk = ids[start:start + 500]
-                        placeholders = ','.join('?' for _ in chunk)
-                        conn.execute(
-                            f'DELETE FROM {table} WHERE project_id = ? AND image_id IN ({placeholders})',
-                            [str(project_id), *chunk],
-                        )
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.delete_many(project_id, image_ids)
 
     def _delete_project_images_db(self, project_id: str) -> None:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                conn.execute('DELETE FROM project_images WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM annotation_ids WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM image_annotations WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM image_annotation_stats WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM smart_filter_snapshots WHERE project_id = ?', (str(project_id),))
-                conn.execute('DELETE FROM smart_filter_runs WHERE project_id = ?', (str(project_id),))
-                conn.commit()
-            finally:
-                conn.close()
+        self._project_images.delete_project(project_id)
 
     @staticmethod
     def _json_dumps_db(value: Any) -> str:
@@ -513,32 +370,10 @@ class Storage:
 
     @staticmethod
     def _db_row_to_image(row: sqlite3.Row) -> dict[str, Any]:
-        item: dict[str, Any] = {
-            'id': str(row['image_id']),
-            'rel_path': str(row['rel_path']),
-            'abs_path': str(row['abs_path'] or ''),
-            'status': str(row['status'] or 'unlabeled'),
-        }
-        if row['frame_index'] is not None:
-            item['frame_index'] = int(row['frame_index'])
-        return item
+        return ProjectImageRepository.row_to_image(row)
 
     def _load_project_images_db(self, project_id: str) -> list[dict[str, Any]]:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    '''
-                    SELECT image_id, rel_path, abs_path, status, frame_index
-                    FROM project_images
-                    WHERE project_id = ?
-                    ORDER BY sort_index ASC
-                    ''',
-                    (str(project_id),),
-                ).fetchall()
-            finally:
-                conn.close()
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.load_all(project_id)
 
     def _project_images_filter_query(
         self,
@@ -547,40 +382,10 @@ class Storage:
         status: str = '',
         class_name: str = '',
     ) -> tuple[str, list[Any], str]:
-        class_norm = norm_text(class_name)
-        status_norm = self._normalize_image_status(status) if str(status or '').strip().lower() in {'labeled', 'unlabeled'} else ''
-        join_sql = ''
-        where_parts = ['pi.project_id = ?']
-        params: list[Any] = [str(project_id)]
-        if class_norm:
-            join_sql = '''
-            INNER JOIN image_class_index ci
-            ON ci.project_id = pi.project_id AND ci.image_id = pi.image_id
-            '''
-            where_parts.append('ci.class_name_norm = ?')
-            params.append(class_norm)
-        if status_norm:
-            where_parts.append('pi.status = ?')
-            params.append(status_norm)
-        return join_sql, params, ' AND '.join(where_parts)
+        return ProjectImageRepository.filter_query(project_id, status=status, class_name=class_name)
 
     def _count_project_images_db(self, project_id: str, *, status: str = '', class_name: str = '') -> int:
-        join_sql, params, where_sql = self._project_images_filter_query(project_id, status=status, class_name=class_name)
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                row = conn.execute(
-                    f'''
-                    SELECT COUNT(*) AS total
-                    FROM project_images pi
-                    {join_sql}
-                    WHERE {where_sql}
-                    ''',
-                    params,
-                ).fetchone()
-            finally:
-                conn.close()
-        return int(row['total'] if row is not None else 0)
+        return self._project_images.count(project_id, status=status, class_name=class_name)
 
     def _get_project_image_filtered_index_db(
         self,
@@ -590,40 +395,12 @@ class Storage:
         status: str = '',
         class_name: str = '',
     ) -> int:
-        if not str(image_id or '').strip():
-            return -1
-        selected_index = self._get_project_image_index_db(project_id, image_id)
-        if selected_index < 0:
-            return -1
-        join_sql, params, where_sql = self._project_images_filter_query(project_id, status=status, class_name=class_name)
-        params = list(params) + [int(selected_index)]
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                selected = conn.execute(
-                    f'''
-                    SELECT pi.image_id
-                    FROM project_images pi
-                    {join_sql}
-                    WHERE {where_sql} AND pi.image_id = ?
-                    LIMIT 1
-                    ''',
-                    params[:-1] + [str(image_id)],
-                ).fetchone()
-                if selected is None:
-                    return -1
-                row = conn.execute(
-                    f'''
-                    SELECT COUNT(*) AS idx
-                    FROM project_images pi
-                    {join_sql}
-                    WHERE {where_sql} AND pi.sort_index < ?
-                    ''',
-                    params,
-                ).fetchone()
-            finally:
-                conn.close()
-        return int(row['idx'] if row is not None else -1)
+        return self._project_images.filtered_index(
+            project_id,
+            image_id,
+            status=status,
+            class_name=class_name,
+        )
 
     def _load_project_images_page_db(
         self,
@@ -634,54 +411,16 @@ class Storage:
         status: str = '',
         class_name: str = '',
     ) -> list[dict[str, Any]]:
-        join_sql, params, where_sql = self._project_images_filter_query(project_id, status=status, class_name=class_name)
-        params = list(params) + [int(limit), int(offset)]
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    f'''
-                    SELECT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index
-                    FROM project_images pi
-                    {join_sql}
-                    WHERE {where_sql}
-                    ORDER BY pi.sort_index ASC
-                    LIMIT ? OFFSET ?
-                    ''',
-                    params,
-                ).fetchall()
-            finally:
-                conn.close()
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.page(
+            project_id,
+            offset=offset,
+            limit=limit,
+            status=status,
+            class_name=class_name,
+        )
 
     def _load_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> list[dict[str, Any]]:
-        ids = [str(item).strip() for item in image_ids if str(item).strip()]
-        if not ids:
-            return []
-
-        rows: list[sqlite3.Row] = []
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                for start in range(0, len(ids), 500):
-                    chunk = ids[start:start + 500]
-                    placeholders = ','.join('?' for _ in chunk)
-                    rows.extend(
-                        conn.execute(
-                            f'''
-                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
-                            FROM project_images
-                            WHERE project_id = ? AND image_id IN ({placeholders})
-                            ORDER BY sort_index ASC
-                            ''',
-                            [str(project_id), *chunk],
-                        ).fetchall()
-                    )
-            finally:
-                conn.close()
-
-        rows.sort(key=lambda row: int(row['sort_index']))
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.by_ids(project_id, image_ids)
 
     def _load_project_images_filtered_list_db(
         self,
@@ -689,134 +428,30 @@ class Storage:
         *,
         status: str = '',
     ) -> list[dict[str, Any]]:
-        join_sql, params, where_sql = self._project_images_filter_query(project_id, status=status)
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    f'''
-                    SELECT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index
-                    FROM project_images pi
-                    {join_sql}
-                    WHERE {where_sql}
-                    ORDER BY pi.sort_index ASC
-                    ''',
-                    params,
-                ).fetchall()
-            finally:
-                conn.close()
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.filtered_list(project_id, status=status)
 
     def _load_project_images_with_any_classes_db(
         self,
         project_id: str,
         class_names: list[str],
     ) -> list[dict[str, Any]]:
-        class_norms = sorted({norm_text(item) for item in class_names if norm_text(item)})
-        if not class_norms:
-            return []
-        placeholders = ','.join('?' for _ in class_norms)
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    f'''
-                    SELECT DISTINCT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index, pi.sort_index
-                    FROM project_images pi
-                    INNER JOIN image_class_index ci
-                    ON ci.project_id = pi.project_id AND ci.image_id = pi.image_id
-                    WHERE pi.project_id = ? AND ci.class_name_norm IN ({placeholders})
-                    ORDER BY pi.sort_index ASC
-                    ''',
-                    [str(project_id), *class_norms],
-                ).fetchall()
-            finally:
-                conn.close()
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.with_any_classes(project_id, class_names)
 
     def _load_project_images_without_any_classes_db(
         self,
         project_id: str,
         class_names: list[str],
     ) -> list[dict[str, Any]]:
-        class_norms = sorted({norm_text(item) for item in class_names if norm_text(item)})
-        if not class_norms:
-            return []
-        placeholders = ','.join('?' for _ in class_norms)
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    f'''
-                    SELECT pi.image_id, pi.rel_path, pi.abs_path, pi.status, pi.frame_index
-                    FROM project_images pi
-                    WHERE pi.project_id = ?
-                      AND NOT EXISTS (
-                        SELECT 1
-                        FROM image_class_index ci
-                        WHERE ci.project_id = pi.project_id
-                          AND ci.image_id = pi.image_id
-                          AND ci.class_name_norm IN ({placeholders})
-                      )
-                    ORDER BY pi.sort_index ASC
-                    ''',
-                    [str(project_id), *class_norms],
-                ).fetchall()
-            finally:
-                conn.close()
-        return [self._db_row_to_image(row) for row in rows]
+        return self._project_images.without_any_classes(project_id, class_names)
 
     def _get_project_image_db(self, project_id: str, image_id: str) -> dict[str, Any] | None:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                row = conn.execute(
-                    '''
-                    SELECT image_id, rel_path, abs_path, status, frame_index
-                    FROM project_images
-                    WHERE project_id = ? AND image_id = ?
-                    ''',
-                    (str(project_id), str(image_id)),
-                ).fetchone()
-            finally:
-                conn.close()
-        if row is None:
-            return None
-        return self._db_row_to_image(row)
+        return self._project_images.get(project_id, image_id)
 
     def _get_project_image_index_db(self, project_id: str, image_id: str) -> int:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                row = conn.execute(
-                    'SELECT sort_index FROM project_images WHERE project_id = ? AND image_id = ?',
-                    (str(project_id), str(image_id)),
-                ).fetchone()
-            finally:
-                conn.close()
-        if row is None:
-            return -1
-        return int(row['sort_index'])
+        return self._project_images.index(project_id, image_id)
 
     def _get_project_first_image_db(self, project_id: str) -> dict[str, Any] | None:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                row = conn.execute(
-                    '''
-                    SELECT image_id, rel_path, abs_path, status, frame_index
-                    FROM project_images
-                    WHERE project_id = ?
-                    ORDER BY sort_index ASC
-                    LIMIT 1
-                    ''',
-                    (str(project_id),),
-                ).fetchone()
-            finally:
-                conn.close()
-        if row is None:
-            return None
-        return self._db_row_to_image(row)
+        return self._project_images.first(project_id)
 
     def _get_project_unlabeled_image_db(
         self,
@@ -825,80 +460,17 @@ class Storage:
         after_sort_index: int = -1,
         direction: str = 'next',
     ) -> tuple[dict[str, Any] | None, int]:
-        nav_dir = 'prev' if str(direction or '').strip().lower() == 'prev' else 'next'
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                if nav_dir == 'prev':
-                    row = conn.execute(
-                        '''
-                        SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
-                        FROM project_images
-                        WHERE project_id = ? AND status = 'unlabeled' AND sort_index < ?
-                        ORDER BY sort_index DESC
-                        LIMIT 1
-                        ''',
-                        (str(project_id), int(after_sort_index)),
-                    ).fetchone()
-                else:
-                    row = conn.execute(
-                        '''
-                        SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
-                        FROM project_images
-                        WHERE project_id = ? AND status = 'unlabeled' AND sort_index > ?
-                        ORDER BY sort_index ASC
-                        LIMIT 1
-                        ''',
-                        (str(project_id), int(after_sort_index)),
-                    ).fetchone()
-                if row is None and int(after_sort_index) >= 0:
-                    if nav_dir == 'prev':
-                        row = conn.execute(
-                            '''
-                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
-                            FROM project_images
-                            WHERE project_id = ? AND status = 'unlabeled'
-                            ORDER BY sort_index DESC
-                            LIMIT 1
-                            ''',
-                            (str(project_id),),
-                        ).fetchone()
-                    else:
-                        row = conn.execute(
-                            '''
-                            SELECT image_id, rel_path, abs_path, status, frame_index, sort_index
-                            FROM project_images
-                            WHERE project_id = ? AND status = 'unlabeled'
-                            ORDER BY sort_index ASC
-                            LIMIT 1
-                            ''',
-                            (str(project_id),),
-                        ).fetchone()
-            finally:
-                conn.close()
-        if row is None:
-            return None, -1
-        return self._db_row_to_image(row), int(row['sort_index'])
+        return self._project_images.unlabeled(
+            project_id,
+            after_sort_index=after_sort_index,
+            direction=direction,
+        )
 
     def _iter_project_image_ids_db(self, project_id: str) -> list[str]:
-        with self._db_lock:
-            conn = self._db_connect()
-            try:
-                rows = conn.execute(
-                    'SELECT image_id FROM project_images WHERE project_id = ? ORDER BY sort_index ASC',
-                    (str(project_id),),
-                ).fetchall()
-            finally:
-                conn.close()
-        return [str(row['image_id']) for row in rows]
+        return self._project_images.iter_ids(project_id)
 
     def _project_image_counts(self, images: list[dict[str, Any]]) -> tuple[int, int, int]:
-        total = len(images)
-        labeled = 0
-        for img in images:
-            if self._normalize_image_status(img.get('status')) == 'labeled':
-                labeled += 1
-        return total, labeled, max(0, total - labeled)
+        return ProjectImageRepository.counts(images)
 
     def _ensure_project_images_sqlite(self, project: dict[str, Any], images: list[dict[str, Any]]) -> dict[str, Any]:
         q = dict(project)
@@ -1539,10 +1111,7 @@ class Storage:
                     )
                     self._replace_annotation_index_db(project_id, image_id, annotations, conn=conn, updated_at=ts)
                     status = 'labeled' if annotations else 'unlabeled'
-                    conn.execute(
-                        'UPDATE project_images SET status = ? WHERE project_id = ? AND image_id = ?',
-                        (status, str(project_id), str(image_id)),
-                    )
+                    self._update_project_image_status_db(project_id, image_id, status, conn=conn)
                     indexed_images += 1
                     if annotations:
                         labeled_images += 1
