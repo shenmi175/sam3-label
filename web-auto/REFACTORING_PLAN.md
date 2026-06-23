@@ -40,6 +40,27 @@ web-auto 当前已经同时承担自动标注、人工修正、智能过滤、�
 - 不在第一轮重构中改变项目数据格式、图片 ID 策略或 annotation JSON 文件路径。
 - 不把自动标注和人工校对拆成两套独立数据模型。
 - 不一次性重写所有后端存储逻辑。
+- 不以行数下降作为单独目标，不继续抽取只有一层转发、没有独立规则或没有复用面的代理模块。
+
+## 第一轮边界和停止规则
+
+第一轮重构的目标边界是：让自动标注和人工校对可以作为两个入口或两种模式存在，并共享图片导航、标注编辑、类别管理、保存、删除、推理结果写入等核心能力；后端按稳定领域边界拆出 router/service/repository，但 `Storage` 可以保留为兼容门面和组合入口。
+
+继续拆分必须至少满足以下条件之一：
+
+- 该模块承载独立业务规则或持久化不变量，例如 annotation id 归一化、图片索引、项目目录、类别去重、项目发现、过滤运行记录。
+- 该能力会被自动标注、人工校对或多个 API router 共同使用。
+- 拆分后可以形成明确的单元 smoke test，降低删除图片、保存标注、重建索引、导入项目等高风险操作的回归面。
+- 拆分能直接支撑下一阶段功能，而不是只减少某个文件的行数。
+
+以下情况应停止拆分，保留在现有 facade 或调用点：
+
+- 新模块只是把一个方法原样转发到另一个方法，没有状态、规则或测试价值。
+- 只有单一调用方，且短期没有复用计划。
+- 拆分会引入更多回调、provider 或生命周期问题，收益小于协调成本。
+- 会迫使 API 响应格式、项目数据格式或前端工作流同步大改。
+
+第一轮完成后应进入稳定期，重点做浏览器验证、手工校对交互补缺和缺陷修复，而不是继续无边界地拆文件。第二轮重构只在新增功能证明现有边界不足时再启动。
 
 ## 目标架构
 
@@ -492,5 +513,6 @@ git diff --check
 - 阶段 7 继续推进：项目图片 SQLite 访问已迁移到 `app/repositories/project_images.py`，包括 `project_images` 写入、追加、分页、状态/类别筛选、按 ID 加载、未标注导航、推理 scope 图片集合、状态更新和删除级联；`Storage` 保留原私有方法名作为兼容代理，图片刷新、单图删除、批量删除、保存标注状态更新和索引重建继续复用同一入口。
 - 阶段 7 继续推进：项目目录 `projects.json` 读写和已知项目 ID 查询已迁移到 `app/repositories/project_catalog.py`；`Storage` 的 `_load_projects`、`_save_projects`、`_known_project_ids` 保留为兼容代理。清理了一个被后续同名实现覆盖的旧 `refresh_project_images` 死代码块，避免刷新逻辑维护入口混淆。
 - 阶段 7 继续推进：项目类别解析、规范化去重、删除匹配和输入校验已迁移到 `app/services/project_class_service.py`；`Storage.add_classes`、`delete_class` 和兼容 `update_classes` 保留原 API 行为，并继续负责项目目录写回和 manifest 更新。
+- 阶段 7 边界收敛：项目发现和 manifest 自动导入属于独立项目管理规则，已作为最后一组后端领域拆分迁移到 `app/services/project_discovery_service.py`；`Storage._project_candidate_dirs`、`discover_existing_projects`、`auto_import_manifests` 保留兼容入口并委托该 service。
 
-后续优先补充阶段 6 的浏览器验证记录，并继续阶段 7 的 router/service/repository 分层；项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。
+后续优先补充阶段 6 的浏览器验证记录、人工校对交互缺口和高风险 smoke test。阶段 7 不再按行数继续拆分 `Storage`；除非满足“第一轮边界和停止规则”，否则保留现有 facade 结构。项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。

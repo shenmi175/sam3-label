@@ -14,6 +14,7 @@ from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
 from app.repositories.ui_state import UIStateRepository
 from app.services.project_class_service import ProjectClassService
+from app.services.project_discovery_service import ProjectDiscoveryService
 
 try:
     import sqlite3
@@ -54,6 +55,15 @@ class Storage:
         self._annotation_records = AnnotationRecordRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._project_manifests = ProjectManifestRepository(normalize_project=self._normalize_project)
         self._project_files = ProjectFileRepository(annotation_class_name=self._annotation_class_name)
+        self._project_discovery = ProjectDiscoveryService(
+            manifest_name=self.PROJECT_MANIFEST_NAME,
+            known_project_ids=self._known_project_ids,
+            legacy_annotation_dir=self._legacy_annotation_dir,
+            read_project_manifest=self._read_project_manifest,
+            existing_project_save_dir=self._existing_project_save_dir,
+            annotation_json_count=self._annotation_json_count,
+            import_existing_project=self.import_existing_project,
+        )
         self._smart_filter_runs = SmartFilterRunRepository(
             db_connect=self._db_connect,
             db_lock=self._db_lock,
@@ -718,124 +728,13 @@ class Storage:
         return self._project_files.infer_classes_from_annotations(annotation_dir, max_files=max_files)
 
     def _project_candidate_dirs(self, roots: list[Path], *, max_depth: int = 3) -> list[Path]:
-        candidates: list[Path] = []
-        seen: set[str] = set()
-
-        def add_candidate(path: Path) -> None:
-            key = str(path)
-            if key in seen:
-                return
-            seen.add(key)
-            candidates.append(path)
-
-        def walk(path: Path, depth: int) -> None:
-            try:
-                current = path.expanduser().resolve()
-            except Exception:
-                return
-            if not current.exists() or not current.is_dir():
-                return
-
-            has_manifest = (current / self.PROJECT_MANIFEST_NAME).is_file()
-            has_legacy_annotations = current.name.startswith('prj_') and self._legacy_annotation_dir(current) is not None
-            if has_manifest or has_legacy_annotations:
-                add_candidate(current)
-
-            if depth <= 0:
-                return
-            try:
-                children = list(current.iterdir())
-            except OSError:
-                return
-            for child in children:
-                if not child.is_dir():
-                    continue
-                if child.name.startswith('.') or child.name in {'annotations', 'exports', 'cache', '__pycache__'}:
-                    continue
-                walk(child, depth - 1)
-
-        for root in roots:
-            walk(root, max_depth)
-        return candidates
+        return self._project_discovery.candidate_dirs(roots, max_depth=max_depth)
 
     def discover_existing_projects(self, roots: list[Path], *, max_depth: int = 3) -> list[dict[str, Any]]:
-        known = self._known_project_ids()
-        out: list[dict[str, Any]] = []
-        for project_dir in self._project_candidate_dirs(roots, max_depth=max_depth):
-            manifest_path = project_dir / self.PROJECT_MANIFEST_NAME
-            if manifest_path.is_file():
-                manifest = self._read_project_manifest(manifest_path)
-                if not manifest:
-                    continue
-                project = manifest.get('project', {})
-                project_id = str(project.get('id') or '').strip()
-                ptype = str(project.get('project_type') or 'image').strip().lower()
-                if ptype not in {'image', 'pose'}:
-                    continue
-                out.append(
-                    {
-                        'kind': 'manifest',
-                        'project_id': project_id,
-                        'name': str(project.get('name') or project_id),
-                        'project_type': ptype if ptype in {'image', 'pose'} else 'image',
-                        'image_dir': str(project.get('image_dir') or ''),
-                        'output_dir': str(project_dir),
-                        'manifest_path': str(manifest_path),
-                        'annotation_count': self._annotation_json_count(self._existing_project_save_dir(project_dir, project) / 'annotations'),
-                        'imported': project_id in known,
-                        'requires_image_dir': False,
-                    }
-                )
-                continue
-
-            project_id = project_dir.name if project_dir.name.startswith('prj_') else ''
-            if not project_id:
-                continue
-            legacy_annotation_dir = self._legacy_annotation_dir(project_dir) or (project_dir / 'annotations')
-            out.append(
-                {
-                    'kind': 'legacy',
-                    'project_id': project_id,
-                    'name': project_id,
-                    'project_type': 'image',
-                    'image_dir': '',
-                    'output_dir': str(project_dir),
-                    'manifest_path': '',
-                    'annotation_count': self._annotation_json_count(legacy_annotation_dir),
-                    'imported': project_id in known,
-                    'requires_image_dir': True,
-                }
-            )
-        out.sort(key=lambda item: (bool(item.get('imported')), str(item.get('name') or ''), str(item.get('output_dir') or '')))
-        return out
+        return self._project_discovery.discover_existing_projects(roots, max_depth=max_depth)
 
     def auto_import_manifests(self, roots: list[Path], *, max_depth: int = 3) -> dict[str, Any]:
-        imported: list[str] = []
-        skipped = 0
-        errors: list[dict[str, str]] = []
-        known = self._known_project_ids()
-        for project_dir in self._project_candidate_dirs(roots, max_depth=max_depth):
-            manifest_path = project_dir / self.PROJECT_MANIFEST_NAME
-            if not manifest_path.is_file():
-                continue
-            manifest = self._read_project_manifest(manifest_path)
-            project = manifest.get('project', {}) if isinstance(manifest, dict) else {}
-            ptype = str(project.get('project_type') or 'image').strip().lower() if isinstance(project, dict) else 'image'
-            if ptype not in {'image', 'pose'}:
-                skipped += 1
-                continue
-            project_id = str(project.get('id') or '').strip() if isinstance(project, dict) else ''
-            if not project_id or project_id in known:
-                skipped += 1
-                continue
-            try:
-                result = self.import_existing_project(manifest_path=str(manifest_path))
-                imported_id = str((result.get('project') or {}).get('id') or project_id)
-                imported.append(imported_id)
-                known.add(imported_id)
-            except Exception as exc:  # noqa: BLE001
-                errors.append({'manifest_path': str(manifest_path), 'error': str(exc)})
-        return {'imported': imported, 'skipped': skipped, 'errors': errors}
+        return self._project_discovery.auto_import_manifests(roots, max_depth=max_depth)
 
     def import_existing_project(
         self,
