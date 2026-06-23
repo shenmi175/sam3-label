@@ -472,6 +472,12 @@ git diff --check
 - 删除空标注图片。
 - 验证项目统计、SQLite 索引、annotation JSON、原图文件状态。
 
+当前可重复入口：
+
+```bash
+python3 web-auto/scripts/storage_workflow_smoke.py
+```
+
 ## 重构完成判定
 
 达到以下条件可认为第一轮模块化完成：
@@ -514,5 +520,6 @@ git diff --check
 - 阶段 7 继续推进：项目目录 `projects.json` 读写和已知项目 ID 查询已迁移到 `app/repositories/project_catalog.py`；`Storage` 的 `_load_projects`、`_save_projects`、`_known_project_ids` 保留为兼容代理。清理了一个被后续同名实现覆盖的旧 `refresh_project_images` 死代码块，避免刷新逻辑维护入口混淆。
 - 阶段 7 继续推进：项目类别解析、规范化去重、删除匹配和输入校验已迁移到 `app/services/project_class_service.py`；`Storage.add_classes`、`delete_class` 和兼容 `update_classes` 保留原 API 行为，并继续负责项目目录写回和 manifest 更新。
 - 阶段 7 边界收敛：项目发现和 manifest 自动导入属于独立项目管理规则，已作为最后一组后端领域拆分迁移到 `app/services/project_discovery_service.py`；`Storage._project_candidate_dirs`、`discover_existing_projects`、`auto_import_manifests` 保留兼容入口并委托该 service。
+- 高风险存储流程已增加可重复 smoke：`web-auto/scripts/storage_workflow_smoke.py` 会创建临时 image project，覆盖非空标注保存、空标注保存、索引重建、单图删除、批量删除、原图删除、annotation JSON 删除、SQLite 列表和 dashboard 统计一致性。
 
-后续优先补充阶段 6 的浏览器验证记录、人工校对交互缺口和高风险 smoke test。阶段 7 不再按行数继续拆分 `Storage`；除非满足“第一轮边界和停止规则”，否则保留现有 facade 结构。项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。
+后续优先补充阶段 6 的浏览器验证记录和人工校对交互缺口，必要时继续扩展高风险 smoke test。阶段 7 不再按行数继续拆分 `Storage`；除非满足“第一轮边界和停止规则”，否则保留现有 facade 结构。项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。
