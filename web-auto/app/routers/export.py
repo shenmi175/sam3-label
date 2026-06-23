@@ -21,8 +21,6 @@ def _get_project_or_404(storage: Storage, project_id: str) -> dict[str, Any]:
 def _resolve_output_dir(project: dict[str, Any], output_dir: Optional[str]) -> Path:
     if output_dir and str(output_dir).strip():
         return ensure_dir(Path(str(output_dir)).expanduser().resolve())
-    if project.get('project_type') == 'video':
-        return ensure_dir(Path(project.get('project_save_dir') or project.get('save_dir')).expanduser().resolve())
     return ensure_dir(Path(project.get('image_dir') or project.get('project_save_dir')).expanduser().resolve())
 
 
@@ -33,8 +31,6 @@ def create_export_router(*, get_storage: Callable[[], Storage]) -> APIRouter:
     def export_project(payload: ExportIn) -> dict[str, Any]:
         storage = get_storage()
         project = _get_project_or_404(storage, payload.project_id)
-        if project.get('project_type') == 'video':
-            raise HTTPException(status_code=410, detail='video annotation has been removed; image projects only')
 
         images = project.get('images', [])
         all_annotations = storage.all_annotations(payload.project_id)

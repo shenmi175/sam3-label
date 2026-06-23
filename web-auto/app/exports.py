@@ -35,12 +35,6 @@ def _get_image_size(project: dict[str, Any], img: dict[str, Any]) -> tuple[int, 
                 w, h = im.size
                 return int(w), int(h)
 
-    # Fallback for virtual video frames (no extracted files on disk).
-    video_meta = project.get('video_meta', {}) if isinstance(project.get('video_meta', {}), dict) else {}
-    w = int(video_meta.get('width') or 0)
-    h = int(video_meta.get('height') or 0)
-    if w > 0 and h > 0:
-        return w, h
     raise ValueError(f"image size unavailable for {img.get('rel_path') or img.get('id')}")
 
 

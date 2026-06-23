@@ -21,16 +21,12 @@ else:
 
 from app.utils import (
     atomic_write_json,
-    build_virtual_frames,
     ensure_dir,
-    list_frames_from_dir,
     list_images_recursive,
-    list_video_files_recursive,
     new_id,
     norm_text,
     now_ts,
     parse_classes_text,
-    probe_video_info,
     read_json,
 )
 
@@ -360,11 +356,6 @@ class Storage:
                 'sort_index': idx,
                 'frame_index': None,
             }
-            if project_type == 'video':
-                try:
-                    row['frame_index'] = int(item.get('frame_index') if item.get('frame_index') is not None else idx)
-                except Exception:
-                    row['frame_index'] = idx
             out.append(row)
         return out
 
@@ -1274,14 +1265,12 @@ class Storage:
         pid = str(q.get('id') or '')
         workspace_dir = ensure_dir(self.projects_root / pid)
 
-        project_type = str(q.get('project_type') or 'image').strip().lower()
-        if project_type not in {'image', 'pose', 'video'}:
-            project_type = 'image'
+        raw_project_type = str(q.get('project_type') or '').strip().lower()
+        project_type = raw_project_type or 'image'
+        if project_type not in {'image', 'pose'}:
+            project_type = 'unsupported'
 
         image_dir = self._safe_resolve(str(q.get('image_dir') or ''))
-        video_path = self._safe_resolve(str(q.get('video_path') or ''))
-        video_name = str(q.get('video_name') or (Path(video_path).stem if video_path else 'video')).strip() or 'video'
-        video_meta = q.get('video_meta', {}) if isinstance(q.get('video_meta', {}), dict) else {}
 
         save_dir = self._safe_resolve(str(q.get('save_dir') or ''))
         save_base_dir = self._safe_resolve(str(q.get('save_base_dir') or ''))
@@ -1313,18 +1302,12 @@ class Storage:
             if not isinstance(img, dict):
                 continue
             item = dict(img)
-            if project_type == 'video':
-                if 'frame_index' not in item:
-                    item['frame_index'] = i
             normalized_images.append(item)
 
         q['id'] = pid
         q['name'] = str(q.get('name') or pid)
         q['project_type'] = project_type
         q['image_dir'] = image_dir
-        q['video_path'] = video_path
-        q['video_name'] = video_name
-        q['video_meta'] = video_meta
         q['save_base_dir'] = save_base_dir
         q['project_save_dir'] = project_save_dir
         q['save_dir'] = project_save_dir
@@ -1334,7 +1317,6 @@ class Storage:
         q['cache_dir'] = str(ensure_dir(workspace_dir / 'cache').resolve())
         q['classes'] = q.get('classes', []) if isinstance(q.get('classes', []), list) else []
         q = self._ensure_project_images_sqlite(q, normalized_images)
-        q['num_frames'] = int(q.get('num_images', 0) or 0) if project_type == 'video' else 0
         q['content_rev'] = self._content_rev(q)
         q['created_at'] = str(q.get('created_at') or now_ts())
         q['updated_at'] = str(q.get('updated_at') or now_ts())
@@ -1370,8 +1352,6 @@ class Storage:
             p['num_images'] = total
             p['labeled_images'] = labeled
             p['unlabeled_images'] = unlabeled
-            if p.get('project_type') == 'video':
-                p['num_frames'] = total
             return p
         status_map = self._status_map(p)
 
@@ -1525,7 +1505,7 @@ class Storage:
                 project = manifest.get('project', {})
                 project_id = str(project.get('id') or '').strip()
                 ptype = str(project.get('project_type') or 'image').strip().lower()
-                if ptype == 'video':
+                if ptype not in {'image', 'pose'}:
                     continue
                 out.append(
                     {
@@ -1534,7 +1514,6 @@ class Storage:
                         'name': str(project.get('name') or project_id),
                         'project_type': ptype if ptype in {'image', 'pose'} else 'image',
                         'image_dir': str(project.get('image_dir') or ''),
-                        'video_path': str(project.get('video_path') or ''),
                         'output_dir': str(project_dir),
                         'manifest_path': str(manifest_path),
                         'annotation_count': self._annotation_json_count(self._existing_project_save_dir(project_dir, project) / 'annotations'),
@@ -1555,7 +1534,6 @@ class Storage:
                     'name': project_id,
                     'project_type': 'image',
                     'image_dir': '',
-                    'video_path': '',
                     'output_dir': str(project_dir),
                     'manifest_path': '',
                     'annotation_count': self._annotation_json_count(legacy_annotation_dir),
@@ -1578,7 +1556,7 @@ class Storage:
             manifest = self._read_project_manifest(manifest_path)
             project = manifest.get('project', {}) if isinstance(manifest, dict) else {}
             ptype = str(project.get('project_type') or 'image').strip().lower() if isinstance(project, dict) else 'image'
-            if ptype == 'video':
+            if ptype not in {'image', 'pose'}:
                 skipped += 1
                 continue
             project_id = str(project.get('id') or '').strip() if isinstance(project, dict) else ''
@@ -1600,7 +1578,6 @@ class Storage:
         output_dir: str = '',
         manifest_path: str = '',
         image_dir: str = '',
-        video_path: str = '',
         name: str = '',
         classes_text: str = '',
         project_type: str = '',
@@ -1636,7 +1613,7 @@ class Storage:
 
         ptype = str(project_type or base.get('project_type') or 'image').strip().lower()
         if ptype not in {'image', 'pose'}:
-            raise ValueError('video annotation has been removed; supported project types: image, pose')
+            raise ValueError('unsupported project type; supported project types: image, pose')
 
         classes = parse_classes_text(classes_text)
         if not classes:
@@ -1646,41 +1623,21 @@ class Storage:
             classes = self._infer_classes_from_annotations(annotation_dir)
 
         resolved_image_dir = ''
-        resolved_video_path = ''
-        video_name = str(base.get('video_name') or '').strip()
-        video_meta = base.get('video_meta', {}) if isinstance(base.get('video_meta'), dict) else {}
         images: list[dict[str, Any]] = []
 
-        if ptype in {'image', 'pose'}:
-            raw_image_dir = str(image_dir or base.get('image_dir') or '').strip()
-            if not raw_image_dir:
-                raise ValueError('image_dir is required for legacy project import')
-            image_root = Path(raw_image_dir).expanduser().resolve()
-            if not image_root.exists() or not image_root.is_dir():
-                raise ValueError(f'image_dir does not exist: {image_root}')
-            images = list_images_recursive(image_root)
-            if not images:
-                raise ValueError('no images found in image_dir')
-            for img in images:
-                image_id = str(img.get('id') or '')
-                img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
-            resolved_image_dir = str(image_root)
-        else:
-            raw_video_path = str(video_path or base.get('video_path') or '').strip()
-            if raw_video_path:
-                candidate = Path(raw_video_path).expanduser().resolve()
-                if not candidate.exists() or not candidate.is_file():
-                    raise ValueError(f'video_path does not exist: {candidate}')
-                video_meta = probe_video_info(candidate)
-                video_name = str(video_meta.get('video_name') or candidate.stem)
-                resolved_video_path = str(candidate)
-            frame_total = int(video_meta.get('num_frames') or base.get('num_images') or 0)
-            if frame_total <= 0:
-                raise ValueError('video metadata is missing num_frames; provide a valid video_path')
-            images = build_virtual_frames(video_name or 'video', frame_total)
-            for img in images:
-                image_id = str(img.get('id') or '')
-                img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
+        raw_image_dir = str(image_dir or base.get('image_dir') or '').strip()
+        if not raw_image_dir:
+            raise ValueError('image_dir is required for legacy project import')
+        image_root = Path(raw_image_dir).expanduser().resolve()
+        if not image_root.exists() or not image_root.is_dir():
+            raise ValueError(f'image_dir does not exist: {image_root}')
+        images = list_images_recursive(image_root)
+        if not images:
+            raise ValueError('no images found in image_dir')
+        for img in images:
+            image_id = str(img.get('id') or '')
+            img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
+        resolved_image_dir = str(image_root)
 
         total = len(images)
         labeled = sum(1 for img in images if self._normalize_image_status(img.get('status')) == 'labeled')
@@ -1690,9 +1647,6 @@ class Storage:
             'name': str(name or base.get('name') or project_id).strip() or project_id,
             'project_type': ptype,
             'image_dir': resolved_image_dir,
-            'video_path': resolved_video_path,
-            'video_name': video_name or (Path(resolved_video_path).stem if resolved_video_path else 'video'),
-            'video_meta': video_meta,
             'save_base_dir': str(project_save_dir.parent),
             'project_save_dir': str(project_save_dir),
             'save_dir': str(project_save_dir),
@@ -1754,12 +1708,9 @@ class Storage:
                     'name': ep['name'],
                     'project_type': ep.get('project_type', 'image'),
                     'image_dir': ep['image_dir'],
-                    'video_path': ep.get('video_path', ''),
-                    'video_name': ep.get('video_name', ''),
                     'save_dir': ep['save_dir'],
                     'classes': ep.get('classes', []),
                     'num_images': ep.get('num_images', 0),
-                    'num_frames': ep.get('num_frames', 0),
                     'labeled_images': ep.get('labeled_images', 0),
                     'unlabeled_images': ep.get('unlabeled_images', 0),
                     'created_at': ep['created_at'],
@@ -2045,11 +1996,10 @@ class Storage:
         save_dir: str | None,
         classes_text: str,
         project_type: str = 'image',
-        video_path: str | None = None,
     ) -> dict[str, Any]:
         ptype = str(project_type or 'image').strip().lower()
-        if ptype != 'image':
-            raise ValueError('video annotation has been removed; image projects only')
+        if ptype not in {'image', 'pose'}:
+            raise ValueError('unsupported project type; supported project types: image, pose')
 
         project_id = new_id('prj_')
         workspace_dir = ensure_dir(self.projects_root / project_id)
@@ -2067,48 +2017,19 @@ class Storage:
         export_dir = ensure_dir(project_save_dir / 'exports')
 
         images: list[dict[str, Any]] = []
-        resolved_image_dir = ''
-        resolved_video_path = ''
-        video_name = ''
-        video_meta: dict[str, Any] = {}
-
-        if ptype in {'image', 'pose'}:
-            image_root = Path(image_dir).expanduser().resolve()
-            if not image_root.exists() or not image_root.is_dir():
-                raise ValueError(f'image_dir does not exist: {image_root}')
-            images = list_images_recursive(image_root)
-            resolved_image_dir = str(image_root)
-            if not images:
-                raise ValueError('no images found in image_dir')
-        else:
-            raw_video = str(video_path or image_dir or '').strip()
-            if not raw_video:
-                raise ValueError('video_path is required for video project')
-            video_candidate = Path(raw_video).expanduser().resolve()
-            if video_candidate.exists() and video_candidate.is_dir():
-                videos = list_video_files_recursive(video_candidate)
-                if len(videos) != 1:
-                    raise ValueError(f'video directory must contain exactly one video: {video_candidate}')
-                video_candidate = videos[0]
-            if not video_candidate.exists() or not video_candidate.is_file():
-                raise ValueError(f'video_path does not exist: {video_candidate}')
-            video_meta = probe_video_info(video_candidate)
-            video_name = str(video_meta.get('video_name') or video_candidate.stem).strip() or video_candidate.stem
-            frame_total = int(video_meta.get('num_frames') or 0)
-            if frame_total <= 0:
-                raise ValueError('video has no frames')
-            resolved_video_path = str(video_candidate)
-            resolved_image_dir = ''
-            images = build_virtual_frames(video_name, frame_total)
+        image_root = Path(image_dir).expanduser().resolve()
+        if not image_root.exists() or not image_root.is_dir():
+            raise ValueError(f'image_dir does not exist: {image_root}')
+        images = list_images_recursive(image_root)
+        resolved_image_dir = str(image_root)
+        if not images:
+            raise ValueError('no images found in image_dir')
 
         project = {
             'id': project_id,
             'name': name.strip() or project_id,
             'project_type': ptype,
             'image_dir': resolved_image_dir,
-            'video_path': resolved_video_path,
-            'video_name': video_name,
-            'video_meta': video_meta,
             'save_base_dir': str(save_base_dir),
             'project_save_dir': str(project_save_dir),
             'save_dir': str(project_save_dir),
@@ -2534,7 +2455,7 @@ class Storage:
         if victim is None:
             raise ValueError('project not found')
 
-        source_raw = victim.get('video_path') if victim.get('project_type') == 'video' else victim.get('image_dir')
+        source_raw = victim.get('image_dir')
         source_path = Path(str(source_raw or '.')).expanduser().resolve()
         annotation_dir = Path(victim['annotation_dir']).expanduser().resolve()
         export_dir = Path(victim['export_dir']).expanduser().resolve()

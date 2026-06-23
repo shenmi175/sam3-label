@@ -135,7 +135,7 @@ ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv('WEB_AUTO_ALLOW_ORIGINS', '*'
 app = FastAPI(
     title='web-auto API',
     version='1.0',
-    description='API-only backend for image/video annotation workflows built on sam3-api.',
+    description='API-only backend for image annotation workflows built on sam3-api.',
 )
 app.add_middleware(
     CORSMiddleware,

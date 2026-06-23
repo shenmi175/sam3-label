@@ -25,21 +25,7 @@
 
 ## 本次已补齐的接口
 
-### 1. 视频播放与取帧
-
-- `GET /api/projects/{project_id}/video/stream`
-  - 视频流别名接口，支持播放器直接接入
-- `GET /api/projects/{project_id}/video/frame/{frame_index}`
-  - 读取指定帧，返回 JPEG
-
-### 2. 视频标注读写
-
-- `GET /api/projects/{project_id}/video/annotations`
-  - 读取整段视频标注
-- `POST /api/projects/{project_id}/video/annotations/save`
-  - 保存整段视频标注或部分帧标注
-
-### 3. 全局缓存目录
+### 1. 全局缓存目录
 
 - `GET /api/config/cache_dir`
   - 查看当前后端数据目录

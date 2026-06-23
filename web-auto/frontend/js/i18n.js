@@ -232,22 +232,6 @@ export const i18n = {
     save_anns: '保存当前图标注',
     clear_anns: '清空当前图标注',
     
-    // Video Workspace
-    propagation: '标注传播',
-    keyframes: '关键帧列表',
-    frame_range: '传播范围 (前/后/双向)',
-    imgsz: '工作比例 (imgsz)',
-    segment_size: '缓存分段大小',
-    propagate: '开始传播',
-    propagate_desc: '已标注的帧(关键帧)将在此显示，点击"传播"填补空隙。',
-    save_all: '保存全部',
-    export_dataset: '导出数据集',
-    start_prop: '启动传播',
-    prompt_mode: '提示模式',
-    start_frame: '起始帧',
-    end_frame: '结束帧',
-    prompt_frame: '提示帧',
-    
     // Toasts
     switch_lang: '已切换到中文',
     uploading: '正在上传 {count} 个文件...',
@@ -488,22 +472,6 @@ export const i18n = {
     delete_ann: 'Delete',
     save_anns: 'Save Annotations',
     clear_anns: 'Clear Annotations',
-    
-    // Video Workspace
-    propagation: 'Propagation',
-    keyframes: 'Keyframes',
-    frame_range: 'Range (Fwd/Bwd/Both)',
-    imgsz: 'imgsz',
-    segment_size: 'Segment Size',
-    propagate: 'Propagate',
-    propagate_desc: 'Annotated frames (keyframes) will appear here. Press "Propagate" to fill the gaps.',
-    save_all: 'Save All',
-    export_dataset: 'Export Dataset',
-    start_prop: 'Start Propagation',
-    prompt_mode: 'Prompt Mode',
-    start_frame: 'Start Frame',
-    end_frame: 'End Frame',
-    prompt_frame: 'Prompt Frame',
 
     // Toasts
     switch_lang: 'Switched to English',

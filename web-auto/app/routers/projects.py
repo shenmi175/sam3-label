@@ -54,7 +54,7 @@ def create_projects_router(
     def import_existing_project(payload: ImportExistingProjectIn) -> dict[str, Any]:
         project_type = str(payload.project_type or 'image').strip().lower()
         if project_type not in {'', 'image', 'pose'}:
-            raise HTTPException(status_code=410, detail='video annotation has been removed; image projects only')
+            raise HTTPException(status_code=400, detail='unsupported project type; supported project types: image, pose')
         try:
             return get_storage().import_existing_project(
                 output_dir=payload.output_dir,

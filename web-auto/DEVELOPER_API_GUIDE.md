@@ -143,21 +143,9 @@
 }
 ```
 
-视频项目：
-
-```json
-{
-  "name": "demo-video",
-  "project_type": "video",
-  "video_path": "D:/dataset/video/demo.mp4",
-  "save_dir": "D:/dataset/output",
-  "classes_text": "person,car"
-}
-```
-
 ### `DELETE /api/projects/{project_id}`
 
-删除项目数据，不删除原始图片或原始视频。
+删除项目数据，不删除原始图片。
 
 ## 3. 类别管理
 
@@ -487,129 +475,7 @@
 }
 ```
 
-视频项目仅支持：
-
-- `format=json`
-
-## 10. 视频文件与帧
-
-### `GET /api/projects/{project_id}/video/file`
-
-视频文件流，支持 `Range`。
-
-### `GET /api/projects/{project_id}/video/stream`
-
-与 `/video/file` 等价，给前端播放器使用。
-
-### `GET /api/projects/{project_id}/video/frame/{frame_index}`
-
-读取指定帧，返回 `image/jpeg`。
-
-### `POST /api/projects/{project_id}/video/transcode_h264`
-
-转码为更适合浏览器播放的 H.264。
-
-## 11. 视频标注数据
-
-### `GET /api/projects/{project_id}/video/annotations`
-
-获取整段视频标注数据。
-
-响应示例：
-
-```json
-{
-  "annotations": {
-    "project_id": "prj_xxx",
-    "project_type": "video",
-    "video_name": "demo",
-    "num_frames": 100,
-    "classes": ["person"],
-    "frames": [
-      {
-        "frame_index": 0,
-        "image_id": "img_xxx",
-        "file_name": "demo_000000.jpg",
-        "annotations": []
-      }
-    ]
-  },
-  "annotation_json_path": "D:/output/prj_xxx/demo_annotations.json"
-}
-```
-
-### `POST /api/projects/{project_id}/video/annotations/save`
-
-保存整段视频标注或部分帧标注。
-
-请求：
-
-```json
-{
-  "project_id": "prj_xxx",
-  "replace_all": true,
-  "frames": [
-    {
-      "frame_index": 0,
-      "image_id": "img_xxx",
-      "annotations": []
-    }
-  ]
-}
-```
-
-说明：
-
-- `replace_all=true` 时，未出现在 `frames` 里的帧会被清空
-- `replace_all=false` 时，只更新请求中给出的帧
-- 保存后后端会同步更新导出的 `video_annotations.json`
-
-## 12. 视频传播任务
-
-### `GET /api/video/jobs/{project_id}`
-
-获取视频传播任务状态。
-
-### `POST /api/video/jobs/start`
-
-启动视频传播任务。
-
-请求字段包括：
-
-- `classes`
-- `prompt_mode`
-- `active_class`
-- `points`
-- `boxes`
-- `threshold`
-- `imgsz`
-- `segment_size_frames`
-- `start_frame_index`
-- `end_frame_index`
-- `prompt_frame_index`
-- `api_base_url`
-
-### `POST /api/video/jobs/stop`
-
-### `POST /api/video/jobs/pause`
-
-暂停/停止视频任务。
-
-### `POST /api/video/jobs/resume`
-
-继续视频任务，并允许更新：
-
-- `classes`
-- `threshold`
-- `imgsz`
-- `api_base_url`
-- `prompt_mode`
-- `prompt_frame_index`
-- `active_class`
-- `boxes`
-- `segment_size_frames`
-
-## 13. UI 状态
+## 10. UI 状态
 
 这组接口是可选能力，供前端保存界面状态。
 
@@ -618,7 +484,7 @@
 
 如果你的新前端不需要服务端存 UI 状态，可以不接。
 
-## 14. 结论：你提到的能力是否缺失
+## 11. 结论：你提到的能力是否缺失
 
 这些能力已经有后端接口，不缺：
 
@@ -632,13 +498,9 @@
 
 这次新增补齐的能力：
 
-- 视频流别名接口 `/api/projects/{project_id}/video/stream`
-- 视频帧读取接口 `/api/projects/{project_id}/video/frame/{frame_index}`
-- 视频标注读取接口 `/api/projects/{project_id}/video/annotations`
-- 视频标注保存接口 `/api/projects/{project_id}/video/annotations/save`
 - 全局缓存目录接口 `/api/config/cache_dir`
 
-## 15. 2026-03 Batch And Filter Update
+## 12. 2026-03 Batch And Filter Update
 
 ### `POST /api/infer/jobs/start_batch`
 
