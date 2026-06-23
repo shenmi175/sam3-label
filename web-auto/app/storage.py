@@ -7,6 +7,7 @@ from typing import Any
 
 from app.repositories.annotation_index import AnnotationIndexRepository
 from app.repositories.annotation_records import AnnotationRecordRepository
+from app.repositories.project_catalog import ProjectCatalogRepository
 from app.repositories.project_files import ProjectFileRepository
 from app.repositories.project_images import ProjectImageRepository
 from app.repositories.project_manifests import ProjectManifestRepository
@@ -42,6 +43,7 @@ class Storage:
         self.projects_file = self.base_dir / 'projects.json'
         self.projects_root = ensure_dir(self.base_dir / 'projects')
         self.ui_state_global_file = self.base_dir / 'ui_state_global.json'
+        self._project_catalog = ProjectCatalogRepository(projects_file=self.projects_file)
         self._db_lock = threading.RLock()
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
@@ -61,11 +63,10 @@ class Storage:
         )
 
     def _load_projects(self) -> list[dict[str, Any]]:
-        data = read_json(self.projects_file, [])
-        return data if isinstance(data, list) else []
+        return self._project_catalog.load()
 
     def _save_projects(self, projects: list[dict[str, Any]]) -> None:
-        atomic_write_json(self.projects_file, projects)
+        self._project_catalog.save(projects)
 
     def _project_manifest_payload(self, project: dict[str, Any]) -> dict[str, Any]:
         return self._project_manifests.payload(project)
@@ -77,7 +78,7 @@ class Storage:
         return self._project_manifests.read(manifest_path)
 
     def _known_project_ids(self) -> set[str]:
-        return {str(p.get('id') or '').strip() for p in self._load_projects() if str(p.get('id') or '').strip()}
+        return self._project_catalog.known_ids()
 
     def _init_index_db(self) -> None:
         if sqlite3 is None:
@@ -1226,29 +1227,6 @@ class Storage:
         self._save_projects(projects)
         self._write_project_manifest(project)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
-
-    def refresh_project_images(self, project_id: str) -> int:
-        project = self.get_project(project_id, enrich=False, include_images=False)
-        if not project:
-            return 0
-        if str(project.get('project_type') or 'image').strip().lower() not in {'image', 'pose'}:
-            return 0
-        image_dir = Path(project['image_dir'])
-        if not image_dir.exists():
-            return 0
-        images = list_images_recursive(image_dir)
-        # Update DB
-        self._replace_project_images_db(project_id, 'image', images)
-        # Recount and save to projects.json
-        full_p = self._enrich_project(project)
-        projects = self._load_projects()
-        for p in projects:
-            if p.get('id') == project_id:
-                p['num_images'] = full_p['num_images']
-                p['labeled_images'] = full_p['labeled_images']
-                p['unlabeled_images'] = full_p['unlabeled_images']
-        self._save_projects(projects)
-        return len(images)
 
     def add_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
         incoming = parse_classes_text(classes_text)
