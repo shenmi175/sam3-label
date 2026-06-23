@@ -491,5 +491,6 @@ git diff --check
 - 阶段 7 继续推进：标注索引持久化已迁移到 `app/repositories/annotation_index.py`，包括 `image_annotation_stats`、`image_class_index` 的统计 payload、写入和 annotation dashboard 聚合；`Storage` 继续保留兼容代理，图片分页中依赖 class index 的查询暂留原处，后续可连同 project image repository 一起下沉。
 - 阶段 7 继续推进：项目图片 SQLite 访问已迁移到 `app/repositories/project_images.py`，包括 `project_images` 写入、追加、分页、状态/类别筛选、按 ID 加载、未标注导航、推理 scope 图片集合、状态更新和删除级联；`Storage` 保留原私有方法名作为兼容代理，图片刷新、单图删除、批量删除、保存标注状态更新和索引重建继续复用同一入口。
 - 阶段 7 继续推进：项目目录 `projects.json` 读写和已知项目 ID 查询已迁移到 `app/repositories/project_catalog.py`；`Storage` 的 `_load_projects`、`_save_projects`、`_known_project_ids` 保留为兼容代理。清理了一个被后续同名实现覆盖的旧 `refresh_project_images` 死代码块，避免刷新逻辑维护入口混淆。
+- 阶段 7 继续推进：项目类别解析、规范化去重、删除匹配和输入校验已迁移到 `app/services/project_class_service.py`；`Storage.add_classes`、`delete_class` 和兼容 `update_classes` 保留原 API 行为，并继续负责项目目录写回和 manifest 更新。
 
 后续优先补充阶段 6 的浏览器验证记录，并继续阶段 7 的 router/service/repository 分层；项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。

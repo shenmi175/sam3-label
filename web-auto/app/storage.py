@@ -13,6 +13,7 @@ from app.repositories.project_images import ProjectImageRepository
 from app.repositories.project_manifests import ProjectManifestRepository
 from app.repositories.smart_filter_runs import SmartFilterRunRepository
 from app.repositories.ui_state import UIStateRepository
+from app.services.project_class_service import ProjectClassService
 
 try:
     import sqlite3
@@ -44,6 +45,7 @@ class Storage:
         self.projects_root = ensure_dir(self.base_dir / 'projects')
         self.ui_state_global_file = self.base_dir / 'ui_state_global.json'
         self._project_catalog = ProjectCatalogRepository(projects_file=self.projects_file)
+        self._project_classes = ProjectClassService()
         self._db_lock = threading.RLock()
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
@@ -1229,26 +1231,14 @@ class Storage:
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
 
     def add_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
-        incoming = parse_classes_text(classes_text)
-        if not incoming:
-            raise ValueError('no class to add')
-
+        self._project_classes.validate_classes_text(classes_text)
         projects = self._load_projects()
         out: list[dict[str, Any]] = []
         updated: dict[str, Any] | None = None
         for raw in projects:
             p = self._normalize_project(raw)
             if p.get('id') == project_id:
-                existing = [str(x).strip() for x in p.get('classes', []) if str(x).strip()]
-                seen = {norm_text(x) for x in existing}
-                merged = list(existing)
-                for c in incoming:
-                    key = norm_text(c)
-                    if not key or key in seen:
-                        continue
-                    seen.add(key)
-                    merged.append(c)
-                p['classes'] = merged
+                p['classes'] = self._project_classes.merge_classes(p.get('classes', []), classes_text)
                 self._bump_content_rev(p)
                 p['updated_at'] = now_ts()
                 updated = p
@@ -1550,10 +1540,7 @@ class Storage:
         return refreshed, copied, added
 
     def delete_class(self, project_id: str, class_name: str) -> dict[str, Any]:
-        target = norm_text(class_name)
-        if not target:
-            raise ValueError('class_name is empty')
-
+        self._project_classes.validate_class_name(class_name)
         projects = self._load_projects()
         out: list[dict[str, Any]] = []
         updated: dict[str, Any] | None = None
@@ -1561,13 +1548,7 @@ class Storage:
         for raw in projects:
             p = self._normalize_project(raw)
             if p.get('id') == project_id:
-                existing = [str(x).strip() for x in p.get('classes', []) if str(x).strip()]
-                kept = []
-                for c in existing:
-                    if norm_text(c) == target:
-                        found = True
-                        continue
-                    kept.append(c)
+                kept, found = self._project_classes.remove_class(p.get('classes', []), class_name)
                 p['classes'] = kept
                 self._bump_content_rev(p)
                 p['updated_at'] = now_ts()
