@@ -521,5 +521,6 @@ python3 web-auto/scripts/storage_workflow_smoke.py
 - 阶段 7 继续推进：项目类别解析、规范化去重、删除匹配和输入校验已迁移到 `app/services/project_class_service.py`；`Storage.add_classes`、`delete_class` 和兼容 `update_classes` 保留原 API 行为，并继续负责项目目录写回和 manifest 更新。
 - 阶段 7 边界收敛：项目发现和 manifest 自动导入属于独立项目管理规则，已作为最后一组后端领域拆分迁移到 `app/services/project_discovery_service.py`；`Storage._project_candidate_dirs`、`discover_existing_projects`、`auto_import_manifests` 保留兼容入口并委托该 service。
 - 高风险存储流程已增加可重复 smoke：`web-auto/scripts/storage_workflow_smoke.py` 会创建临时 image project，覆盖非空标注保存、空标注保存、索引重建、单图删除、批量删除、原图删除、annotation JSON 删除、SQLite 列表和 dashboard 统计一致性。
+- 前端有限收敛继续推进：标注类别修改弹窗已迁移到 `components/annotation-class-modal.js`，人工校对工具条按钮绑定已迁移回 `ReviewController.bind()`；`image-workspace.js` 保留为调用弹窗和协调控制器的入口，不再直接维护该弹窗模板。
 
-后续优先补充阶段 6 的浏览器验证记录和人工校对交互缺口，必要时继续扩展高风险 smoke test。阶段 7 不再按行数继续拆分 `Storage`；除非满足“第一轮边界和停止规则”，否则保留现有 facade 结构。项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。
+后续优先补充阶段 6 的浏览器验证记录和人工校对交互缺口。若继续收敛前端，只处理仍明显属于组件或单一控制器的模板/事件绑定，例如工作台顶部工具条事件或数据看板/导出/过滤面板的残余绑定；不做泛化事件系统。阶段 7 不再按行数继续拆分 `Storage`；除非满足“第一轮边界和停止规则”，否则保留现有 facade 结构。项目/pose 页面剩余 inline DOM 事件可作为前端清理项继续推进。

@@ -11,6 +11,27 @@ export class ReviewController {
     this.workspace = workspace;
   }
 
+  bind() {
+    const btnReviewContinuous = document.getElementById('btn-review-continuous');
+    if (btnReviewContinuous) btnReviewContinuous.onclick = () => this.toggleContinuousMode();
+
+    const btnReviewApplyClass = document.getElementById('btn-review-apply-class');
+    if (btnReviewApplyClass) btnReviewApplyClass.onclick = () => this.applySelectedClassToFocusedAnnotation();
+
+    const btnReviewDeleteAnn = document.getElementById('btn-review-delete-ann');
+    if (btnReviewDeleteAnn) btnReviewDeleteAnn.onclick = () => {
+      const ws = this.workspace;
+      if (!ws.focusedAnnotationId) return notify('请先选中一个标注', 'info');
+      ws.deleteAnnotation(ws.focusedAnnotationId);
+    };
+
+    const btnReviewSaveNext = document.getElementById('btn-review-save-next');
+    if (btnReviewSaveNext) btnReviewSaveNext.onclick = () => this.saveAndNavigate(1);
+
+    const btnReviewNextUnlabeled = document.getElementById('btn-review-next-unlabeled');
+    if (btnReviewNextUnlabeled) btnReviewNextUnlabeled.onclick = () => this.workspace.navigateUnlabeledImage(1);
+  }
+
   setWorkspaceMode(mode) {
     const ws = this.workspace;
     const nextMode = mode === 'review' ? 'review' : 'auto';
