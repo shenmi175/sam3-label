@@ -101,9 +101,11 @@ export class ReviewController {
     if (!ws.selectedImageId) return notify('请先选择图片', 'error');
     try {
       if (ws.annotationDirty) {
-        await ws.flushAnnotationAutosave('review-save-next');
+        const saved = await ws.flushAnnotationAutosave('review-save-next');
+        if (saved === false) return;
       } else {
         const saved = await ws.annotationController.saveCurrent();
+        if (!saved) return;
         if (saved) notify(i18n.t('save_success'), 'success');
       }
       if (ws.annotationDirty) return notify('当前图片标注尚未保存，保存成功后再切换图片', 'error');

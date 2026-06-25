@@ -301,6 +301,14 @@ export class ImageViewerV2 {
     this.requestDraw();
   }
 
+  hasActiveManualPolygon() {
+    return this.promptMode === 'manual-polygon' && this.activePolygonPoints.length > 0;
+  }
+
+  activeManualPolygonPointCount() {
+    return this.activePolygonPoints.length;
+  }
+
   setFocusedAnnotation(annotationId = null, options = {}) {
     this.focusedAnnotationId = annotationId || null;
     if (options.draw !== false) this.requestDraw();
@@ -996,12 +1004,17 @@ export class ImageViewerV2 {
   }
 
   finishManualPolygon() {
-    if (this.activePolygonPoints.length < 3) return;
+    if (this.activePolygonPoints.length < 3) return false;
     const polygon = this.activePolygonPoints.map((p) => this.clampPoint(p));
     const bbox = this.bboxFromPolygon(polygon);
     this.activePolygonPoints = [];
-    if (bbox && this.onAnnotationCreated) this.onAnnotationCreated({ polygon, bbox });
+    if (bbox && this.onAnnotationCreated) {
+      this.onAnnotationCreated({ polygon, bbox });
+      this.requestDraw();
+      return true;
+    }
     this.requestDraw();
+    return false;
   }
 
   cancelManualPolygon() {

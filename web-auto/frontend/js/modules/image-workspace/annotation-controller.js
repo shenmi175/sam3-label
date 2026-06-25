@@ -194,6 +194,7 @@ export class AnnotationController {
 
   async flushSave(reason = '') {
     const ws = this.workspace;
+    if (typeof ws.commitPendingManualPolygon === 'function' && !ws.commitPendingManualPolygon()) return false;
     if (!ws.selectedImageId || ws.annotationSaving || !ws.annotationDirty) return;
     const imageId = ws.annotationSaveImageId || ws.selectedImageId;
     const cached = ws.getCachedImageBundle(imageId);
@@ -226,11 +227,13 @@ export class AnnotationController {
     } finally {
       ws.annotationSaving = false;
     }
+    return !ws.annotationDirty;
   }
 
   async saveCurrent() {
     const ws = this.workspace;
     if (!ws.selectedImageId) return false;
+    if (typeof ws.commitPendingManualPolygon === 'function' && !ws.commitPendingManualPolygon()) return false;
     this.clearSaveTimer();
     ws.annotationDirty = true;
     ws.annotationSaveImageId = ws.selectedImageId;

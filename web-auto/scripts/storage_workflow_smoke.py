@@ -77,6 +77,7 @@ def run() -> None:
                     'id': 'ann_cat_1',
                     'class_name': 'cat',
                     'bbox': [0, 0, 1, 1],
+                    'polygon': [[0, 0], [1, 0], [1, 1]],
                     'score': 0.9,
                 }
             ],
@@ -86,6 +87,12 @@ def run() -> None:
         expect(rebuild['indexed_images'] == 3, 'rebuild should index all images', rebuild)
         expect(rebuild['labeled_images'] == 1, 'rebuild should count one labeled image', rebuild)
         expect(annotation_path(project, labeled_id).is_file(), 'non-empty annotation file should exist')
+        saved_labeled = storage.load_annotations(project_id, labeled_id)
+        expect(
+            saved_labeled[0].get('polygon') == [[0, 0], [1, 0], [1, 1]],
+            'polygon annotations should round-trip through storage',
+            saved_labeled,
+        )
         expect(read_json(annotation_path(project, empty_id), None) == [], 'empty annotation file should contain []')
 
         deleted_project, deleted_image = storage.delete_image(project_id, empty_id)

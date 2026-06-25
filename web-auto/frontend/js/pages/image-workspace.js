@@ -466,6 +466,7 @@ export const ImageWorkspace = {
 
   async navigateWorkspaceRoute(mode) {
     const nextMode = mode === 'review' ? 'review' : 'auto';
+    if (!this.commitPendingManualPolygon()) return;
     if (this.annotationDirty) {
       await this.flushAnnotationAutosave('workspace-mode-route-switch');
       if (this.annotationDirty) {
@@ -1147,6 +1148,7 @@ export const ImageWorkspace = {
   },
 
   async selectImage(id, relPath, options = {}) {
+    if (!this.commitPendingManualPolygon()) return;
     this.annotationController.clearSaveTimer();
     if (this.annotationDirty) {
       await this.flushAnnotationAutosave('before-switch');
@@ -1378,6 +1380,24 @@ export const ImageWorkspace = {
     ) {
       setTimeout(() => this.setPromptMode(previousMode), 0);
     }
+  },
+
+  commitPendingManualPolygon() {
+    if (!this.viewer || typeof this.viewer.hasActiveManualPolygon !== 'function') return true;
+    if (!this.viewer.hasActiveManualPolygon()) return true;
+    const pointCount = typeof this.viewer.activeManualPolygonPointCount === 'function'
+      ? this.viewer.activeManualPolygonPointCount()
+      : 0;
+    if (pointCount < 3) {
+      showToast('多边形至少需要 3 个点，完成或按 Esc 取消后再保存', 'error');
+      return false;
+    }
+    const committed = this.viewer.finishManualPolygon();
+    if (!committed) {
+      showToast('多边形未能完成，请重试或按 Esc 取消', 'error');
+      return false;
+    }
+    return true;
   },
 
   selectAnnotationFromCanvas(annId) {
