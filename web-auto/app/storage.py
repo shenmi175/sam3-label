@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.repositories.smart_filter_runs import SmartFilterRunRepository
 from app.repositories.ui_state import UIStateRepository
 from app.services.project_class_service import ProjectClassService
 from app.services.project_discovery_service import ProjectDiscoveryService
+from app.services.annotation_masks import normalize_annotation_masks
 
 try:
     import sqlite3
@@ -27,6 +29,7 @@ else:
 from app.utils import (
     atomic_write_json,
     ensure_dir,
+    InterProcessLock,
     list_images_recursive,
     new_id,
     norm_text,
@@ -34,6 +37,14 @@ from app.utils import (
     parse_classes_text,
     read_json,
 )
+
+
+def _catalog_locked(method: Any) -> Any:
+    @wraps(method)
+    def wrapped(self: 'Storage', *args: Any, **kwargs: Any) -> Any:
+        with self._catalog_write_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class Storage:
@@ -44,10 +55,12 @@ class Storage:
         self.base_dir = ensure_dir(base_dir)
         self.projects_file = self.base_dir / 'projects.json'
         self.projects_root = ensure_dir(self.base_dir / 'projects')
+        self._catalog_write_lock = InterProcessLock(self.base_dir / '.locks' / 'project_catalog.lock')
         self.ui_state_global_file = self.base_dir / 'ui_state_global.json'
         self._project_catalog = ProjectCatalogRepository(projects_file=self.projects_file)
         self._project_classes = ProjectClassService()
         self._db_lock = threading.RLock()
+        self._annotation_layout_cache: dict[tuple[str, int], dict[str, Path]] = {}
         self.index_db_file = self.base_dir / 'web_auto_index.sqlite3'
         self._init_index_db()
         self._project_images = ProjectImageRepository(db_connect=self._db_connect, db_lock=self._db_lock)
@@ -319,6 +332,7 @@ class Storage:
     def get_latest_smart_filter_run(self, *, project_id: str) -> dict[str, Any] | None:
         return self._smart_filter_runs.get_latest(project_id=project_id)
 
+    @_catalog_locked
     def rollback_smart_filter_run(self, *, project_id: str, run_id: str) -> dict[str, Any]:
         return self._smart_filter_runs.rollback(project_id=project_id, run_id=run_id)
 
@@ -590,6 +604,8 @@ class Storage:
         q['export_dir'] = export_dir
         q['workspace_dir'] = str(workspace_dir.resolve())
         q['cache_dir'] = str(ensure_dir(workspace_dir / 'cache').resolve())
+        q['annotation_legacy_fallback'] = bool(q.get('annotation_legacy_fallback', True))
+        q['image_set_rev'] = max(1, int(q.get('image_set_rev', 1) or 1))
         q['classes'] = q.get('classes', []) if isinstance(q.get('classes', []), list) else []
         q = self._ensure_project_images_sqlite(q, normalized_images)
         q['content_rev'] = self._content_rev(q)
@@ -598,14 +614,62 @@ class Storage:
         q['locked'] = True
         return q
 
+    def _annotation_relative_paths(self, project: dict[str, Any]) -> dict[str, Path]:
+        project_id = str(project.get('id') or '').strip()
+        image_set_rev = max(1, int(project.get('image_set_rev', 1) or 1))
+        key = (project_id, image_set_rev)
+        cached = self._annotation_layout_cache.get(key)
+        if cached is not None:
+            return cached
+        images = self._load_project_images_db(project_id)
+        mapping = self._project_files.annotation_relative_paths(images)
+        annotation_dir = Path(str(project.get('annotation_dir') or '')).expanduser().resolve()
+        # Keep an already-written extended collision name stable after a sibling is deleted.
+        # When a collision is introduced later, preserve the pre-existing plain file for the
+        # first image and use extended names for the newly colliding images.
+        plain_claimed: set[Path] = set()
+        for image in images:
+            image_id = str(image.get('id') or '').strip()
+            raw_rel = str(image.get('rel_path') or '').strip().replace('\\', '/')
+            if not image_id or not raw_rel or image_id not in mapping:
+                continue
+            rel = Path(raw_rel)
+            plain = rel.parent / f'{rel.stem}.json'
+            extended = rel.parent / f'{rel.name}.json'
+            if (annotation_dir / extended).exists():
+                mapping[image_id] = extended
+            elif mapping[image_id] == extended and (annotation_dir / plain).exists() and plain not in plain_claimed:
+                mapping[image_id] = plain
+                plain_claimed.add(plain)
+        self._annotation_layout_cache = {
+            cache_key: value
+            for cache_key, value in self._annotation_layout_cache.items()
+            if cache_key[0] != project_id
+        }
+        self._annotation_layout_cache[key] = mapping
+        return mapping
+
     def _annotation_path(self, project: dict[str, Any], image_id: str) -> Path:
-        return self._project_files.annotation_path(project, image_id)
+        image = self._get_project_image_db(str(project.get('id') or ''), image_id)
+        if image is None:
+            raise ValueError('image not found')
+        return self._project_files.annotation_path(project, image, self._annotation_relative_paths(project))
+
+    def _legacy_annotation_path(self, project: dict[str, Any], image_id: str) -> Path:
+        return self._project_files.legacy_annotation_path(project, image_id)
+
+    def _annotation_read_path(self, project: dict[str, Any], image_id: str) -> Path:
+        target = self._annotation_path(project, image_id)
+        if target.exists():
+            return target
+        legacy = self._legacy_annotation_path(project, image_id)
+        return legacy if legacy.exists() else target
 
     def _annotation_has_items(self, path: Path) -> bool:
         return self._project_files.annotation_has_items(path)
 
     def _image_status(self, project: dict[str, Any], image_id: str) -> str:
-        path = self._annotation_path(project, image_id)
+        path = self._annotation_read_path(project, image_id)
         if self._annotation_has_items(path):
             return 'labeled'
         return 'unlabeled'
@@ -736,6 +800,7 @@ class Storage:
     def auto_import_manifests(self, roots: list[Path], *, max_depth: int = 3) -> dict[str, Any]:
         return self._project_discovery.auto_import_manifests(roots, max_depth=max_depth)
 
+    @_catalog_locked
     def import_existing_project(
         self,
         *,
@@ -798,9 +863,14 @@ class Storage:
         images = list_images_recursive(image_root)
         if not images:
             raise ValueError('no images found in image_dir')
+        imported_rel_paths = self._project_files.annotation_relative_paths(images)
         for img in images:
             image_id = str(img.get('id') or '')
-            img['status'] = 'labeled' if self._annotation_has_items(annotation_dir / f'{image_id}.json') else 'unlabeled'
+            mirrored = annotation_dir / imported_rel_paths.get(image_id, Path(f'{image_id}.json'))
+            legacy = annotation_dir / f'{image_id}.json'
+            img['status'] = 'labeled' if (
+                self._annotation_has_items(mirrored) or self._annotation_has_items(legacy)
+            ) else 'unlabeled'
         resolved_image_dir = str(image_root)
 
         total = len(images)
@@ -819,6 +889,8 @@ class Storage:
             'workspace_dir': str((self.projects_root / project_id).resolve()),
             'cache_dir': str(ensure_dir(self.projects_root / project_id / 'cache').resolve()),
             'classes': classes,
+            'annotation_legacy_fallback': True,
+            'image_set_rev': max(1, int(base.get('image_set_rev', 1) or 1)),
             'images': images,
             'num_images': total,
             'labeled_images': labeled,
@@ -981,6 +1053,7 @@ class Storage:
             after_sort_index = self._get_project_image_index_db(project_id, after_image_id)
         return self._get_project_unlabeled_image_db(project_id, after_sort_index=after_sort_index, direction=direction)
 
+    @_catalog_locked
     def rebuild_annotation_index(self, project_id: str) -> dict[str, Any]:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
@@ -1001,7 +1074,7 @@ class Storage:
                 conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
                 used_annotation_ids: set[str] = set()
                 for image_id in image_ids:
-                    data = read_json(self._annotation_path(project, image_id), [])
+                    data = read_json(self._annotation_read_path(project, image_id), [])
                     raw_annotations = data if isinstance(data, list) else []
                     annotations = self._normalize_annotation_ids_with_used_set(raw_annotations, used_annotation_ids)
                     self._replace_annotations_db(project_id, image_id, annotations, conn=conn, updated_at=ts)
@@ -1048,6 +1121,112 @@ class Storage:
             'rebuilt_at': ts,
         }
 
+    @_catalog_locked
+    def migrate_annotation_layout(self, project_id: str, *, dry_run: bool = True) -> dict[str, Any]:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+
+        items: list[dict[str, Any]] = []
+        moved = 0
+        already_new = 0
+        conflicts = 0
+        failed = 0
+        legacy_remaining = 0
+        conflict_root = Path(str(project.get('annotation_dir') or '')).expanduser().resolve() / '.legacy_conflicts'
+        annotation_dir = Path(str(project.get('annotation_dir') or '')).expanduser().resolve()
+        candidate_image_ids: list[str] = []
+        try:
+            top_level_json = [path for path in annotation_dir.glob('*.json') if path.is_file()]
+        except OSError:
+            top_level_json = []
+        for path in top_level_json:
+            image_id = path.stem
+            if self._get_project_image_db(project_id, image_id) is not None:
+                candidate_image_ids.append(image_id)
+
+        for image_id in candidate_image_ids:
+            legacy = self._legacy_annotation_path(project, image_id)
+            target = self._annotation_path(project, image_id)
+            if target.exists() and not legacy.exists():
+                already_new += 1
+                continue
+            if not legacy.exists():
+                continue
+
+            action = 'move'
+            conflict_path = conflict_root / f'{image_id}.json'
+            try:
+                if target.exists():
+                    if target.read_bytes() == legacy.read_bytes():
+                        action = 'deduplicate'
+                    else:
+                        action = 'conflict'
+                        conflicts += 1
+                if not dry_run:
+                    ensure_dir(target.parent)
+                    if action == 'move':
+                        legacy.replace(target)
+                        moved += 1
+                    elif action == 'deduplicate':
+                        legacy.unlink(missing_ok=True)
+                        already_new += 1
+                    else:
+                        ensure_dir(conflict_path.parent)
+                        legacy.replace(conflict_path)
+                elif action == 'move':
+                    moved += 1
+                elif action == 'deduplicate':
+                    already_new += 1
+                items.append(
+                    {
+                        'image_id': image_id,
+                        'source': str(legacy),
+                        'target': str(target),
+                        'action': action,
+                        'conflict_path': str(conflict_path) if action == 'conflict' else '',
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                items.append(
+                    {
+                        'image_id': image_id,
+                        'source': str(legacy),
+                        'target': str(target),
+                        'action': 'failed',
+                        'error': str(exc),
+                    }
+                )
+
+        if not dry_run:
+            legacy_remaining = sum(1 for image_id in candidate_image_ids if self._legacy_annotation_path(project, image_id).exists())
+            projects = self._load_projects()
+            updated_projects: list[dict[str, Any]] = []
+            updated: dict[str, Any] | None = None
+            for raw in projects:
+                normalized = self._normalize_project(raw)
+                if normalized.get('id') == project_id:
+                    normalized['annotation_legacy_fallback'] = bool(legacy_remaining or failed)
+                    normalized['updated_at'] = now_ts()
+                    self._bump_content_rev(normalized)
+                    updated = normalized
+                updated_projects.append(normalized)
+            self._save_projects(updated_projects)
+            if updated:
+                self._write_project_manifest(updated)
+
+        return {
+            'project_id': project_id,
+            'dry_run': bool(dry_run),
+            'moved': moved,
+            'already_new': already_new,
+            'conflicts': conflicts,
+            'failed': failed,
+            'legacy_remaining': legacy_remaining,
+            'items': items,
+        }
+
     def get_annotation_dashboard(self, project_id: str) -> dict[str, Any]:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
@@ -1063,6 +1242,7 @@ class Storage:
             unlabeled_images=unlabeled_images,
         )
 
+    @_catalog_locked
     def create_project(
         self,
         *,
@@ -1113,6 +1293,8 @@ class Storage:
             'workspace_dir': str(workspace_dir.resolve()),
             'cache_dir': str((workspace_dir / 'cache').resolve()),
             'classes': parse_classes_text(classes_text),
+            'annotation_legacy_fallback': False,
+            'image_set_rev': 1,
             'images': [{**dict(img), 'status': 'unlabeled'} for img in images],
             'num_images': len(images),
             'labeled_images': 0,
@@ -1129,6 +1311,7 @@ class Storage:
         self._write_project_manifest(project)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
 
+    @_catalog_locked
     def add_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
         self._project_classes.validate_classes_text(classes_text)
         projects = self._load_projects()
@@ -1148,6 +1331,7 @@ class Storage:
         self._write_project_manifest(updated)
         return self._prepare_project_cached(updated)
 
+    @_catalog_locked
     def refresh_project_images(self, project_id: str) -> tuple[dict[str, Any], int]:
         projects = self._load_projects()
         out: list[dict[str, Any]] = []
@@ -1195,6 +1379,7 @@ class Storage:
 
                 if changed:
                     self._insert_project_images_db(project_id, str(p.get('project_type') or 'image'), pending_insert, start_index=len(existing))
+                    p['image_set_rev'] = max(1, int(p.get('image_set_rev', 1) or 1)) + 1
                     p['num_images'] = max(0, int(p.get('num_images', 0) or 0) + int(added))
                     p['unlabeled_images'] = max(0, int(p.get('unlabeled_images', 0) or 0) + int(added))
                     self._bump_content_rev(p)
@@ -1210,6 +1395,7 @@ class Storage:
         self._write_project_manifest(updated)
         return self._prepare_project_cached(updated), added
 
+    @_catalog_locked
     def delete_image(self, project_id: str, image_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         projects = self._load_projects()
         out: list[dict[str, Any]] = []
@@ -1225,6 +1411,7 @@ class Storage:
                     raise ValueError('image not found')
                 was_labeled = self._normalize_image_status(deleted_image.get('status')) == 'labeled'
                 p['num_images'] = max(0, int(p.get('num_images', 0) or 0) - 1)
+                p['image_set_rev'] = max(1, int(p.get('image_set_rev', 1) or 1)) + 1
                 if was_labeled:
                     p['labeled_images'] = max(0, int(p.get('labeled_images', 0) or 0) - 1)
                 else:
@@ -1238,11 +1425,14 @@ class Storage:
         if not updated:
             raise ValueError('project not found')
 
-        ann_path = self._annotation_path(updated, image_id)
-        try:
-            ann_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for ann_path in {
+            self._annotation_path(updated, image_id),
+            self._legacy_annotation_path(updated, image_id),
+        }:
+            try:
+                ann_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         image_root = Path(str(updated.get('image_dir') or '')).expanduser().resolve()
         abs_path = Path(str(deleted_image.get('abs_path') or '')).expanduser().resolve()
@@ -1257,6 +1447,7 @@ class Storage:
         self._write_project_manifest(updated)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(updated), deleted_image
 
+    @_catalog_locked
     def delete_project_images(self, project_id: str, image_ids: list[str]) -> dict[str, Any]:
         requested_ids = list(dict.fromkeys(str(item).strip() for item in image_ids if str(item).strip()))
         if not requested_ids:
@@ -1304,6 +1495,7 @@ class Storage:
                 current_total = max(0, int(p.get('num_images', 0) or 0))
                 current_labeled = max(0, int(p.get('labeled_images', 0) or 0))
                 p['num_images'] = max(0, current_total - len(delete_ids))
+                p['image_set_rev'] = max(1, int(p.get('image_set_rev', 1) or 1)) + 1
                 p['labeled_images'] = max(0, current_labeled - deleted_labeled)
                 p['unlabeled_images'] = max(0, int(p.get('num_images', 0) or 0) - int(p.get('labeled_images', 0) or 0))
                 self._bump_content_rev(p)
@@ -1324,6 +1516,7 @@ class Storage:
             image = images_by_id[image_id]
             rel_path = str(image.get('rel_path') or image_id)
             ann_path = self._annotation_path(updated, image_id)
+            legacy_ann_path = self._legacy_annotation_path(updated, image_id)
             image_file_deleted = False
             annotation_file_deleted = False
 
@@ -1331,6 +1524,11 @@ class Storage:
                 if ann_path.exists():
                     ann_path.unlink(missing_ok=True)
                     deleted_annotation_files += 1
+                    annotation_file_deleted = True
+                if legacy_ann_path != ann_path and legacy_ann_path.exists():
+                    legacy_ann_path.unlink(missing_ok=True)
+                    if not annotation_file_deleted:
+                        deleted_annotation_files += 1
                     annotation_file_deleted = True
             except Exception as exc:  # noqa: BLE001
                 failed_deletes.append(
@@ -1398,6 +1596,7 @@ class Storage:
     def _unique_import_target(self, root: Path, rel_path: str) -> Path:
         return self._project_files.unique_import_target(root, rel_path)
 
+    @_catalog_locked
     def import_images_from_dir(self, project_id: str, source_dir: str) -> tuple[dict[str, Any], int, int]:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
@@ -1438,6 +1637,7 @@ class Storage:
         refreshed, added = self.refresh_project_images(project_id)
         return refreshed, copied, added
 
+    @_catalog_locked
     def delete_class(self, project_id: str, class_name: str) -> dict[str, Any]:
         self._project_classes.validate_class_name(class_name)
         projects = self._load_projects()
@@ -1473,6 +1673,7 @@ class Storage:
     def _safe_unlink(self, path: Path, source_path: Path) -> None:
         self._project_files.safe_unlink(path, source_path)
 
+    @_catalog_locked
     def delete_project(self, project_id: str) -> None:
         projects = self._load_projects()
         kept: list[dict[str, Any]] = []
@@ -1519,17 +1720,35 @@ class Storage:
             raise ValueError('project not found')
         annotations_db = self._load_annotations_db(project_id, image_id)
         if annotations_db is not None:
-            return annotations_db
-        path = self._annotation_path(project, image_id)
+            return normalize_annotation_masks(
+                base_dir=self.base_dir,
+                project_id=project_id,
+                image_id=image_id,
+                annotations=annotations_db,
+            )
+        path = self._annotation_read_path(project, image_id)
         data = read_json(path, [])
         annotations = data if isinstance(data, list) else []
-        return self._normalize_annotation_ids(project_id, image_id, annotations)
+        annotations = self._normalize_annotation_ids(project_id, image_id, annotations)
+        return normalize_annotation_masks(
+            base_dir=self.base_dir,
+            project_id=project_id,
+            image_id=image_id,
+            annotations=annotations,
+        )
 
+    @_catalog_locked
     def save_annotations(self, project_id: str, image_id: str, annotations: list[dict[str, Any]]) -> None:
         image = self._get_project_image_db(project_id, image_id)
         if image is None:
             raise ValueError('image not found')
         annotations = self._normalize_annotation_ids(project_id, image_id, annotations)
+        annotations = normalize_annotation_masks(
+            base_dir=self.base_dir,
+            project_id=project_id,
+            image_id=image_id,
+            annotations=annotations,
+        )
         projects = self._load_projects()
         out: list[dict[str, Any]] = []
         project: dict[str, Any] | None = None
@@ -1554,6 +1773,12 @@ class Storage:
             raise ValueError('project not found')
         path = self._annotation_path(project, image_id)
         atomic_write_json(path, annotations)
+        legacy_path = self._legacy_annotation_path(project, image_id)
+        if legacy_path != path:
+            try:
+                legacy_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         self._replace_annotations_db(project_id, image_id, annotations)
         self._replace_annotation_ids_db(
             project_id,

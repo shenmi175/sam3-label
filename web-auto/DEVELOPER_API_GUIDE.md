@@ -346,8 +346,7 @@
   "project_id": "prj_xxx",
   "image_id": "img_xxx",
   "active_class": "cat",
-  "boxes": [[100, 100, 300, 300, 1]],
-  "pure_visual": false,
+  "boxes": [[100, 100, 300, 300, 1], [320, 100, 420, 240, 0]],
   "threshold": 0.5,
   "api_base_url": "http://127.0.0.1:8001"
 }
@@ -355,7 +354,9 @@
 
 说明：
 
-- 这就是前端“范例分割”按钮应调用的接口
+- 这就是前端“框选找同类”按钮应调用的接口
+- 始终使用纯视觉提示；`active_class` 只用于保存结果类别
+- `boxes` 第五位为标签：`1` 正框、`0` 负框，且至少需要一个正框
 
 ## 7. 图片批量推理
 
@@ -365,24 +366,11 @@
 
 同步全图文本批推。
 
-### `POST /api/infer/batch_example`
-
-同步范例传播。
-
-说明：
-
-- 这就是前端“范例传播”对应的同步接口
-- 大项目不建议直接用同步接口，推荐任务接口
-
 ### 任务接口
 
 ### `POST /api/infer/jobs/start_batch`
 
 启动文本批推任务。
-
-### `POST /api/infer/jobs/start_batch_example`
-
-启动范例传播任务。
 
 ### `GET /api/infer/jobs/active?project_id=...`
 
@@ -405,7 +393,6 @@
 - 继续时可以带新的 `threshold`
 - 继续时可以带新的 `batch_size`
 - 继续时可以带新的 `api_base_url`
-- 继续范例传播时也可以调整 `active_class`、`boxes`、`pure_visual`
 
 任务公共字段示例：
 
@@ -413,7 +400,7 @@
 {
   "job_id": "job_xxx",
   "project_id": "prj_xxx",
-  "job_type": "example_batch",
+  "job_type": "text_batch",
   "status": "running",
   "message": "处理中 10/12000: a.jpg",
   "progress_done": 10,
@@ -491,8 +478,7 @@
 - 阈值设定
 - API测试
 - 类别添加
-- 范例分割
-- 范例传播
+- 同图框选找同类
 - 批量推理停止/继续
 - 智能过滤任务化与预览复用
 

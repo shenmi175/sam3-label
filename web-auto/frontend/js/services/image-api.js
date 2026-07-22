@@ -37,8 +37,16 @@ export const imageApi = {
     return request('DELETE', `/projects/${projectId}/images/${imageId}`);
   },
 
-  getImageTilesInfo(projectId, imageId, requestOptions = {}) {
-    return request('GET', `/projects/${projectId}/images/${imageId}/tiles/info`, null, false, requestOptions);
+  getImageTilesInfo(projectId, imageId, requestOptions = {}, params = {}) {
+    const query = new URLSearchParams();
+    if (params.priority) query.set('priority', String(params.priority));
+    if (params.enqueue !== undefined) query.set('enqueue', params.enqueue ? 'true' : 'false');
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request('GET', `/projects/${projectId}/images/${imageId}/tiles/info${suffix}`, null, false, requestOptions);
+  },
+
+  getImagePreviewInfo(projectId, imageId, requestOptions = {}) {
+    return request('GET', `/projects/${projectId}/images/${imageId}/preview/info`, null, false, requestOptions);
   },
 
   getUploadConfig() {

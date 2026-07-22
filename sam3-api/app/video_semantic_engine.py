@@ -14,7 +14,7 @@ from ultralytics.models.sam import SAM3VideoSemanticPredictor
 from ultralytics.models.sam.amg import batched_mask_to_box
 
 from app.config import Settings
-from app.utils import mask_to_png_base64, mask_to_polygon
+from app.utils import mask_to_png_base64, split_mask_components
 
 
 class Sam3VideoSemanticSessionEngine:
@@ -295,23 +295,36 @@ class Sam3VideoSemanticSessionEngine:
             w = max(0.0, x2 - x1)
             h = max(0.0, y2 - y1)
             mask = pred_masks[source_idx].detach().to(device="cpu").numpy().astype(np.uint8)
-            polygon = mask_to_polygon(mask)
-            payload: dict[str, Any] = {
-                "id": f"det_{det_idx:04d}",
+            base_id = f"det_{det_idx:04d}"
+            base_payload: dict[str, Any] = {
+                "id": base_id,
                 "obj_id": obj_id,
                 "label": label,
                 "score": round(float(pred_scores[source_idx].item()), 6),
                 "bbox_xyxy": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
                 "bbox_xywh": [round(x1, 2), round(y1, 2), round(w, 2), round(h, 2)],
-                "area": int(mask.sum()),
+                "area": None,
             }
             if safe_class_id is not None:
-                payload["class_id"] = safe_class_id
-            if polygon:
-                payload["polygon"] = polygon
-            if include_mask_png:
-                payload["mask_png_base64"] = mask_to_png_base64(mask)
-            detections.append(payload)
+                base_payload["class_id"] = safe_class_id
+
+            components = split_mask_components(mask)
+            contour_count = len(components)
+            for contour_idx, component in enumerate(components, start=1):
+                payload = dict(base_payload)
+                payload.update(
+                    {
+                        "id": f"{base_id}_c{contour_idx:03d}",
+                        "area": component.area,
+                        "polygon": component.polygon,
+                        "model_det_id": base_id,
+                        "contour_index": contour_idx,
+                        "contour_count": contour_count,
+                    }
+                )
+                if include_mask_png:
+                    payload["mask_png_base64"] = mask_to_png_base64(component.mask)
+                detections.append(payload)
         return detections
 
     def _get_session(self, session_id: str) -> dict[str, Any]:

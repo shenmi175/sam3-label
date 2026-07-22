@@ -7,6 +7,7 @@ from typing import Any
 
 from PIL import Image
 
+from app.repositories.project_files import ProjectFileRepository
 from app.utils import ensure_dir
 
 
@@ -127,7 +128,10 @@ def export_yolo(
     if mode not in {'det', 'seg'}:
         raise ValueError('yolo mode must be det or seg')
 
-    labels_dir = ensure_dir(output_dir / 'labels')
+    out_name = 'yolo_det' if mode == 'det' else 'yolo_seg'
+    out_root = ensure_dir(output_dir / out_name)
+    labels_dir = ensure_dir(out_root / 'labels')
+    label_rel_paths = ProjectFileRepository.annotation_relative_paths(images)
     classes = list(project.get('classes', []))
     class_to_idx = {c: i for i, c in enumerate(classes)}
 
@@ -164,22 +168,11 @@ def export_yolo(
                     norm.append(f"{flat[i + 1] / h:.6f}")
                 txt_lines.append(f"{class_to_idx[cls]} {' '.join(norm)}")
 
-        txt_path = labels_dir / f"{Path(img['rel_path']).stem}.txt"
+        annotation_rel = label_rel_paths.get(str(img.get('id') or ''), Path(f"{Path(img['rel_path']).stem}.json"))
+        txt_path = labels_dir / annotation_rel.with_suffix('.txt')
+        ensure_dir(txt_path.parent)
         txt_path.write_text('\n'.join(txt_lines), encoding='utf-8')
 
-    classes_file = output_dir / 'classes.txt'
+    classes_file = out_root / 'classes.txt'
     classes_file.write_text('\n'.join(classes), encoding='utf-8')
-    out_name = 'yolo_det' if mode == 'det' else 'yolo_seg'
-    out_root = ensure_dir(output_dir / out_name)
-    ensure_dir(out_root)
-    # move generated files into dedicated folder for clarity
-    (out_root / 'labels').mkdir(parents=True, exist_ok=True)
-    for txt in labels_dir.glob('*.txt'):
-        txt.replace(out_root / 'labels' / txt.name)
-    classes_file = output_dir / 'classes.txt'
-    classes_file.replace(out_root / 'classes.txt')
-    try:
-        labels_dir.rmdir()
-    except OSError:
-        pass
     return out_root

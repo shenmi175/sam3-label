@@ -9,6 +9,10 @@ export const annotationApi = {
     return request('POST', `/projects/${projectId}/annotation_index/rebuild`);
   },
 
+  migrateAnnotationLayout(projectId, dryRun = true) {
+    return request('POST', `/projects/${projectId}/annotations/migrate`, { dry_run: Boolean(dryRun) });
+  },
+
   getAnnotations(projectId, imageId, requestOptions = {}) {
     return request('GET', `/projects/${projectId}/images/${imageId}/annotations`, null, false, requestOptions);
   },

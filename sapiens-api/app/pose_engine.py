@@ -300,15 +300,20 @@ class SapiensPoseEngine:
             data_samples_list.append(data["data_samples"])
 
         inputs = torch.cat(inputs_list, dim=0)
+        model_param = next(model.parameters(), None)
+        if model_param is not None:
+            inputs = inputs.to(device=model_param.device, dtype=model_param.dtype)
         with torch.inference_mode():
-            pred = model(inputs)
-            if model.cfg.val_cfg is not None and model.cfg.val_cfg.get("flip_test", False):
-                pred_flipped = model(inputs.flip(-1)).flip(-1)
-                flip_indices = model.pose_metainfo["flip_indices"]
-                pred_flipped = pred_flipped[:, flip_indices]
-                pred = (pred + pred_flipped) / 2.0
+            autocast_enabled = inputs.is_cuda and inputs.dtype in {torch.float16, torch.bfloat16}
+            with torch.autocast(device_type="cuda", dtype=inputs.dtype, enabled=autocast_enabled):
+                pred = model(inputs)
+                if model.cfg.val_cfg is not None and model.cfg.val_cfg.get("flip_test", False):
+                    pred_flipped = model(inputs.flip(-1)).flip(-1)
+                    flip_indices = model.pose_metainfo["flip_indices"]
+                    pred_flipped = pred_flipped[:, flip_indices]
+                    pred = (pred + pred_flipped) / 2.0
 
-        pred_np = pred.detach().cpu().numpy()
+        pred_np = pred.detach().float().cpu().numpy()
         links = self._skeleton_links(model)
         instances: list[dict[str, Any]] = []
         for idx, data_samples in enumerate(data_samples_list):

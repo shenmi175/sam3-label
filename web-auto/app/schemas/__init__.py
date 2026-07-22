@@ -1,4 +1,4 @@
-from app.schemas.annotations import AppendAnnIn, SaveAnnIn, UIStateIn
+from app.schemas.annotations import AnnotationMigrationIn, AppendAnnIn, SaveAnnIn, UIStateIn
 from app.schemas.auth import AuthLoginIn, AuthPasswordChangeIn, AuthSetupIn
 from app.schemas.config import CacheDirUpdateIn, GlobalConfigUpdateIn
 from app.schemas.exports import ExportIn
@@ -6,7 +6,6 @@ from app.schemas.filters import SmartFilterIn
 from app.schemas.inference import (
     HealthApiIn,
     InferBatchIn,
-    InferExampleBatchIn,
     InferExamplePreviewIn,
     InferIn,
     InferJobControlIn,
@@ -16,6 +15,7 @@ from app.schemas.pose import PoseInferIn
 from app.schemas.projects import ImportExistingProjectIn, ImportImagesIn, OpenProjectIn, UpdateClassesIn
 
 __all__ = [
+    'AnnotationMigrationIn',
     'AppendAnnIn',
     'AuthLoginIn',
     'AuthPasswordChangeIn',
@@ -27,7 +27,6 @@ __all__ = [
     'ImportExistingProjectIn',
     'ImportImagesIn',
     'InferBatchIn',
-    'InferExampleBatchIn',
     'InferExamplePreviewIn',
     'InferIn',
     'InferJobControlIn',

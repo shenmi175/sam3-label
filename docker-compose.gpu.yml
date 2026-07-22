@@ -1,10 +1,16 @@
 services:
   sam3-api:
-    gpus: all
+    gpus:
+      - driver: nvidia
+        device_ids: ["${SAM3_GPU_DEVICE_ID:-1}"]
+        capabilities: [gpu]
     environment:
-      SAM3_API_DEVICE: cuda
+      SAM3_API_DEVICE: cuda:0
 
   sapiens-api:
-    gpus: all
+    gpus:
+      - driver: nvidia
+        device_ids: ["${SAPIENS_GPU_DEVICE_ID:-0}"]
+        capabilities: [gpu]
     environment:
       SAPIENS_DEVICE: cuda:0

@@ -392,6 +392,12 @@ lines = [
 for root in extra:
     lines.append(f"      - {dq(root + ':' + root + ':rw')}")
 lines.extend([
+    "  task-worker:",
+    "    volumes:",
+])
+for root in extra:
+    lines.append(f"      - {dq(root + ':' + root + ':rw')}")
+lines.extend([
     "  sapiens-api:",
     "    volumes:",
 ])
@@ -577,6 +583,8 @@ ensure_env() {
     gpu)
       set_env_var SAM3_DEPLOY_PROFILE "gpu"
       set_env_var SAM3_API_DEVICE "cuda"
+      [[ -n "$(get_env_var SAM3_GPU_DEVICE_ID || true)" ]] || set_env_var SAM3_GPU_DEVICE_ID "1"
+      [[ -n "$(get_env_var SAPIENS_GPU_DEVICE_ID || true)" ]] || set_env_var SAPIENS_GPU_DEVICE_ID "0"
       [[ -n "$(get_env_var SAPIENS_DEVICE || true)" ]] || set_env_var SAPIENS_DEVICE "cuda:0"
       ;;
     cpu)
@@ -633,6 +641,7 @@ ensure_env() {
   fi
   set_env_var WEB_AUTO_HTTP_BIND "${web_http_bind:-0.0.0.0}"
   set_env_var WEB_AUTO_HTTP_PORT "${web_http_port:-8000}"
+  [[ -n "$(get_env_var WEB_AUTO_WORKER_BATCH_SLICE || true)" ]] || set_env_var WEB_AUTO_WORKER_BATCH_SLICE "4"
 
   if [[ "$access_mode" == "proxy" ]]; then
     local public_domain

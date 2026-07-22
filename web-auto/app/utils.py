@@ -4,12 +4,50 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+
+
+class InterProcessLock(AbstractContextManager['InterProcessLock']):
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._thread_lock = threading.RLock()
+        self._local = threading.local()
+
+    def __enter__(self) -> 'InterProcessLock':
+        self._thread_lock.acquire()
+        depth = int(getattr(self._local, 'depth', 0))
+        if depth == 0:
+            ensure_dir(self.path.parent)
+            handle = self.path.open('a+')
+            try:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                handle.close()
+                self._thread_lock.release()
+                raise
+            self._local.handle = handle
+        self._local.depth = depth + 1
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        depth = max(0, int(getattr(self._local, 'depth', 1)) - 1)
+        self._local.depth = depth
+        if depth == 0:
+            handle = getattr(self._local, 'handle', None)
+            if handle is not None:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+                self._local.handle = None
+        self._thread_lock.release()
 
 def now_ts() -> str:
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())

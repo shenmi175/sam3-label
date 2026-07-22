@@ -24,8 +24,6 @@ class Sam3Client:
             return url[:-len('/v1/infer')]
         if url.lower().endswith('/v1/semantic/infer'):
             return url[:-len('/v1/semantic/infer')]
-        if url.lower().endswith('/v1/semantic/infer_batch'):
-            return url[:-len('/v1/semantic/infer_batch')]
         if url.lower().endswith('/health'):
             return url[:-len('/health')]
         return url
@@ -57,14 +55,6 @@ class Sam3Client:
     @staticmethod
     def _infer_url(base_url: str) -> str:
         return Sam3Client._api_root(base_url) + '/v1/infer'
-
-    @staticmethod
-    def _semantic_infer_url(base_url: str) -> str:
-        return Sam3Client._api_root(base_url) + '/v1/semantic/infer'
-
-    @staticmethod
-    def _semantic_batch_url(base_url: str) -> str:
-        return Sam3Client._api_root(base_url) + '/v1/semantic/infer_batch'
 
     @staticmethod
     def _health_url(base_url: str) -> str:
@@ -157,50 +147,6 @@ class Sam3Client:
 
         return data
 
-    def semantic_infer(
-        self,
-        *,
-        api_base_url: str,
-        image_path: str,
-        prompt: str,
-        threshold: float,
-        boxes: list[list[float | int]] | None = None,
-        include_mask_png: bool = True,
-        max_detections: int = 200,
-    ) -> dict[str, Any]:
-        infer_url = self._semantic_infer_url(api_base_url)
-        image_file = Path(image_path)
-        if not image_file.exists() or not image_file.is_file():
-            raise ValueError(f'image does not exist: {image_file}')
-
-        payload: dict[str, str] = {
-            'prompt': str(prompt or '').strip(),
-            'threshold': str(float(threshold)),
-            'include_mask_png': 'true' if include_mask_png else 'false',
-            'max_detections': str(int(max_detections)),
-            'boxes': json.dumps(boxes or []),
-        }
-
-        with image_file.open('rb') as f:
-            files = {'file': (image_file.name, f, 'application/octet-stream')}
-            resp = requests.post(
-                infer_url,
-                data=payload,
-                files=files,
-                headers=self._auth_headers(),
-                timeout=max(self.timeout_sec, 1.0),
-            )
-
-        try:
-            data = resp.json()
-        except Exception:
-            raise RuntimeError(f'API response is not JSON: HTTP {resp.status_code} {resp.text[:240]}')
-
-        if not resp.ok:
-            err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
-
-        return data if isinstance(data, dict) else {}
 
     def infer_batch(
         self,
@@ -245,72 +191,6 @@ class Sam3Client:
             for item in clean_paths:
                 handles.append(item.open('rb'))
                 files.append(('files', (item.name, handles[-1], 'application/octet-stream')))
-            resp = requests.post(
-                infer_url,
-                data=payload,
-                files=files,
-                headers=self._auth_headers(),
-                timeout=max(self.timeout_sec * 4.0, 120.0),
-            )
-        finally:
-            for handle in handles:
-                try:
-                    handle.close()
-                except Exception:
-                    pass
-
-        try:
-            data = resp.json()
-        except Exception:
-            raise RuntimeError(f'API response is not JSON: HTTP {resp.status_code} {resp.text[:240]}')
-
-        if not resp.ok:
-            err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
-
-        return data if isinstance(data, dict) else {}
-
-    def semantic_infer_batch(
-        self,
-        *,
-        api_base_url: str,
-        source_image_path: str,
-        target_image_paths: list[str],
-        prompt: str,
-        boxes: list[list[float | int]] | None = None,
-        threshold: float,
-        include_mask_png: bool = True,
-        max_detections: int = 200,
-    ) -> dict[str, Any]:
-        infer_url = self._semantic_batch_url(api_base_url)
-        source_file = Path(source_image_path)
-        if not source_file.exists() or not source_file.is_file():
-            raise ValueError(f'source image does not exist: {source_file}')
-        clean_targets = [Path(p) for p in (target_image_paths or []) if str(p).strip()]
-        if not clean_targets:
-            raise ValueError('target_image_paths must not be empty')
-        for item in clean_targets:
-            if not item.exists() or not item.is_file():
-                raise ValueError(f'target image does not exist: {item}')
-
-        payload: dict[str, str] = {
-            'prompt': str(prompt or '').strip(),
-            'threshold': str(float(threshold)),
-            'include_mask_png': 'true' if include_mask_png else 'false',
-            'max_detections': str(int(max_detections)),
-            'boxes': json.dumps(boxes or []),
-        }
-
-        handles = []
-        try:
-            handles.append(source_file.open('rb'))
-            files: list[tuple[str, tuple[str, Any, str]]] = [
-                ('source_file', (source_file.name, handles[-1], 'application/octet-stream'))
-            ]
-            for item in clean_targets:
-                handles.append(item.open('rb'))
-                files.append(('files', (item.name, handles[-1], 'application/octet-stream')))
-
             resp = requests.post(
                 infer_url,
                 data=payload,

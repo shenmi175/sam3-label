@@ -16,10 +16,6 @@
   - 单图预览推理
 - `POST /api/infer/example_preview`
   - 当前图范例分割
-- `POST /api/infer/batch_example`
-  - 同步范例传播
-- `POST /api/infer/jobs/start_batch_example`
-  - 任务化范例传播
 - `POST /api/infer/jobs/resume`
   - 批量推理继续，可更新阈值等参数
 

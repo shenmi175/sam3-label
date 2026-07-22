@@ -7,7 +7,7 @@
 - 项目管理
 - 图片文件访问
 - 标注读写
-- 单图推理、批量推理、范例传播
+- 单图推理、同图视觉框找同类、文本批量推理
 - 智能过滤
 - 导出
 
@@ -93,7 +93,6 @@ python run.py
 - `POST /v1/infer`
 - `POST /v1/infer_batch`
 - `POST /v1/semantic/infer`
-- `POST /v1/semantic/infer_batch`
 
 ## 文档
 

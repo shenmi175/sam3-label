@@ -152,7 +152,6 @@ class Sam3ApiHttpClient:
         self,
         *,
         image_path: str,
-        prompt: str,
         boxes: list[list[float | int]],
         threshold: float = 0.5,
         include_mask_png: bool = False,
@@ -161,7 +160,6 @@ class Sam3ApiHttpClient:
     ) -> dict[str, Any]:
         image = _resolve_path(image_path, kind="image")
         data = {
-            "prompt": str(prompt),
             "boxes": _json_field(boxes),
             "threshold": str(float(threshold)),
             "include_mask_png": _stringify_bool(include_mask_png),
@@ -172,36 +170,6 @@ class Sam3ApiHttpClient:
             files = {"file": (image.name, fh, _mime_type(image))}
             return self._request("POST", "/v1/semantic/infer", data=data, files=files)
 
-    def semantic_infer_batch(
-        self,
-        *,
-        source_image_path: str,
-        target_image_paths: list[str],
-        prompt: str,
-        boxes: list[list[float | int]],
-        threshold: float = 0.5,
-        include_mask_png: bool = False,
-        max_detections: int = 100,
-        input_size: int = 0,
-    ) -> dict[str, Any]:
-        source = _resolve_path(source_image_path, kind="source image")
-        targets = [_resolve_path(p, kind="target image") for p in target_image_paths]
-        data = {
-            "prompt": str(prompt),
-            "boxes": _json_field(boxes),
-            "threshold": str(float(threshold)),
-            "include_mask_png": _stringify_bool(include_mask_png),
-            "max_detections": str(max(0, int(max_detections))),
-            "input_size": str(max(0, int(input_size))),
-        }
-        with ExitStack() as stack:
-            files: list[tuple[str, tuple[str, Any, str]]] = []
-            source_fh = stack.enter_context(source.open("rb"))
-            files.append(("source_file", (source.name, source_fh, _mime_type(source))))
-            for path in targets:
-                fh = stack.enter_context(path.open("rb"))
-                files.append(("files", (path.name, fh, _mime_type(path))))
-            return self._request("POST", "/v1/semantic/infer_batch", data=data, files=files)
 
     def video_start_session(
         self,

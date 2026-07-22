@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
-from app.schemas import InferBatchIn, InferExampleBatchIn, InferJobResumeIn
+from app.schemas import InferBatchIn, InferJobResumeIn
 from app.services.inference_jobs import InferenceJobService, InferJobPaused
 from app.services.inference_results import _convert_detections, _replace_by_classes
 from app.services.inference_visual_prompts import (
@@ -53,6 +54,21 @@ class InferenceService:
     def _effective_sam3_batch_size(self, raw: Any) -> int:
         return min(self._requested_batch_size(raw), self._max_batch_files)
 
+    @staticmethod
+    def _remote_with_retries(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt, delay in enumerate((0.0, 1.0, 5.0), start=1):
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                return call()
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt >= 3:
+                    raise
+        assert last_error is not None
+        raise last_error
+
     def _infer_job_image_ids(self, items: list[dict[str, Any]], *, limit: int = 0) -> list[str]:
         out: list[str] = []
         for image in items:
@@ -89,17 +105,6 @@ class InferenceService:
         if job_type == 'text_batch':
             if 'classes' in overrides and overrides.get('classes') is not None:
                 payload['classes'] = [str(x).strip() for x in overrides.get('classes', []) if str(x).strip()]
-            return payload
-
-        if job_type == 'example_batch':
-            if 'active_class' in overrides and overrides.get('active_class') is not None:
-                payload['active_class'] = str(overrides['active_class'] or '').strip()
-            if 'source_image_id' in overrides and overrides.get('source_image_id') is not None:
-                payload['source_image_id'] = str(overrides['source_image_id'] or '').strip()
-            if 'boxes' in overrides and overrides.get('boxes') is not None:
-                payload['boxes'] = overrides.get('boxes') or []
-            if 'pure_visual' in overrides and overrides.get('pure_visual') is not None:
-                payload['pure_visual'] = bool(overrides.get('pure_visual'))
             return payload
 
         return payload
@@ -161,22 +166,6 @@ class InferenceService:
                 existing_job_id=str(paused.get('job_id') or ''),
                 worker=lambda data, progress_cb, should_stop, resume_state: self.run_infer_batch(
                     InferBatchIn(**data),
-                    progress_cb=progress_cb,
-                    should_stop=should_stop,
-                    resume_state=resume_state,
-                ),
-            )
-            return {'job': job}
-
-        if job_type == 'example_batch':
-            merged['image_ids'] = pending_image_ids
-            job = self._infer_jobs.spawn_job(
-                project_id=payload.project_id,
-                job_type='example_batch',
-                payload_dict=merged,
-                existing_job_id=str(paused.get('job_id') or ''),
-                worker=lambda data, progress_cb, should_stop, resume_state: self.run_infer_batch_example(
-                    InferExampleBatchIn(**data),
                     progress_cb=progress_cb,
                     should_stop=should_stop,
                     resume_state=resume_state,
@@ -339,7 +328,6 @@ class InferenceService:
         image: dict[str, Any],
         active_class: str,
         boxes: list[list[float | int]],
-        pure_visual: bool,
         threshold: float,
         api_base_url: str,
     ) -> dict[str, Any]:
@@ -352,16 +340,17 @@ class InferenceService:
         )
 
         try:
-            result = self._sam3.semantic_infer(
+            result = self._sam3.infer(
                 api_base_url=api_base_url,
                 image_path=str(image.get('abs_path') or ''),
-                prompt='' if pure_visual else active,
+                mode='boxes',
+                prompt='',
                 boxes=prompt_boxes,
                 threshold=float(threshold),
                 include_mask_png=True,
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f'remote semantic inference failed: {exc}') from exc
+            raise HTTPException(status_code=502, detail=f'remote visual inference failed: {exc}') from exc
 
         detections = result.get('detections', [])
         detections = detections if isinstance(detections, list) else []
@@ -451,6 +440,16 @@ class InferenceService:
         failed_image_ids = [str(x).strip() for x in prior.get('failed_image_ids', []) if str(x).strip()]
         skipped_image_ids = [str(x).strip() for x in prior.get('skipped_image_ids', []) if str(x).strip()]
         image_results = list(prior.get('image_results', [])) if isinstance(prior.get('image_results'), list) else []
+        completed_image_ids = {
+            str(item.get('image_id') or '').strip()
+            for item in image_results
+            if isinstance(item, dict) and str(item.get('status') or '') == 'saved'
+        }
+        if completed_image_ids:
+            target_images = [
+                image for image in target_images
+                if str(image.get('id') or '').strip() not in completed_image_ids
+            ]
         class_additions = dict(prior.get('class_additions', {})) if isinstance(prior.get('class_additions'), dict) else {}
         processed = max(0, int(prior.get('progress_done') or 0))
         total = max(int(prior.get('progress_total') or 0), processed + len(target_images))
@@ -496,13 +495,15 @@ class InferenceService:
 
             batch_paths = [str(img.get('abs_path') or '') for img in batch_images]
             try:
-                batch_result = self._sam3.infer_batch(
-                    api_base_url=payload.api_base_url,
-                    image_paths=batch_paths,
-                    mode='text',
-                    prompt=prompt,
-                    threshold=payload.threshold,
-                    include_mask_png=True,
+                batch_result = self._remote_with_retries(
+                    lambda: self._sam3.infer_batch(
+                        api_base_url=payload.api_base_url,
+                        image_paths=batch_paths,
+                        mode='text',
+                        prompt=prompt,
+                        threshold=payload.threshold,
+                        include_mask_png=True,
+                    )
                 )
                 items = batch_result.get('items', [])
                 if not isinstance(items, list) or len(items) != len(batch_images):
@@ -639,212 +640,6 @@ class InferenceService:
             'message': summary,
         }
 
-    def run_infer_batch_example(
-        self,
-        payload: InferExampleBatchIn,
-        *,
-        progress_cb: Optional[Callable[..., None]] = None,
-        should_stop: Optional[Callable[[], bool]] = None,
-        resume_state: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        project = self._get_project_or_404(payload.project_id)
-        if project.get('project_type') != 'image':
-            raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
-
-        active_class = str(payload.active_class or '').strip()
-        if not active_class:
-            raise HTTPException(status_code=400, detail='active_class is required for example batch infer')
-        pure_visual = bool(payload.pure_visual)
-
-        source_image = self._get_image_or_404(project, payload.source_image_id)
-        prompt_boxes = self._prepare_example_prompt_boxes(
-            image=source_image,
-            boxes=payload.boxes,
-        )
-        images = project.get('images', [])
-        if payload.image_ids:
-            wanted = {str(x) for x in payload.image_ids}
-            target_images = [img for img in images if str(img.get('id') or '') in wanted]
-        else:
-            target_images = images
-        if not target_images:
-            raise HTTPException(status_code=400, detail='no target images')
-
-        source_id = str(source_image.get('id') or '')
-        if (not payload.image_ids) and source_id and not any(str(img.get('id') or '') == source_id for img in target_images):
-            target_images = [source_image] + target_images
-
-        requested_batch_size = self._requested_batch_size(payload.batch_size)
-        batch_size = self._effective_sam3_batch_size(payload.batch_size)
-        prior = resume_state if isinstance(resume_state, dict) else {}
-        succeeded = max(0, int(prior.get('succeeded') or 0))
-        failed = max(0, int(prior.get('failed') or 0))
-        total_new = max(0, int(prior.get('new_annotations') or 0))
-        errors = list(prior.get('errors', [])) if isinstance(prior.get('errors'), list) else []
-        processed = max(0, int(prior.get('progress_done') or 0))
-        total = max(int(prior.get('progress_total') or 0), processed + len(target_images))
-        pending_images = list(target_images)
-
-        if progress_cb:
-            progress_cb(
-                message=f'准备范例传播，剩余 {len(target_images)} 张',
-                progress_done=processed,
-                progress_total=total,
-                requested=total,
-                batch_size=batch_size,
-                requested_batch_size=requested_batch_size,
-                max_remote_batch_size=self._max_batch_files,
-                succeeded=succeeded,
-                failed=failed,
-                new_annotations=total_new,
-                **self._pending_image_progress_payload(pending_images),
-            )
-
-        for batch_images in self._chunked(target_images, batch_size):
-            if should_stop and should_stop():
-                if progress_cb:
-                    progress_cb(
-                        status='paused',
-                        message='已停止，可调整参数后继续',
-                        progress_done=processed,
-                        progress_total=total,
-                        requested=total,
-                        batch_size=batch_size,
-                        requested_batch_size=requested_batch_size,
-                        max_remote_batch_size=self._max_batch_files,
-                        succeeded=succeeded,
-                        failed=failed,
-                        new_annotations=total_new,
-                        **self._pending_image_progress_payload(pending_images),
-                    )
-                raise InferJobPaused('已停止，可调整参数后继续')
-            try:
-                target_paths = [str(img.get('abs_path') or '') for img in batch_images]
-                batch_result = self._sam3.semantic_infer_batch(
-                    api_base_url=payload.api_base_url,
-                    source_image_path=str(source_image.get('abs_path') or ''),
-                    target_image_paths=target_paths,
-                    prompt='' if pure_visual else active_class,
-                    boxes=prompt_boxes,
-                    threshold=float(payload.threshold),
-                    include_mask_png=True,
-                )
-                items = batch_result.get('items', [])
-                if not isinstance(items, list) or len(items) != len(batch_images):
-                    raise RuntimeError(
-                        f'remote semantic batch inference item count mismatch: {len(items) if isinstance(items, list) else "invalid"} != {len(batch_images)}'
-                    )
-            except Exception as exc:  # noqa: BLE001
-                for image in batch_images:
-                    processed += 1
-                    failed += 1
-                    rel_path = str(image.get('rel_path') or image.get('id') or '')
-                    errors.append({'image_id': image.get('id'), 'error': str(exc)})
-                    if pending_images:
-                        pending_images.pop(0)
-                    if progress_cb:
-                        progress_cb(
-                            message=f'失败 {processed}/{total}: {rel_path}',
-                            progress_done=processed,
-                            progress_total=total,
-                            requested=total,
-                            batch_size=batch_size,
-                            requested_batch_size=requested_batch_size,
-                            max_remote_batch_size=self._max_batch_files,
-                            succeeded=succeeded,
-                            failed=failed,
-                            new_annotations=total_new,
-                            current_image_id=str(image.get('id') or ''),
-                            current_image_rel_path=rel_path,
-                            **self._pending_image_progress_payload(pending_images),
-                        )
-                continue
-
-            for image, item in zip(batch_images, items):
-                if should_stop and should_stop():
-                    if progress_cb:
-                        progress_cb(
-                            status='paused',
-                            message='已停止，可调整参数后继续',
-                            progress_done=processed,
-                            progress_total=total,
-                            requested=total,
-                            batch_size=batch_size,
-                            requested_batch_size=requested_batch_size,
-                            max_remote_batch_size=self._max_batch_files,
-                            succeeded=succeeded,
-                            failed=failed,
-                            new_annotations=total_new,
-                            **self._pending_image_progress_payload(pending_images),
-                        )
-                    raise InferJobPaused('已停止，可调整参数后继续')
-                processed += 1
-                image_id = str(image.get('id') or '')
-                rel_path = str(image.get('rel_path') or image_id)
-                message = f'处理中 {processed}/{total}: {rel_path}'
-                try:
-                    if not isinstance(item, dict):
-                        raise RuntimeError('remote batch item is not an object')
-                    if not bool(item.get('ok', False)):
-                        raise RuntimeError(str(item.get('error') or 'remote semantic batch item failed'))
-                    result = item.get('result', {})
-                    if not isinstance(result, dict):
-                        raise RuntimeError('remote batch item result is invalid')
-                    detections = result.get('detections', [])
-                    detections = detections if isinstance(detections, list) else []
-                    converted = _convert_detections(detections=detections, classes=[active_class], forced_class=active_class)
-                    old = self.storage.load_annotations(payload.project_id, image_id)
-                    merged = _replace_by_classes(
-                        old_annotations=old,
-                        impacted_classes=[active_class],
-                        new_annotations=converted,
-                    )
-                    self.storage.save_annotations(payload.project_id, image_id, merged)
-                    total_new += len(converted)
-                    succeeded += 1
-                except Exception as exc:  # noqa: BLE001
-                    failed += 1
-                    message = f'失败 {processed}/{total}: {rel_path}'
-                    errors.append({'image_id': image_id, 'error': str(exc)})
-                if pending_images:
-                    pending_images.pop(0)
-                if progress_cb:
-                    progress_cb(
-                        message=message,
-                        progress_done=processed,
-                        progress_total=total,
-                        requested=total,
-                        batch_size=batch_size,
-                        requested_batch_size=requested_batch_size,
-                        max_remote_batch_size=self._max_batch_files,
-                        succeeded=succeeded,
-                        failed=failed,
-                        new_annotations=total_new,
-                        current_image_id=image_id,
-                        current_image_rel_path=rel_path,
-                        **self._pending_image_progress_payload(pending_images),
-                    )
-
-        summary = (
-            f'范例传播完成: 成功 {succeeded}, 失败 {failed}, 写入 {total_new}, batch={batch_size}'
-            if failed > 0
-            else f'范例传播完成: 成功 {succeeded}, 写入 {total_new}, batch={batch_size}'
-        )
-        return {
-            'project_id': payload.project_id,
-            'source_image_id': payload.source_image_id,
-            'active_class': active_class,
-            'requested': total,
-            'requested_batch_size': requested_batch_size,
-            'batch_size': batch_size,
-            'max_remote_batch_size': self._max_batch_files,
-            'succeeded': succeeded,
-            'failed': failed,
-            'new_annotations': total_new,
-            'strategy': 'remote_visual_prompt_embedding_batch_chunked',
-            'errors': errors,
-            'message': summary,
-        }
 
     def _normalize_prompt_boxes(self, raw: Any) -> list[list[float]]:
         boxes: list[list[float]] = []

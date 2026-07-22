@@ -13,6 +13,9 @@ class DetectionOut(BaseModel):
     polygon: Optional[list[list[float]]] = None
     area: Optional[int] = None
     mask_png_base64: Optional[str] = None
+    model_det_id: Optional[str] = None
+    contour_index: Optional[int] = None
+    contour_count: Optional[int] = None
 
 
 class InferResultOut(BaseModel):

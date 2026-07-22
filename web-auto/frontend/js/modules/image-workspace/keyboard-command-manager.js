@@ -36,7 +36,7 @@ export class KeyboardCommandManager {
       ws.setPromptMode('manual-polygon');
     } else if (plainKey && key === 's') {
       e.preventDefault();
-      ws.setPromptMode('box');
+      ws.setBoxPromptLabel(1);
     } else if (plainKey && key === 'f') {
       e.preventDefault();
       if (ws.viewer) ws.viewer.fitToScreen();

@@ -30,6 +30,7 @@ def create_config_router(
     global_config_info: Callable[[], dict[str, Any]],
     effective_sam3_api_base_url: Callable[[], str],
     allowed_sam3_api_base_urls: Callable[[], list[str]],
+    queue_health: Callable[[], dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -42,6 +43,7 @@ def create_config_router(
             'openapi_url': '/openapi.json',
             'health_url': '/api/health',
             'allowed_origins': allowed_origins,
+            'task_queue': queue_health(),
             'frontend_bundled': False,
         }
 
@@ -53,6 +55,7 @@ def create_config_router(
             'mode': 'api_only',
             'timestamp': now_ts(),
             'allowed_origins': allowed_origins,
+            'task_queue': queue_health(),
         }
 
     @router.get('/api/config/defaults')

@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 from fastapi import HTTPException
 
 from app.schemas import SmartFilterIn
+from app.services.job_queue import PersistentJobQueue
 from app.services.annotation_geometry import (
     _ann_bbox,
     _annotation_class_name,
@@ -745,14 +746,17 @@ def _analyze_smart_merge_annotations(
 
 
 class SmartFilterJobService:
-    def __init__(self, *, get_storage: Callable[[], Any], logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        *,
+        get_storage: Callable[[], Any],
+        logger: logging.Logger,
+        queue: PersistentJobQueue,
+    ) -> None:
         self._get_storage = get_storage
         self._logger = logger
         self._lock = threading.Lock()
-        self._threads: dict[str, dict[str, Any]] = {}
-        self._states: dict[str, dict[str, Any]] = {}
-        self._project_active: dict[str, str] = {}
-        self._preview_cache: dict[str, dict[str, Any]] = {}
+        self.queue = queue
 
     def _state_default(self, *, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
         return {
@@ -776,64 +780,21 @@ class SmartFilterJobService:
             'result': {},
         }
 
-    def _cleanup_project_slot(self, project_id: str) -> None:
-        active_job_id = str(self._project_active.get(project_id) or '').strip()
-        if not active_job_id:
-            return
-        holder = self._threads.get(active_job_id) or {}
-        thread = holder.get('thread')
-        if thread and thread.is_alive():
-            return
-        self._threads.pop(active_job_id, None)
-        if self._project_active.get(project_id) == active_job_id:
-            self._project_active.pop(project_id, None)
-        state = self._states.get(active_job_id)
-        if isinstance(state, dict):
-            state['running'] = False
-            state['updated_at'] = now_ts()
-
     def _update_job_state(self, job_id: str, **updates: Any) -> None:
-        with self._lock:
-            state = self._states.get(job_id)
-            if not isinstance(state, dict):
-                return
-            state.update(updates)
-            progress_total = int(state.get('progress_total') or 0)
-            progress_done = int(state.get('progress_done') or 0)
-            if progress_total > 0 and 'progress_pct' not in updates:
-                state['progress_pct'] = float(
-                    max(0, min(progress_done, progress_total)) * 100.0 / max(progress_total, 1)
-                )
-            state['updated_at'] = now_ts()
+        self.queue.update(job_id, **updates)
 
     def get_job_state_or_404(self, job_id: str) -> dict[str, Any]:
-        with self._lock:
-            state = self._states.get(job_id)
-            if not isinstance(state, dict):
-                raise HTTPException(status_code=404, detail='smart filter job not found')
-            holder = self._threads.get(job_id) or {}
-            thread = holder.get('thread')
-            running = bool(thread and thread.is_alive())
-            out = dict(state)
-            out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-            return out
+        state = self.queue.get(job_id)
+        if not state or not str(state.get('job_type') or '').startswith('smart_filter:'):
+            raise HTTPException(status_code=404, detail='smart filter job not found')
+        state['job_type'] = str(state['job_type']).split(':', 1)[1]
+        return state
 
     def get_active_job_for_project(self, project_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            self._cleanup_project_slot(project_id)
-            job_id = str(self._project_active.get(project_id) or '').strip()
-            if not job_id:
-                return None
-            state = self._states.get(job_id)
-            if not isinstance(state, dict):
-                self._project_active.pop(project_id, None)
-                return None
-            holder = self._threads.get(job_id) or {}
-            thread = holder.get('thread')
-            running = bool(thread and thread.is_alive())
-            out = dict(state)
-            out['running'] = running or str(out.get('status') or '').lower() in {'queued', 'running'}
-            return out
+        state = self.queue.active(project_id, job_prefix='smart_filter:')
+        if state:
+            state['job_type'] = str(state['job_type']).split(':', 1)[1]
+        return state
 
     def run_preview_job(self, payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
         payload = SmartFilterIn(**payload_dict)
@@ -882,9 +843,6 @@ class SmartFilterJobService:
             },
             'result': analysis,
         }
-        with self._lock:
-            self._preview_cache[config['project_id']] = preview_entry
-
         candidate_count = int(analysis.get('candidate_count') or 0)
         relabel_count = int(analysis.get('relabel_count') or 0)
         if operation_mode == 'delete_unlabeled':
@@ -907,6 +865,7 @@ class SmartFilterJobService:
                 else '规则过滤预览完成：没有命中标注'
             )
         return {
+            '_preview_entry': preview_entry,
             'project_id': config['project_id'],
             'operation_mode': operation_mode,
             'preview_token': preview_token,
@@ -957,8 +916,12 @@ class SmartFilterJobService:
             raise RuntimeError('only image project is supported')
         current_rev = int(project.get('content_rev', 1) or 1)
 
-        with self._lock:
-            preview_entry = dict(self._preview_cache.get(config['project_id']) or {})
+        preview_entry: dict[str, Any] = {}
+        for queued_job in self.queue.list_jobs(config['project_id'], limit=100):
+            candidate = queued_job.get('preview_entry')
+            if isinstance(candidate, dict) and str(candidate.get('preview_token') or '') == preview_token:
+                preview_entry = dict(candidate)
+                break
         if not preview_entry:
             raise RuntimeError('preview cache is missing; please rerun preview')
         if str(preview_entry.get('preview_token') or '') != preview_token:
@@ -974,10 +937,7 @@ class SmartFilterJobService:
         operation_mode = str(config.get('operation_mode') or 'merge')
 
         def clear_preview_cache() -> None:
-            with self._lock:
-                current_entry = self._preview_cache.get(config['project_id'])
-                if isinstance(current_entry, dict) and str(current_entry.get('preview_token') or '') == preview_token:
-                    self._preview_cache.pop(config['project_id'], None)
+            return None
 
         if operation_mode == 'delete_unlabeled':
             if progress_cb:
@@ -1147,78 +1107,28 @@ class SmartFilterJobService:
         payload_dict: dict[str, Any],
         worker: Callable[[dict[str, Any], Callable[..., None]], dict[str, Any]],
     ) -> dict[str, Any]:
-        with self._lock:
-            self._cleanup_project_slot(project_id)
-            active_job_id = str(self._project_active.get(project_id) or '').strip()
-            if active_job_id:
-                raise HTTPException(status_code=409, detail='another smart filter job is already running for this project')
-
-            job_id = new_id('sfjob_')
-            worker_payload = dict(payload_dict)
-            worker_payload['_job_id'] = job_id
-            state = self._state_default(job_id=job_id, project_id=project_id, job_type=job_type)
-            operation_mode = str(worker_payload.get('operation_mode') or 'merge').strip().lower()
-            if operation_mode == 'delete_unlabeled':
-                mode_label = '无标注图片删除预览' if job_type == 'preview' else '无标注图片确认删除'
-            else:
-                mode_label = '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并'
-            state['payload_dict'] = dict(worker_payload)
-            state['params'] = {
-                'mode_label': mode_label,
-                'scope_label': '全部图片',
-            }
-            self._states[job_id] = state
-            self._project_active[project_id] = job_id
-
-            def _worker_entry() -> None:
-                self._update_job_state(
-                    job_id,
-                    status='running',
-                    running=True,
-                    started_at=now_ts(),
-                    message='job started',
-                )
-                try:
-                    result = worker(worker_payload, lambda **kw: self._update_job_state(job_id, **kw))
-                    total = int(state.get('progress_total') or result.get('image_count') or result.get('changed_images') or 0)
-                    done = int(state.get('progress_done') or total)
-                    self._update_job_state(
-                        job_id,
-                        status='done',
-                        running=False,
-                        finished_at=now_ts(),
-                        message=str(result.get('message') or 'done'),
-                        result=result,
-                        progress_done=done,
-                        progress_total=total,
-                        progress_pct=100.0 if total > 0 else 0.0,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    self._logger.exception('smart filter job failed project=%s type=%s', project_id, job_type)
-                    self._update_job_state(
-                        job_id,
-                        status='error',
-                        running=False,
-                        finished_at=now_ts(),
-                        message=str(exc),
-                        error=str(exc),
-                    )
-                finally:
-                    with self._lock:
-                        self._threads.pop(job_id, None)
-                        if self._project_active.get(project_id) == job_id:
-                            self._project_active.pop(project_id, None)
-
-            thread = threading.Thread(target=_worker_entry, daemon=True)
-            self._threads[job_id] = {'thread': thread, 'project_id': project_id}
-            thread.start()
-            return dict(state)
+        del worker
+        state = self._state_default(job_id='', project_id=project_id, job_type=job_type)
+        operation_mode = str(payload_dict.get('operation_mode') or 'merge').strip().lower()
+        if operation_mode == 'delete_unlabeled':
+            mode_label = '无标注图片删除预览' if job_type == 'preview' else '无标注图片确认删除'
+        else:
+            mode_label = '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并'
+        state['payload_dict'] = dict(payload_dict)
+        state['params'] = {'mode_label': mode_label, 'scope_label': '全部图片'}
+        job = self.queue.enqueue(
+            project_id=project_id,
+            job_type=f'smart_filter:{job_type}',
+            resource_class='cpu',
+            payload=payload_dict,
+            state=state,
+            priority=100,
+        )
+        payload_with_id = dict(payload_dict)
+        payload_with_id['_job_id'] = str(job.get('job_id') or '')
+        # Persist the generated job id for rollback audit records.
+        self.queue.update_payload(str(job.get('job_id') or ''), payload_with_id)
+        return job
 
     def count_running_jobs(self) -> int:
-        with self._lock:
-            count = 0
-            for holder in self._threads.values():
-                thread = holder.get('thread')
-                if thread and thread.is_alive():
-                    count += 1
-            return count
+        return self.queue.count_running(job_prefix='smart_filter:')

@@ -13,7 +13,7 @@ import logging
 from torchvision.transforms import functional as TF
 
 from app.config import Settings
-from app.utils import mask_to_png_base64, mask_to_polygon
+from app.utils import mask_to_png_base64, split_mask_components
 
 logger = logging.getLogger("sam3_api")
 
@@ -124,6 +124,25 @@ class Sam3InferenceEngine:
         if value <= 0:
             return int(default)
         return max(128, value)
+
+    @staticmethod
+    def _renumber_detection_ids(detections: list[dict[str, Any]]) -> None:
+        group_ids: dict[str, str] = {}
+        for det_idx, det in enumerate(detections, start=1):
+            contour_index = det.get("contour_index")
+            model_key = str(det.pop("_model_det_key", "") or "")
+            if contour_index is None:
+                det["id"] = f"det_{det_idx:04d}"
+                continue
+
+            if not model_key:
+                model_key = str(det.get("model_det_id") or det.get("id") or det_idx)
+            model_det_id = group_ids.get(model_key)
+            if model_det_id is None:
+                model_det_id = f"det_{det_idx:04d}"
+                group_ids[model_key] = model_det_id
+            det["model_det_id"] = model_det_id
+            det["id"] = f"{model_det_id}_c{int(contour_index):03d}"
 
     def _rebuild_processor(self, resolution: int) -> None:
         if self._processor_cls is None or self._model is None:
@@ -265,25 +284,43 @@ class Sam3InferenceEngine:
             w = max(0.0, x2 - x1)
             h = max(0.0, y2 - y1)
 
+            base_id = f"det_{det_idx:04d}"
             mask = masks_np[source_idx] if (masks_np is not None and source_idx < len(masks_np)) else None
-            area = int(mask.sum()) if mask is not None else None
-            polygon = mask_to_polygon(mask) if mask is not None else []
-
-            payload: dict[str, Any] = {
-                "id": f"det_{det_idx:04d}",
+            base_payload: dict[str, Any] = {
+                "id": base_id,
                 "label": label,
                 "score": round(float(scores_np[source_idx]), 6),
                 "bbox_xyxy": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
                 "bbox_xywh": [round(x1, 2), round(y1, 2), round(w, 2), round(h, 2)],
-                "area": area,
+                "area": None,
             }
             if class_id is not None:
-                payload["class_id"] = int(class_id)
-            if polygon:
-                payload["polygon"] = polygon
-            if include_mask_png and mask is not None:
-                payload["mask_png_base64"] = mask_to_png_base64(mask)
-            detections.append(payload)
+                base_payload["class_id"] = int(class_id)
+
+            if mask is None:
+                detections.append(base_payload)
+                continue
+
+            components = split_mask_components(mask)
+            contour_count = len(components)
+            model_key = f"{label}:{int(class_id)}:{int(source_idx)}" if class_id is not None else ""
+            for contour_idx, component in enumerate(components, start=1):
+                payload = dict(base_payload)
+                payload.update(
+                    {
+                        "id": f"{base_id}_c{contour_idx:03d}",
+                        "area": component.area,
+                        "polygon": component.polygon,
+                        "model_det_id": base_id,
+                        "contour_index": contour_idx,
+                        "contour_count": contour_count,
+                    }
+                )
+                if model_key:
+                    payload["_model_det_key"] = model_key
+                if include_mask_png:
+                    payload["mask_png_base64"] = mask_to_png_base64(component.mask)
+                detections.append(payload)
 
         return detections
 
@@ -571,8 +608,7 @@ class Sam3InferenceEngine:
                 detections_all.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
                 if max_detections > 0:
                     detections_all = detections_all[:max_detections]
-                for det_idx, det in enumerate(detections_all, start=1):
-                    det["id"] = f"det_{det_idx:04d}"
+                self._renumber_detection_ids(detections_all)
                 results.append(
                     {
                         "model": "sam3",
@@ -640,8 +676,7 @@ class Sam3InferenceEngine:
                 if max_detections > 0:
                     detections_all = detections_all[:max_detections]
 
-                for idx, det in enumerate(detections_all, start=1):
-                    det["id"] = f"det_{idx:04d}"
+                self._renumber_detection_ids(detections_all)
                 detections = detections_all
                 output_label = ", ".join(class_prompts)
             elif mode_norm in {"points", "point", "boxes", "box"}:
@@ -1116,30 +1151,39 @@ class Sam3VideoSessionEngine:
             h = float(bx[3]) * float(image_h)
             x2 = x + w
             y2 = y + h
-            polygon: list[list[float]] = []
-            area: Optional[int] = None
-            mask_b64: Optional[str] = None
-
-            if masks_arr is not None and source_idx < len(masks_arr):
-                mask = masks_arr[source_idx].astype(np.uint8)
-                area = int(mask.sum())
-                polygon = mask_to_polygon(mask)
-                if include_mask_png:
-                    mask_b64 = mask_to_png_base64(mask)
-
-            payload: dict[str, Any] = {
-                "id": f"det_{det_idx:04d}",
+            base_id = f"det_{det_idx:04d}"
+            base_payload: dict[str, Any] = {
+                "id": base_id,
                 "obj_id": obj_id,
                 "label": f"obj_{obj_id}",
                 "score": round(score, 6),
                 "bbox_xyxy": [round(x, 2), round(y, 2), round(x2, 2), round(y2, 2)],
                 "bbox_xywh": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-                "area": area,
-                "polygon": polygon if polygon else None,
+                "area": None,
             }
-            if mask_b64:
-                payload["mask_png_base64"] = mask_b64
-            detections.append(payload)
+
+            if masks_arr is None or source_idx >= len(masks_arr):
+                detections.append(base_payload)
+                continue
+
+            mask = masks_arr[source_idx].astype(np.uint8)
+            components = split_mask_components(mask)
+            contour_count = len(components)
+            for contour_idx, component in enumerate(components, start=1):
+                payload = dict(base_payload)
+                payload.update(
+                    {
+                        "id": f"{base_id}_c{contour_idx:03d}",
+                        "area": component.area,
+                        "polygon": component.polygon,
+                        "model_det_id": base_id,
+                        "contour_index": contour_idx,
+                        "contour_count": contour_count,
+                    }
+                )
+                if include_mask_png:
+                    payload["mask_png_base64"] = mask_to_png_base64(component.mask)
+                detections.append(payload)
         return detections
 
     def start_session(

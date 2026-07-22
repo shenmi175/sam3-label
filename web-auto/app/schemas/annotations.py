@@ -17,6 +17,10 @@ class AppendAnnIn(BaseModel):
     annotations: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class AnnotationMigrationIn(BaseModel):
+    dry_run: bool = True
+
+
 class UIStateIn(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     project_id: str | None = None

@@ -142,6 +142,7 @@ services:
       dockerfile: docker/web-auto.Dockerfile
     image: web-auto:local
     restart: unless-stopped
+    user: "${WEB_AUTO_UID:-1000}:${WEB_AUTO_GID:-1000}"
     depends_on:
       sam3-api:
         condition: service_healthy
@@ -179,6 +180,41 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 10s
+
+  task-worker:
+    image: web-auto:local
+    restart: unless-stopped
+    user: "${WEB_AUTO_UID:-1000}:${WEB_AUTO_GID:-1000}"
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      sam3-api:
+        condition: service_healthy
+    environment:
+      WEB_AUTO_DATA_DIR: /data/web-auto
+      WEB_AUTO_HOST_DATA_ROOT: ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}
+      WEB_AUTO_ALLOWED_DATA_ROOTS: ${WEB_AUTO_ALLOWED_DATA_ROOTS:-}
+      WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR: ${WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR:-/opt/sam3/project-data/uploads}
+      WEB_AUTO_DEFAULT_SAM3_API_BASE_URL: http://sam3-api:8001
+      WEB_AUTO_ALLOWED_SAM3_API_BASE_URLS: http://sam3-api:8001
+      WEB_AUTO_SAM3_API_TOKEN: ${SAM3_API_TOKEN:?Set SAM3_API_TOKEN in .env}
+      WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL: http://sapiens-api:8010
+      WEB_AUTO_SAPIENS_API_TOKEN: ${SAPIENS_API_TOKEN:?Set SAPIENS_API_TOKEN in .env}
+      WEB_AUTO_OPS_API_BASE_URL: http://ops-api:8020
+      WEB_AUTO_OPS_API_TOKEN: ${OPS_API_TOKEN:?Set OPS_API_TOKEN in .env}
+      WEB_AUTO_WORKER_RESOURCE: all
+      WEB_AUTO_WORKER_BATCH_SLICE: ${WEB_AUTO_WORKER_BATCH_SLICE:-4}
+      WEB_AUTO_SAM3_MAX_BATCH_FILES: ${WEB_AUTO_SAM3_MAX_BATCH_FILES:-32}
+      WEB_AUTO_AUTH_ENABLED: ${WEB_AUTO_AUTH_ENABLED:-1}
+      WEB_AUTO_SESSION_TTL_SECONDS: ${WEB_AUTO_SESSION_TTL_SECONDS:-43200}
+    volumes:
+      - ${WEB_AUTO_DATA_DIR:-./web-auto/data}:/data/web-auto
+      - ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:rw
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import pathlib; assert b'app.worker' in pathlib.Path('/proc/1/cmdline').read_bytes()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
       start_period: 10s
 
 volumes:

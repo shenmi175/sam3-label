@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.routers.export import create_export_router
 from app.routers.filters import create_filters_router
 from app.routers.image_files import create_image_files_router
 from app.routers.inference import create_inference_router
+from app.routers.jobs import create_jobs_router
 from app.routers.pose import create_pose_router
 from app.routers.project_images import create_project_images_router
 from app.routers.projects import create_projects_router
@@ -33,7 +35,9 @@ from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
 from app.services.inference_jobs import InferenceJobService
 from app.services.inference_service import InferenceService
+from app.services.job_queue import PersistentJobQueue
 from app.services.integration_clients import OpsClient, SapiensClient
+from app.services.image_previews import ImagePreviewService
 from app.services.image_tiles import ImageTileService
 from app.services.smart_filter_service import (
     _analyze_smart_merge_annotations,
@@ -60,6 +64,9 @@ DEFAULT_SAM3_MAX_BATCH_FILES = 32
 MAX_PENDING_IMAGE_IDS_IN_JOB_STATE = 200
 
 SAM3_MAX_BATCH_FILES = parse_positive_int_env('WEB_AUTO_SAM3_MAX_BATCH_FILES', DEFAULT_SAM3_MAX_BATCH_FILES)
+MAX_TILE_WORKERS = parse_positive_int_env('WEB_AUTO_MAX_TILE_WORKERS', 2)
+PREVIEW_MAX_EDGE = parse_positive_int_env('WEB_AUTO_PREVIEW_MAX_EDGE', 1280)
+THUMBNAIL_MAX_EDGE = parse_positive_int_env('WEB_AUTO_THUMBNAIL_MAX_EDGE', 384)
 ALLOWED_DATA_ROOTS = parse_allowed_data_roots(HOST_DATA_ROOT)
 APP_CONFIG = AppConfigStore(APP_CONFIG_FILE)
 
@@ -74,6 +81,10 @@ if not logger.handlers:
 
 
 storage = Storage(APP_CONFIG.initial_storage_dir(DATA_DIR))
+_job_db_path = storage.index_db_file
+if _job_db_path.exists() and not os.access(_job_db_path, os.W_OK):
+    _job_db_path = Path(tempfile.gettempdir()) / f'web_auto_jobs_{os.getuid()}.sqlite3'
+JOB_QUEUE = PersistentJobQueue(_job_db_path)
 sam3 = Sam3Client(timeout_sec=180)
 OPS_CLIENT = OpsClient(OPS_API_BASE_URL, OPS_API_TOKEN)
 SAPIENS_CLIENT = SapiensClient(DEFAULT_SAPIENS_API_BASE_URL, SAPIENS_API_TOKEN)
@@ -84,7 +95,11 @@ def _current_storage() -> Storage:
     return storage
 
 
-INFER_JOBS = InferenceJobService(max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE, logger=logger)
+INFER_JOBS = InferenceJobService(
+    max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE,
+    logger=logger,
+    queue=JOB_QUEUE,
+)
 INFERENCE_SERVICE = InferenceService(
     get_storage=_current_storage,
     sam3=sam3,
@@ -93,11 +108,20 @@ INFERENCE_SERVICE = InferenceService(
     max_batch_files=SAM3_MAX_BATCH_FILES,
     max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE,
 )
-SMART_FILTER_JOBS = SmartFilterJobService(get_storage=_current_storage, logger=logger)
+SMART_FILTER_JOBS = SmartFilterJobService(get_storage=_current_storage, logger=logger, queue=JOB_QUEUE)
 CONFIG_LOCK = threading.Lock()
 PROJECT_DISCOVERY_LOCK = threading.Lock()
-TILE_CACHE_LOCK = threading.Lock()
-IMAGE_TILE_SERVICE = ImageTileService(get_current_data_dir=lambda: CURRENT_DATA_DIR, lock=TILE_CACHE_LOCK)
+IMAGE_TILE_SERVICE = ImageTileService(
+    get_current_data_dir=lambda: CURRENT_DATA_DIR,
+    max_workers=MAX_TILE_WORKERS,
+    logger=logger,
+)
+IMAGE_PREVIEW_SERVICE = ImagePreviewService(
+    get_current_data_dir=lambda: CURRENT_DATA_DIR,
+    preview_max_edge=PREVIEW_MAX_EDGE,
+    thumbnail_max_edge=THUMBNAIL_MAX_EDGE,
+    logger=logger,
+)
 PROJECT_DISCOVERY_LAST_SCAN = 0.0
 PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
 
@@ -181,8 +205,15 @@ app.include_router(create_ui_state_router(get_storage=_current_storage))
 app.include_router(create_export_router(get_storage=_current_storage))
 app.include_router(create_annotations_router(get_storage=_current_storage))
 app.include_router(create_classes_router(get_storage=_current_storage))
-app.include_router(create_image_files_router(get_storage=_current_storage, tile_service=IMAGE_TILE_SERVICE))
+app.include_router(
+    create_image_files_router(
+        get_storage=_current_storage,
+        tile_service=IMAGE_TILE_SERVICE,
+        preview_service=IMAGE_PREVIEW_SERVICE,
+    )
+)
 app.include_router(create_project_images_router(get_storage=_current_storage))
+app.include_router(create_jobs_router(queue=JOB_QUEUE))
 
 
 def _get_project_or_404(project_id: str, *, enrich: bool = False, include_images: bool = True) -> dict[str, Any]:
@@ -352,6 +383,9 @@ def _global_config_info() -> dict[str, Any]:
         'sapiens_api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
         'ops_api_configured': bool(OPS_API_BASE_URL),
         'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
+        'max_tile_workers': MAX_TILE_WORKERS,
+        'preview_max_edge': PREVIEW_MAX_EDGE,
+        'thumbnail_max_edge': THUMBNAIL_MAX_EDGE,
         'auth_enabled': AUTH_ENABLED,
         'session_ttl_seconds': SESSION_TTL_SECONDS,
         'restart_supported': True,
@@ -382,6 +416,7 @@ app.include_router(
         global_config_info=_global_config_info,
         effective_sam3_api_base_url=_effective_sam3_api_base_url,
         allowed_sam3_api_base_urls=_allowed_sam3_api_base_urls,
+        queue_health=JOB_QUEUE.health_summary,
     )
 )
 app.include_router(
@@ -412,7 +447,6 @@ app.include_router(
         infer_single_impl=INFERENCE_SERVICE.infer_single,
         infer_example_preview_impl=INFERENCE_SERVICE.infer_example_preview,
         run_infer_batch=INFERENCE_SERVICE.run_infer_batch,
-        run_infer_batch_example=INFERENCE_SERVICE.run_infer_batch_example,
         spawn_infer_job=INFER_JOBS.spawn_job,
         get_active_infer_job_for_project=INFER_JOBS.get_active_job_for_project,
         get_latest_infer_job_for_project=INFER_JOBS.get_latest_job_for_project,
@@ -420,6 +454,8 @@ app.include_router(
         pause_infer_job=INFER_JOBS.pause_job,
         update_infer_job_state=INFER_JOBS.update_job_state,
         resume_infer_job=INFERENCE_SERVICE.resume_infer_job,
+        acquire_interactive_gpu=JOB_QUEUE.acquire_interactive_gpu,
+        release_interactive_gpu=JOB_QUEUE.release_interactive_gpu,
     )
 )
 

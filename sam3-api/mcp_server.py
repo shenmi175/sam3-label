@@ -212,7 +212,6 @@ def build_mcp_server(config: Optional[Sam3McpConfig] = None) -> FastMCP:
     @mcp.tool()
     def sam3_semantic_infer(
         image_path: str,
-        prompt: str,
         boxes: list[list[float | int]],
         threshold: float = 0.5,
         include_mask_png: bool = False,
@@ -224,7 +223,6 @@ def build_mcp_server(config: Optional[Sam3McpConfig] = None) -> FastMCP:
             with _client() as client:
                 payload = client.semantic_infer(
                     image_path=image_path,
-                    prompt=prompt,
                     boxes=boxes,
                     threshold=threshold,
                     include_mask_png=include_mask_png,
@@ -235,33 +233,6 @@ def build_mcp_server(config: Optional[Sam3McpConfig] = None) -> FastMCP:
         except Exception as exc:  # noqa: BLE001
             return _tool_error("sam3_semantic_infer", exc)
 
-    @mcp.tool()
-    def sam3_semantic_batch(
-        source_image_path: str,
-        target_image_paths: list[str],
-        prompt: str,
-        boxes: list[list[float | int]],
-        threshold: float = 0.5,
-        include_mask_png: bool = False,
-        max_detections: int = 100,
-        input_size: int = 0,
-    ) -> CallToolResult:
-        """Run semantic exemplar propagation through /v1/semantic/infer_batch."""
-        try:
-            with _client() as client:
-                payload = client.semantic_infer_batch(
-                    source_image_path=source_image_path,
-                    target_image_paths=target_image_paths,
-                    prompt=prompt,
-                    boxes=boxes,
-                    threshold=threshold,
-                    include_mask_png=include_mask_png,
-                    max_detections=max_detections,
-                    input_size=input_size,
-                )
-            return _tool_result(payload)
-        except Exception as exc:  # noqa: BLE001
-            return _tool_error("sam3_semantic_batch", exc)
 
     @mcp.tool()
     def sam3_video_start_session(

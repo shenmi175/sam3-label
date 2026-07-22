@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.annotation_geometry import _bbox_from_polygon, _polygon_from_mask
+from app.services.annotation_geometry import _bbox_from_polygon, _mask_components_from_base64
 from app.utils import norm_text
 
 
@@ -56,16 +56,73 @@ def _convert_detections(
         if not isinstance(bbox, list) or len(bbox) != 4:
             bbox = []
 
+        class_name = forced_class or _resolve_class_for_detection(det, classes)
+        metadata: dict[str, Any] = {}
+        for key in ('model_det_id', 'contour_index', 'contour_count'):
+            if det.get(key) is not None:
+                metadata[key] = det.get(key)
+
         polygon = det.get('polygon') if isinstance(det.get('polygon'), list) else []
-        if len(polygon) < 3:
-            polygon = _polygon_from_mask(det.get('mask_png_base64') or det.get('mask_png') or '')
-        if (not bbox) and len(polygon) >= 3:
-            bbox = _bbox_from_polygon(polygon)
+        if len(polygon) >= 3:
+            if (not bbox) and len(polygon) >= 3:
+                bbox = _bbox_from_polygon(polygon)
+
+            if not bbox:
+                continue
+
+            out.append(
+                {
+                    'id': str(det.get('id') or f'det_{i:04d}'),
+                    'class_name': class_name,
+                    'raw_label': str(det.get('label') or ''),
+                    'score': float(det.get('score') or 0.0),
+                    'bbox': [float(v) for v in bbox] if bbox else [],
+                    'polygon': polygon,
+                    'area': float(det.get('area') or 0.0),
+                    'mask_png_base64': det.get('mask_png_base64') or '',
+                    **metadata,
+                }
+            )
+            continue
+
+        mask_b64 = det.get('mask_png_base64') or det.get('mask_png') or ''
+        if isinstance(mask_b64, str) and mask_b64:
+            components = _mask_components_from_base64(mask_b64)
+            if not components:
+                continue
+            model_det_id = str(det.get('model_det_id') or det.get('id') or f'det_{i:04d}')
+            contour_count = len(components)
+            for contour_idx, component in enumerate(components, start=1):
+                component_polygon = component.get('polygon') if isinstance(component, dict) else []
+                if not isinstance(component_polygon, list) or len(component_polygon) < 3:
+                    continue
+                component_bbox = bbox
+                if not component_bbox:
+                    component_bbox = _bbox_from_polygon(component_polygon)
+                if not component_bbox:
+                    continue
+                component_metadata = dict(metadata)
+                component_metadata.setdefault('model_det_id', model_det_id)
+                component_metadata['contour_index'] = contour_idx
+                component_metadata['contour_count'] = contour_count
+                out.append(
+                    {
+                        'id': f'{model_det_id}_c{contour_idx:03d}',
+                        'class_name': class_name,
+                        'raw_label': str(det.get('label') or ''),
+                        'score': float(det.get('score') or 0.0),
+                        'bbox': [float(v) for v in component_bbox] if component_bbox else [],
+                        'polygon': component_polygon,
+                        'area': float(component.get('area') or 0.0),
+                        'mask_png_base64': component.get('mask_png_base64') or '',
+                        **component_metadata,
+                    }
+                )
+            continue
 
         if not bbox and len(polygon) < 3:
             continue
 
-        class_name = forced_class or _resolve_class_for_detection(det, classes)
         out.append(
             {
                 'id': str(det.get('id') or f'det_{i:04d}'),
@@ -76,6 +133,7 @@ def _convert_detections(
                 'polygon': polygon if len(polygon) >= 3 else [],
                 'area': float(det.get('area') or 0.0),
                 'mask_png_base64': det.get('mask_png_base64') or '',
+                **metadata,
             }
         )
     return out

@@ -6,6 +6,7 @@ export class ImageViewerV2 {
 
     this.root = document.createElement('div');
     this.osdElement = document.createElement('div');
+    this.previewImage = document.createElement('img');
     this.staticCanvas = document.createElement('canvas');
     this.overlayCanvas = document.createElement('canvas');
     this.staticCtx = this.staticCanvas.getContext('2d');
@@ -22,6 +23,18 @@ export class ImageViewerV2 {
       inset: '0',
       width: '100%',
       height: '100%',
+      zIndex: '5',
+    });
+    Object.assign(this.previewImage.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      objectFit: 'contain',
+      display: 'none',
+      zIndex: '10',
+      pointerEvents: 'none',
+      background: 'var(--canvas-bg)',
     });
     Object.assign(this.staticCanvas.style, {
       position: 'absolute',
@@ -46,6 +59,7 @@ export class ImageViewerV2 {
     });
 
     this.root.appendChild(this.osdElement);
+    this.root.appendChild(this.previewImage);
     this.root.appendChild(this.staticCanvas);
     this.root.appendChild(this.overlayCanvas);
     this.container.appendChild(this.root);
@@ -54,12 +68,14 @@ export class ImageViewerV2 {
     this.viewer = null;
     this.image = null;
     this.tileInfo = null;
+    this.previewInfo = null;
     this.isTileOpen = false;
     this.annotations = [];
     this.previews = [];
     this.prompts = [];
     this.focusedAnnotationId = null;
     this.promptMode = 'pointer';
+    this.boxPromptLabel = 1;
     this.options = { showMasks: true };
     this.drawFrame = null;
     this.staticFrame = null;
@@ -80,6 +96,7 @@ export class ImageViewerV2 {
     this.isPanning = false;
     this.isDrawingBox = false;
     this.boxDrawPurpose = 'prompt';
+    this.boxDraftLabel = 1;
     this.boxStart = null;
     this.boxEnd = null;
     this.lastX = 0;
@@ -190,6 +207,9 @@ export class ImageViewerV2 {
       this.requestStaticRedraw(true);
       this.requestDraw();
     });
+    this.viewer.addHandler('tile-loaded', () => {
+      this.hidePreview();
+    });
     ['animation', 'animation-finish', 'pan', 'zoom', 'resize'].forEach((eventName) => {
       this.viewer.addHandler(eventName, () => this.onViewportChanged());
     });
@@ -234,9 +254,48 @@ export class ImageViewerV2 {
     return true;
   }
 
+  setPreviewSource(previewInfo) {
+    const url = previewInfo?.preview_url || previewInfo?.thumbnail_url || '';
+    if (!url) {
+      this.clearPreview();
+      return false;
+    }
+    this.previewInfo = previewInfo;
+    this.image = {
+      width: Number(previewInfo.source_width || previewInfo.width || previewInfo.preview_width || 0),
+      height: Number(previewInfo.source_height || previewInfo.height || previewInfo.preview_height || 0),
+    };
+    this.previewImage.src = url;
+    this.previewImage.style.display = 'block';
+    this.previewImage.style.opacity = '1';
+    return true;
+  }
+
+  hidePreview() {
+    if (this.previewImage) this.previewImage.style.display = 'none';
+  }
+
+  clearPreview() {
+    this.previewInfo = null;
+    if (!this.previewImage) return;
+    this.previewImage.removeAttribute('src');
+    this.previewImage.style.display = 'none';
+  }
+
+  closeImageTiles() {
+    this.tileInfo = null;
+    this.isTileOpen = false;
+    this.staticRenderState = null;
+    this.staticExcludeAnnotationId = null;
+    if (this.viewer) this.viewer.close();
+    if (this.staticCtx) this.staticCtx.clearRect(0, 0, this.staticCanvas.width, this.staticCanvas.height);
+    this.draw();
+  }
+
   clearImage() {
     this.image = null;
     this.tileInfo = null;
+    this.previewInfo = null;
     this.annotations = [];
     this.previews = [];
     this.prompts = [];
@@ -252,6 +311,7 @@ export class ImageViewerV2 {
     this.pendingPanDx = 0;
     this.pendingPanDy = 0;
     if (this.viewer) this.viewer.close();
+    this.clearPreview();
     if (this.staticCtx) this.staticCtx.clearRect(0, 0, this.staticCanvas.width, this.staticCanvas.height);
     this.draw();
   }
@@ -298,6 +358,11 @@ export class ImageViewerV2 {
       this.activePolygonPoints = [];
     }
     this.updateCursor();
+    this.requestDraw();
+  }
+
+  setBoxPromptLabel(label) {
+    this.boxPromptLabel = Number(label) === 0 ? 0 : 1;
     this.requestDraw();
   }
 
@@ -874,6 +939,7 @@ export class ImageViewerV2 {
       } else if (this.promptMode === 'box' || this.promptMode === 'manual-box') {
         this.isDrawingBox = true;
         this.boxDrawPurpose = this.promptMode === 'manual-box' ? 'annotation' : 'prompt';
+        this.boxDraftLabel = this.boxDrawPurpose === 'prompt' ? this.boxPromptLabel : 1;
         this.boxStart = point;
         this.boxEnd = point;
       }
@@ -956,7 +1022,7 @@ export class ImageViewerV2 {
         if (this.boxDrawPurpose === 'annotation') {
           if (this.onAnnotationCreated) this.onAnnotationCreated({ bbox: [x1, y1, x2, y2] });
         } else if (this.onPromptAdded) {
-          this.onPromptAdded('box', [x1, y1, x2, y2]);
+          this.onPromptAdded('box', [x1, y1, x2, y2, this.boxDraftLabel]);
         }
       }
     }
@@ -1091,12 +1157,16 @@ export class ImageViewerV2 {
       this.ctx.fill();
       this.ctx.stroke();
     } else if (p.type === 'box') {
+      const positive = p.data.length < 5 || Number(p.data[4]) !== 0;
       const p1 = this.imageToScreen([p.data[0], p.data[1]]);
       const p2 = this.imageToScreen([p.data[2], p.data[3]]);
-      this.ctx.strokeStyle = '#3182ce';
-      this.ctx.setLineDash([2, 2]);
-      this.ctx.lineWidth = 1.5;
+      this.ctx.strokeStyle = positive ? '#16a34a' : '#dc2626';
+      this.ctx.setLineDash(positive ? [] : [5, 4]);
+      this.ctx.lineWidth = 2;
       this.ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
+      this.ctx.fillStyle = positive ? '#16a34a' : '#dc2626';
+      this.ctx.font = '800 14px Inter, sans-serif';
+      this.ctx.fillText(positive ? '+' : '−', p1[0] + 4, p1[1] + 16);
       this.ctx.setLineDash([]);
     }
   }
@@ -1104,7 +1174,7 @@ export class ImageViewerV2 {
   drawBoxDraft() {
     const p1 = this.imageToScreen(this.boxStart);
     const p2 = this.imageToScreen(this.boxEnd);
-    this.ctx.strokeStyle = 'rgba(49, 130, 206, 0.8)';
+    this.ctx.strokeStyle = this.boxDraftLabel === 0 ? 'rgba(220, 38, 38, 0.9)' : 'rgba(22, 163, 74, 0.9)';
     this.ctx.setLineDash([5, 5]);
     this.ctx.lineWidth = 2;
     this.ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);

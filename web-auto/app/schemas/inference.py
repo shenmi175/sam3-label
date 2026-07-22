@@ -32,24 +32,11 @@ class InferBatchIn(BaseModel):
     api_base_url: str = DEFAULT_API_BASE_URL
 
 
-class InferExampleBatchIn(BaseModel):
-    project_id: str
-    source_image_id: str
-    active_class: str = ''
-    boxes: list[list[float | int]] = Field(default_factory=list)
-    pure_visual: bool = False
-    image_ids: list[str] = Field(default_factory=list)
-    batch_size: int = 8
-    threshold: float = 0.5
-    api_base_url: str = DEFAULT_API_BASE_URL
-
-
 class InferExamplePreviewIn(BaseModel):
     project_id: str
     image_id: str
     active_class: str = ''
     boxes: list[list[float | int]] = Field(default_factory=list)
-    pure_visual: bool = False
     threshold: float = 0.5
     api_base_url: str = DEFAULT_API_BASE_URL
 
@@ -68,7 +55,3 @@ class InferJobResumeIn(BaseModel):
     batch_size: Optional[int] = None
     threshold: Optional[float] = None
     api_base_url: Optional[str] = None
-    active_class: Optional[str] = None
-    source_image_id: Optional[str] = None
-    boxes: Optional[list[list[float | int]]] = None
-    pure_visual: Optional[bool] = None

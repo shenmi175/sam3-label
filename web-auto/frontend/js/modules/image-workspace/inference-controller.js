@@ -62,7 +62,7 @@ export class InferenceController {
       .map(p => p.data);
     const btn = document.getElementById('btn-example-segment');
     if (boxes.length === 0) {
-      ws.setPromptMode('box');
+      ws.setBoxPromptLabel(1);
       return notify(i18n.t('box_exemplar_mode_hint'), "info");
     }
     if (!ws.selectedClass) return notify(i18n.t('select_class_first'), "error");
@@ -78,7 +78,6 @@ export class InferenceController {
         image_id: ws.selectedImageId,
         active_class: ws.selectedClass,
         boxes,
-        pure_visual: false,
         threshold: store.state.config.threshold,
         api_base_url: store.state.config.sam3ApiUrl
       };
@@ -169,7 +168,7 @@ export class InferenceController {
           return;
         }
         const pct = Number(job.progress_pct || 0);
-        if (nameEl) nameEl.innerText = i18n.t(job.job_type === 'example_batch' ? 'example_propagate' : 'batch_infer');
+        if (nameEl) nameEl.innerText = i18n.t('batch_infer');
         if (fillEl) fillEl.style.width = `${pct}%`;
         if (statusEl) statusEl.innerText = `${job.message || `${Math.round(pct)}%`}`;
 

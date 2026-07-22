@@ -11,7 +11,6 @@ sam3-api/
 │   ├── config.py
 │   ├── engine.py
 │   ├── mcp_adapter.py
-│   ├── semantic_engine.py
 │   ├── main.py
 │   ├── schemas.py
 │   └── utils.py
@@ -49,7 +48,7 @@ sam3-api/
 
 - `POST /v1/semantic/warmup`
 
-用于提前加载官方 SAM3 语义推理器，避免范例语义与范例传播冷启动。
+兼容入口，预热与 `/v1/warmup` 相同的官方图像模型。
 
 ### 3) 单图推理
 
@@ -201,7 +200,6 @@ mcp_servers:
 - `sam3_image_infer_boxes`
 - `sam3_image_infer_batch_text`
 - `sam3_semantic_infer`
-- `sam3_semantic_batch`
 - `sam3_video_start_session`
 - `sam3_video_get_session`
 - `sam3_video_add_prompt`
@@ -223,14 +221,13 @@ curl -X POST "http://127.0.0.1:8001/v1/infer_batch" \
   -F "threshold=0.45"
 ```
 
-### 5) 官方语义推理（当前图片）
+### 5) 官方同图视觉框推理（兼容入口）
 
 - `POST /v1/semantic/infer`
 - `multipart/form-data`
 
 字段：
 - `file`: 图片文件（必填）
-- `prompt`: 当前类别/文本提示词（可选；为空时按官方语义 predictor 的 `visual` 模式处理）
 - `boxes`: JSON 数组，至少包含 1 个正样本框，可混合负样本框
 - `threshold`: 置信度阈值
 - `include_mask_png`: 是否返回 mask PNG base64
@@ -241,38 +238,13 @@ curl -X POST "http://127.0.0.1:8001/v1/infer_batch" \
 ```bash
 curl -X POST "http://127.0.0.1:8001/v1/semantic/infer" \
   -F "file=@/data/example.jpg" \
-  -F "prompt=cat" \
   -F "boxes=[[100,100,220,280,1],[240,90,320,180,0]]" \
   -F "threshold=0.5"
 ```
 
-### 6) 官方语义批量传播（全图集）
+跨图片范例传播已移除；框提示只作用于上传的当前图片。
 
-- `POST /v1/semantic/infer_batch`
-- `multipart/form-data`
-
-字段：
-- `source_file`: 源图文件（必填）
-- `files`: 目标图片列表（必填）
-- `prompt`: 当前类别/文本提示词（可选；为空时按纯视觉 exemplar 传播处理）
-- `boxes`: 源图上的正负样本框；至少 1 个正框
-- `threshold`: 置信度阈值
-- `include_mask_png`: 是否返回 mask PNG base64
-- `max_detections`: 最大返回目标数
-
-示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/semantic/infer_batch" \
-  -F "source_file=@/data/source.jpg" \
-  -F "files=@/data/1.jpg" \
-  -F "files=@/data/2.jpg" \
-  -F "prompt=cat" \
-  -F "boxes=[[100,100,220,280,1],[240,90,320,180,0]]" \
-  -F "threshold=0.5"
-```
-
-### 7) 视频会话推理（新增）
+### 6) 视频会话推理
 
 新增会话式接口，适合本地标注工具按“创建会话 -> 添加提示 -> 传播 -> 关闭会话”流程调用。
 

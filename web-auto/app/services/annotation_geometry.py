@@ -29,7 +29,7 @@ def _bbox_from_polygon(polygon: list[list[float]]) -> list[float]:
     return [x1, y1, x2, y2]
 
 
-def _polygon_from_mask(mask_b64: str) -> list[list[float]]:
+def _mask_components_from_base64(mask_b64: str, min_contour_area: float = 1.0) -> list[dict[str, Any]]:
     if not isinstance(mask_b64, str) or not mask_b64:
         return []
     try:
@@ -45,20 +45,49 @@ def _polygon_from_mask(mask_b64: str) -> list[list[float]]:
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return []
-        contour = max(contours, key=cv2.contourArea)
-        if float(cv2.contourArea(contour)) < 10.0:
-            return []
-        peri = cv2.arcLength(contour, True)
-        epsilon = max(1.0, 0.003 * peri)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        if approx is None or len(approx) < 3:
-            return []
-        out: list[list[float]] = []
-        for pt in approx.reshape(-1, 2):
-            out.append([float(pt[0]), float(pt[1])])
-        return out
+        contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[:2][::-1])
+        components: list[dict[str, Any]] = []
+        for contour in contours:
+            if float(cv2.contourArea(contour)) < float(min_contour_area):
+                continue
+            peri = cv2.arcLength(contour, True)
+            epsilon = max(1.0, 0.003 * peri)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            if (approx is None or len(approx) < 3) and len(contour) >= 3:
+                approx = contour
+            if approx is None or len(approx) < 3:
+                continue
+            component_region = np.zeros_like(binary, dtype=np.uint8)
+            cv2.drawContours(component_region, [contour], -1, 255, thickness=cv2.FILLED)
+            component_mask = np.where((component_region > 0) & (binary > 0), 255, 0).astype(np.uint8)
+            area = int(np.count_nonzero(component_mask))
+            if area <= 0:
+                continue
+            ok, encoded = cv2.imencode('.png', component_mask)
+            if not ok:
+                continue
+            polygon: list[list[float]] = []
+            for pt in approx.reshape(-1, 2):
+                polygon.append([float(pt[0]), float(pt[1])])
+            components.append(
+                {
+                    'polygon': polygon,
+                    'area': float(area),
+                    'mask_png_base64': base64.b64encode(encoded.tobytes()).decode('utf-8'),
+                }
+            )
+        return components
     except Exception:
         return []
+
+
+def _polygon_from_mask(mask_b64: str) -> list[list[float]]:
+    components = _mask_components_from_base64(mask_b64)
+    if not components:
+        return []
+    component = max(components, key=lambda item: float(item.get('area') or 0.0))
+    polygon = component.get('polygon') if isinstance(component, dict) else []
+    return polygon if isinstance(polygon, list) else []
 
 
 def _norm_bbox_xyxy(raw: Any) -> list[float]:

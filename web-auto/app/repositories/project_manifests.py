@@ -8,7 +8,8 @@ from app.utils import atomic_write_json, ensure_dir, now_ts, read_json
 
 class ProjectManifestRepository:
     MANIFEST_NAME = 'web_auto_project.json'
-    MANIFEST_SCHEMA = 'web-auto.project.v1'
+    MANIFEST_SCHEMA = 'web-auto.project.v2'
+    LEGACY_MANIFEST_SCHEMA = 'web-auto.project.v1'
 
     def __init__(self, *, normalize_project: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         self._normalize_project = normalize_project
@@ -34,13 +35,20 @@ class ProjectManifestRepository:
             'created_at',
             'updated_at',
             'content_rev',
+            'image_set_rev',
+            'annotation_legacy_fallback',
         ]
         project_payload = {key: p.get(key) for key in keys if key in p}
         return {
             'schema': self.MANIFEST_SCHEMA,
-            'version': 1,
+            'version': 2,
             'image_id_strategy': 'uuid5:url:rel_path',
-            'annotation_file': 'annotations/{image_id}.json',
+            'annotation_layout': {
+                'strategy': 'mirrored_relpath',
+                'file': 'annotations/{relative_parent}/{image_stem}.json',
+                'stem_collision': 'preserve_source_extension',
+                'legacy_fallback': bool(p.get('annotation_legacy_fallback', False)),
+            },
             'project': project_payload,
             'updated_at': now_ts(),
         }
@@ -66,7 +74,7 @@ class ProjectManifestRepository:
         data = read_json(manifest_path, {})
         if not isinstance(data, dict):
             return None
-        if str(data.get('schema') or '') != self.MANIFEST_SCHEMA:
+        if str(data.get('schema') or '') not in {self.MANIFEST_SCHEMA, self.LEGACY_MANIFEST_SCHEMA}:
             return None
         project = data.get('project')
         if not isinstance(project, dict):

@@ -12,9 +12,50 @@ class ProjectFileRepository:
     def __init__(self, *, annotation_class_name: Callable[[dict[str, Any]], str]) -> None:
         self._annotation_class_name = annotation_class_name
 
-    def annotation_path(self, project: dict[str, Any], image_id: str) -> Path:
+    @staticmethod
+    def annotation_relative_paths(images: list[dict[str, Any]]) -> dict[str, Path]:
+        """Return mirrored annotation paths, preserving extensions for stem collisions."""
+        prepared: list[tuple[str, Path]] = []
+        groups: dict[tuple[str, str], list[tuple[str, Path]]] = {}
+        for image in images:
+            image_id = str(image.get('id') or '').strip()
+            raw_rel = str(image.get('rel_path') or '').strip().replace('\\', '/')
+            if not image_id or not raw_rel:
+                continue
+            rel = Path(raw_rel)
+            if rel.is_absolute() or '..' in rel.parts:
+                raise ValueError(f'invalid image relative path: {raw_rel}')
+            prepared.append((image_id, rel))
+            key = (rel.parent.as_posix().casefold(), rel.stem.casefold())
+            groups.setdefault(key, []).append((image_id, rel))
+
+        out: dict[str, Path] = {}
+        for image_id, rel in prepared:
+            key = (rel.parent.as_posix().casefold(), rel.stem.casefold())
+            filename = f'{rel.name}.json' if len(groups.get(key, [])) > 1 else f'{rel.stem}.json'
+            out[image_id] = rel.parent / filename
+        return out
+
+    def annotation_path(
+        self,
+        project: dict[str, Any],
+        image: dict[str, Any],
+        relative_paths: dict[str, Path],
+    ) -> Path:
         ann_dir = ensure_dir(Path(project['annotation_dir']).expanduser().resolve())
-        return ann_dir / f'{image_id}.json'
+        image_id = str(image.get('id') or '').strip()
+        rel = relative_paths.get(image_id)
+        if rel is None:
+            raise ValueError(f'annotation path unavailable for image: {image_id}')
+        target = (ann_dir / rel).resolve()
+        if not target.is_relative_to(ann_dir):
+            raise ValueError(f'annotation path escapes annotation directory: {rel}')
+        return target
+
+    @staticmethod
+    def legacy_annotation_path(project: dict[str, Any], image_id: str) -> Path:
+        ann_dir = ensure_dir(Path(project['annotation_dir']).expanduser().resolve())
+        return ann_dir / f'{str(image_id).strip()}.json'
 
     @staticmethod
     def annotation_has_items(path: Path) -> bool:
@@ -39,7 +80,11 @@ class ProjectFileRepository:
         if not annotation_dir.exists() or not annotation_dir.is_dir():
             return 0
         try:
-            return sum(1 for p in annotation_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json')
+            return sum(
+                1
+                for p in annotation_dir.rglob('*.json')
+                if p.is_file() and '.legacy_conflicts' not in p.parts
+            )
         except OSError:
             return 0
 
@@ -80,7 +125,10 @@ class ProjectFileRepository:
         if not annotation_dir.exists() or not annotation_dir.is_dir():
             return out
         try:
-            files = [p for p in sorted(annotation_dir.glob('*.json')) if p.is_file()]
+            files = [
+                p for p in sorted(annotation_dir.rglob('*.json'))
+                if p.is_file() and '.legacy_conflicts' not in p.parts
+            ]
         except OSError:
             return out
         for path in files[:max(1, max_files)]:

@@ -5,7 +5,7 @@
 
 ## 1. 总览
 
-`sam3-api` 当前包含三条能力链路:
+`sam3-api` 当前包含两条模型能力链路:
 
 1. 原生单图推理
 - 实现: `app/engine.py`
@@ -17,16 +17,7 @@
   - 点提示单图修正
   - 框提示单图修正
 
-2. Ultralytics 图像语义分割
-- 实现: `app/semantic_engine.py`
-- 入口:
-  - `POST /v1/semantic/infer`
-  - `POST /v1/semantic/infer_batch`
-- 适用:
-  - 当前图 concept segmentation
-  - 源图范例向多张目标图传播
-
-3. Ultralytics 视频语义跟踪
+2. Ultralytics 视频语义跟踪
 - 实现: `app/video_semantic_engine.py`
 - 底层: `SAM3VideoSemanticPredictor`
 - 入口:
@@ -46,7 +37,7 @@
 
 ### `GET /health`
 
-返回三条链路的加载状态:
+返回图像与视频链路的加载状态；`semantic_model_loaded` 是 `model_loaded` 的兼容别名:
 
 - `model_loaded`
 - `semantic_model_loaded`
@@ -66,7 +57,7 @@ curl http://127.0.0.1:8001/health
 
 ### `POST /v1/semantic/warmup`
 
-预热 Ultralytics 图像语义模型。
+兼容入口，预热与 `/v1/warmup` 相同的官方图像模型。
 
 ### `POST /v1/video/warmup`
 
@@ -101,28 +92,14 @@ curl http://127.0.0.1:8001/health
 
 ### `POST /v1/semantic/infer`
 
-当前图官方语义分割。
+当前图官方纯视觉框提示推理，内部与 `/v1/infer mode=boxes` 使用同一个 `Sam3Processor`。
 
 必需条件:
 
-- `prompt` 非空
 - `boxes` 非空
 - 至少一个正框
 
-### `POST /v1/semantic/infer_batch`
-
-源图范例传播到多张目标图。
-
-表单字段:
-
-- `source_file`: 源图
-- `files`: 多张目标图
-- `prompt`
-- `boxes`
-- `threshold`
-- `include_mask_png`
-- `max_detections`
-- `input_size`
+跨图片范例传播接口已移除。
 
 ## 4. 视频语义会话接口
 
@@ -484,7 +461,6 @@ requests.post(
 
 - 路由: `app/main.py`
 - 原生图像引擎: `app/engine.py`
-- 图像语义引擎: `app/semantic_engine.py`
 - 视频语义引擎: `app/video_semantic_engine.py`
 
 ## 9. MCP Adapter

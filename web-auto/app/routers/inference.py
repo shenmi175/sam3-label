@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import (
     InferBatchIn,
-    InferExampleBatchIn,
     InferExamplePreviewIn,
     InferIn,
     InferJobControlIn,
@@ -21,7 +20,6 @@ def create_inference_router(
     infer_single_impl: Callable[..., dict[str, Any]],
     infer_example_preview_impl: Callable[..., dict[str, Any]],
     run_infer_batch: Callable[..., dict[str, Any]],
-    run_infer_batch_example: Callable[..., dict[str, Any]],
     spawn_infer_job: Callable[..., dict[str, Any]],
     get_active_infer_job_for_project: Callable[[str], dict[str, Any] | None],
     get_latest_infer_job_for_project: Callable[..., dict[str, Any] | None],
@@ -29,6 +27,8 @@ def create_inference_router(
     pause_infer_job: Callable[[str], bool],
     update_infer_job_state: Callable[..., None],
     resume_infer_job: Callable[[InferJobResumeIn], dict[str, Any]],
+    acquire_interactive_gpu: Callable[[], str],
+    release_interactive_gpu: Callable[[str], None],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -38,18 +38,22 @@ def create_inference_router(
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='only image project is supported')
         image = get_image_or_404(project, payload.image_id)
-        out = infer_single_impl(
-            project=project,
-            image=image,
-            mode=payload.mode,
-            classes=payload.classes,
-            active_class=payload.active_class,
-            points=payload.points,
-            boxes=payload.boxes,
-            threshold=payload.threshold,
-            api_base_url=payload.api_base_url,
-            save_result=True,
-        )
+        lease_id = acquire_interactive_gpu()
+        try:
+            out = infer_single_impl(
+                project=project,
+                image=image,
+                mode=payload.mode,
+                classes=payload.classes,
+                active_class=payload.active_class,
+                points=payload.points,
+                boxes=payload.boxes,
+                threshold=payload.threshold,
+                api_base_url=payload.api_base_url,
+                save_result=True,
+            )
+        finally:
+            release_interactive_gpu(lease_id)
         return {
             'project_id': payload.project_id,
             'image_id': payload.image_id,
@@ -67,18 +71,22 @@ def create_inference_router(
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='only image project is supported')
         image = get_image_or_404(project, payload.image_id)
-        out = infer_single_impl(
-            project=project,
-            image=image,
-            mode=payload.mode,
-            classes=payload.classes,
-            active_class=payload.active_class,
-            points=payload.points,
-            boxes=payload.boxes,
-            threshold=payload.threshold,
-            api_base_url=payload.api_base_url,
-            save_result=False,
-        )
+        lease_id = acquire_interactive_gpu()
+        try:
+            out = infer_single_impl(
+                project=project,
+                image=image,
+                mode=payload.mode,
+                classes=payload.classes,
+                active_class=payload.active_class,
+                points=payload.points,
+                boxes=payload.boxes,
+                threshold=payload.threshold,
+                api_base_url=payload.api_base_url,
+                save_result=False,
+            )
+        finally:
+            release_interactive_gpu(lease_id)
         return {
             'project_id': payload.project_id,
             'image_id': payload.image_id,
@@ -96,15 +104,18 @@ def create_inference_router(
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='only image project is supported')
         image = get_image_or_404(project, payload.image_id)
-        out = infer_example_preview_impl(
-            project=project,
-            image=image,
-            active_class=payload.active_class,
-            boxes=payload.boxes,
-            pure_visual=bool(payload.pure_visual),
-            threshold=payload.threshold,
-            api_base_url=payload.api_base_url,
-        )
+        lease_id = acquire_interactive_gpu()
+        try:
+            out = infer_example_preview_impl(
+                project=project,
+                image=image,
+                active_class=payload.active_class,
+                boxes=payload.boxes,
+                threshold=payload.threshold,
+                api_base_url=payload.api_base_url,
+            )
+        finally:
+            release_interactive_gpu(lease_id)
         return {
             'project_id': payload.project_id,
             'image_id': payload.image_id,
@@ -120,10 +131,6 @@ def create_inference_router(
     def infer_batch(payload: InferBatchIn) -> dict[str, Any]:
         return run_infer_batch(payload)
 
-    @router.post('/api/infer/batch_example')
-    def infer_batch_example(payload: InferExampleBatchIn) -> dict[str, Any]:
-        return run_infer_batch_example(payload)
-
     @router.post('/api/infer/jobs/start_batch')
     def start_infer_batch_job(payload: InferBatchIn) -> dict[str, Any]:
         job = spawn_infer_job(
@@ -132,21 +139,6 @@ def create_inference_router(
             payload_dict=payload.model_dump(),
             worker=lambda data, progress_cb, should_stop, resume_state: run_infer_batch(
                 InferBatchIn(**data),
-                progress_cb=progress_cb,
-                should_stop=should_stop,
-                resume_state=resume_state,
-            ),
-        )
-        return {'job': job}
-
-    @router.post('/api/infer/jobs/start_batch_example')
-    def start_infer_batch_example_job(payload: InferExampleBatchIn) -> dict[str, Any]:
-        job = spawn_infer_job(
-            project_id=payload.project_id,
-            job_type='example_batch',
-            payload_dict=payload.model_dump(),
-            worker=lambda data, progress_cb, should_stop, resume_state: run_infer_batch_example(
-                InferExampleBatchIn(**data),
                 progress_cb=progress_cb,
                 should_stop=should_stop,
                 resume_state=resume_state,

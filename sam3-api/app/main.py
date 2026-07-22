@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.engine import Sam3InferenceEngine
-from app.semantic_engine import Sam3SemanticEngine
 from app.video_semantic_engine import Sam3VideoSemanticSessionEngine
 from app.schemas import (
     BatchInferOut,
@@ -310,7 +309,6 @@ async def _read_upload_image(file: UploadFile, max_image_bytes: int):
 def create_app() -> FastAPI:
     settings = get_settings()
     engine = Sam3InferenceEngine(settings)
-    semantic_engine = Sam3SemanticEngine(settings)
     video_engine = Sam3VideoSemanticSessionEngine(settings)
 
     app = FastAPI(
@@ -342,7 +340,6 @@ def create_app() -> FastAPI:
 
     app.state.settings = settings
     app.state.engine = engine
-    app.state.semantic_engine = semantic_engine
     app.state.video_engine = video_engine
 
     @app.on_event("startup")
@@ -359,7 +356,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "model_loaded": engine.loaded,
-            "semantic_model_loaded": semantic_engine.loaded,
+            "semantic_model_loaded": engine.loaded,
             "video_model_loaded": video_engine.loaded,
             "device": settings.device,
             "checkpoint_path": str(settings.checkpoint_path),
@@ -377,8 +374,8 @@ def create_app() -> FastAPI:
     @app.post("/v1/semantic/warmup")
     def semantic_warmup() -> dict:
         try:
-            semantic_engine.warmup()
-            return {"ok": True, "semantic_model_loaded": semantic_engine.loaded}
+            engine.warmup()
+            return {"ok": True, "semantic_model_loaded": engine.loaded}
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"semantic warmup failed: {exc}") from exc
 
@@ -445,7 +442,6 @@ def create_app() -> FastAPI:
     @app.post("/v1/semantic/infer", response_model=InferResultOut)
     async def semantic_infer(
         file: UploadFile = File(...),
-        prompt: Optional[str] = Form(None),
         boxes: Optional[str] = Form(None),
         input_size: int = Form(0),
         threshold: Optional[float] = Form(None),
@@ -455,23 +451,37 @@ def create_app() -> FastAPI:
         try:
             image = await _read_upload_image(file, settings.max_image_bytes)
             boxes_payload = _parse_boxes(boxes)
+            if not boxes_payload:
+                raise ValueError("boxes must not be empty")
+            if not any(label for _, _, _, _, label in boxes_payload):
+                raise ValueError("boxes require at least one positive prompt")
             use_threshold = float(threshold) if threshold is not None else float(settings.default_threshold)
             if use_threshold < 0.0 or use_threshold > 1.0:
                 raise ValueError("threshold must be in [0, 1]")
-            return semantic_engine.infer_current(
-                image=image,
-                prompt=str(prompt or ""),
-                boxes=boxes_payload,
-                input_size=int(input_size or 0),
-                threshold=use_threshold,
-                include_mask_png=bool(include_mask_png),
-                max_detections=max(0, int(max_detections)),
+            return _infer_with_default_size_fallback(
+                engine,
+                infer_kwargs={
+                    "image": image,
+                    "mode": "boxes",
+                    "prompt": "",
+                    "points": [],
+                    "boxes": boxes_payload,
+                    "point_box_size": 16.0,
+                    "input_size": _normalize_image_engine_input_size(
+                        engine,
+                        input_size,
+                        route_label="/v1/semantic/infer",
+                    ),
+                    "threshold": use_threshold,
+                    "include_mask_png": bool(include_mask_png),
+                    "max_detections": max(0, int(max_detections)),
+                },
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            logger.exception("semantic infer failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"semantic inference failed: {exc}") from exc
+            logger.exception("visual exemplar infer failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"visual exemplar inference failed: {exc}") from exc
 
     @app.post("/v1/infer_batch", response_model=BatchInferOut)
     async def infer_batch(
@@ -602,58 +612,6 @@ def create_app() -> FastAPI:
             "items": items,
         }
 
-    @app.post("/v1/semantic/infer_batch", response_model=BatchInferOut)
-    async def semantic_infer_batch(
-        source_file: UploadFile = File(...),
-        files: list[UploadFile] = File(...),
-        prompt: Optional[str] = Form(None),
-        boxes: Optional[str] = Form(None),
-        input_size: int = Form(0),
-        threshold: Optional[float] = Form(None),
-        include_mask_png: bool = Form(False),
-        max_detections: int = Form(100),
-    ) -> dict:
-        if len(files) > settings.max_batch_files:
-            raise HTTPException(
-                status_code=400,
-                detail=f"too many files: {len(files)} > {settings.max_batch_files}",
-            )
-        try:
-            source_image = await _read_upload_image(source_file, settings.max_image_bytes)
-            target_items: list[tuple[str, Any]] = []
-            for f in files:
-                image = await _read_upload_image(f, settings.max_image_bytes)
-                target_items.append((f.filename or "unnamed", image))
-            boxes_payload = _parse_boxes(boxes)
-            use_threshold = float(threshold) if threshold is not None else float(settings.default_threshold)
-            if use_threshold < 0.0 or use_threshold > 1.0:
-                raise ValueError("threshold must be in [0, 1]")
-
-            results = semantic_engine.infer_batch(
-                source_image=source_image,
-                prompt=str(prompt or ""),
-                boxes=boxes_payload,
-                targets=target_items,
-                input_size=int(input_size or 0),
-                threshold=use_threshold,
-                include_mask_png=bool(include_mask_png),
-                max_detections=max(0, int(max_detections)),
-            )
-            items = [
-                BatchItemOut(filename=item["filename"], ok=True, result=InferResultOut(**item["result"]))
-                for item in results
-            ]
-            return {
-                "total": len(target_items),
-                "succeeded": len(items),
-                "failed": 0,
-                "items": items,
-            }
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("semantic infer_batch failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"semantic batch inference failed: {exc}") from exc
 
     @app.post("/v1/video/session/start")
     def video_session_start(payload: VideoSessionStartIn) -> dict:

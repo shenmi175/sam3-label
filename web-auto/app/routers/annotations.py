@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
-from app.schemas import AppendAnnIn, SaveAnnIn
+from app.schemas import AnnotationMigrationIn, AppendAnnIn, SaveAnnIn
 from app.storage import Storage
 from app.utils import new_id
 
@@ -82,5 +82,11 @@ def create_annotations_router(*, get_storage: Callable[[], Storage]) -> APIRoute
         storage.save_annotations(payload.project_id, payload.image_id, merged)
         saved = storage.load_annotations(payload.project_id, payload.image_id)
         return {'ok': True, 'saved_annotations': saved, 'added': len(incoming)}
+
+    @router.post('/api/projects/{project_id}/annotations/migrate')
+    def migrate_annotations(project_id: str, payload: AnnotationMigrationIn) -> dict[str, Any]:
+        storage = get_storage()
+        _get_project_or_404(storage, project_id)
+        return storage.migrate_annotation_layout(project_id, dry_run=bool(payload.dry_run))
 
     return router

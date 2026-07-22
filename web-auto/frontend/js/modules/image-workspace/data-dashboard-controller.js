@@ -87,12 +87,36 @@ export class DataDashboardController {
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button id="btn-dashboard-migrate-annotations" class="neu-button" style="padding: 10px 18px; font-weight: 700;">${i18n.t('migrate_annotation_layout')}</button>
             <button id="btn-dashboard-rebuild-index" class="neu-button" style="padding: 10px 18px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('rebuild_annotation_index')}</button>
           </div>
         </div>
       `;
 
       const rebuildBtn = document.getElementById('btn-dashboard-rebuild-index');
+      const migrateBtn = document.getElementById('btn-dashboard-migrate-annotations');
+      if (migrateBtn) migrateBtn.onclick = async () => {
+        try {
+          migrateBtn.disabled = true;
+          const preview = await api.migrateAnnotationLayout(ws.projectId, true);
+          const planned = Number(preview?.moved || 0);
+          const conflicts = Number(preview?.conflicts || 0);
+          if (planned <= 0 && conflicts <= 0) {
+            notify('标注目录已是最新结构', 'success');
+            return;
+          }
+          if (!confirm(`将迁移 ${planned} 个标注文件，发现 ${conflicts} 个冲突。冲突文件会保留到 .legacy_conflicts，是否继续？`)) return;
+          migrateBtn.innerText = i18n.t('migrating_annotation_layout');
+          const result = await api.migrateAnnotationLayout(ws.projectId, false);
+          notify(`迁移完成：移动 ${fmt(result?.moved)}，冲突 ${fmt(result?.conflicts)}，失败 ${fmt(result?.failed)}`, result?.failed ? 'error' : 'success');
+          await this.open();
+        } catch (e) {
+          notify(e.message, 'error');
+        } finally {
+          migrateBtn.disabled = false;
+          migrateBtn.innerText = i18n.t('migrate_annotation_layout');
+        }
+      };
       if (rebuildBtn) rebuildBtn.onclick = async () => {
         if (!confirm(i18n.t('confirm_rebuild_annotation_index'))) return;
         try {
