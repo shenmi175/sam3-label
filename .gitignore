@@ -172,3 +172,7 @@ Thumbs.db
 # BPE vocabulary files
 *.bpe
 *.vocab
+
+# LocateAnything / local tooling
+sam3_checkpoints/
+.qoder/
