@@ -1,0 +1,19 @@
+# HTTP layer
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pillow>=10.0.0
+
+# LocateAnything runtime (pinned to the versions called out in the
+# nvidia/LocateAnything-3B model card)
+transformers==4.57.1
+peft
+torchvision
+decord==0.6.0
+lmdb==1.7.5
+opencv-python-headless==4.11.0.86
+numpy==1.25.0
+
+# GPU bookkeeping
+torch
+psutil
