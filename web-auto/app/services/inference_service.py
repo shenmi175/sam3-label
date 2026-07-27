@@ -16,6 +16,7 @@ from app.services.inference_visual_prompts import (
     _pick_by_positive_points,
     _reduce_points_to_single_instance,
 )
+from app.locate_anything_client import LocateAnythingClient
 from app.storage import Storage
 
 
@@ -25,21 +26,83 @@ class InferenceService:
         *,
         get_storage: Callable[[], Storage],
         sam3: Any,
+        locate: Any | None = None,
         infer_jobs: InferenceJobService,
         default_api_base_url: str,
+        default_locate_api_base_url: str = 'http://127.0.0.1:8004',
         max_batch_files: int,
         max_pending_image_ids: int,
     ) -> None:
         self._get_storage = get_storage
         self._sam3 = sam3
+        self._locate = locate
         self._infer_jobs = infer_jobs
         self._default_api_base_url = default_api_base_url
+        self._default_locate_api_base_url = default_locate_api_base_url
         self._max_batch_files = max(1, int(max_batch_files or 1))
         self._max_pending_image_ids = max(1, int(max_pending_image_ids or 1))
 
     @property
     def storage(self) -> Storage:
         return self._get_storage()
+
+    # -- backend dispatch & OOM guard --------------------------------
+    def _resolve_locate_api_base_url(self, raw: str | None) -> str:
+        clean = str(raw or '').strip()
+        return clean or self._default_locate_api_base_url
+
+    def _check_both_loaded_oom_guard(self, *, model_backend: str, sam3_url: str, locate_url: str) -> None:
+        """If both sam3-api and locate-anything-api currently hold the model
+        in VRAM, refuse to dispatch and let the frontend show an OOM warning.
+
+        The structured error uses HTTP 409 + ``code='BOTH_LOADED'`` so the
+        web-auto frontend can distinguish it from generic backend errors and
+        surface a dedicated modal suggesting to unload one of the services.
+        """
+        if str(model_backend or 'sam3').strip().lower() != 'locate-anything':
+            return
+        if self._locate is None:
+            return
+        sam3_loaded = False
+        locate_loaded = False
+        try:
+            sam3_loaded = bool(self._sam3.health(sam3_url).get('model_loaded'))
+        except Exception:
+            sam3_loaded = False
+        try:
+            locate_loaded = bool(self._locate.health(locate_url).get('model_loaded'))
+        except Exception:
+            locate_loaded = False
+        if sam3_loaded and locate_loaded:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'code': 'BOTH_LOADED',
+                    'message': (
+                        'sam3-api and locate-anything-api are both loaded. '
+                        'Running them at the same time may exceed GPU memory. '
+                        'Unload one of the services before continuing.'
+                    ),
+                    'sam3_api_base_url': sam3_url,
+                    'locate_api_base_url': locate_url,
+                },
+            )
+
+    def _dispatch_infer_client(self, *, model_backend: str, locate_api_base_url: str):
+        backend = str(model_backend or 'sam3').strip().lower()
+        if backend == 'locate-anything':
+            if self._locate is None:
+                raise HTTPException(status_code=503, detail='locate-anything client is not configured')
+            return self._locate, self._resolve_locate_api_base_url(locate_api_base_url)
+        return self._sam3, self._default_api_base_url
+
+    def _dispatch_batch_client(self, *, model_backend: str, locate_api_base_url: str):
+        backend = str(model_backend or 'sam3').strip().lower()
+        if backend == 'locate-anything':
+            if self._locate is None:
+                raise HTTPException(status_code=503, detail='locate-anything client is not configured')
+            return self._locate, self._resolve_locate_api_base_url(locate_api_base_url)
+        return self._sam3, self._default_api_base_url
 
     def _chunked(self, items: list[Any], size: int) -> list[list[Any]]:
         chunk_size = max(1, int(size))
@@ -202,7 +265,27 @@ class InferenceService:
         threshold: float,
         api_base_url: str,
         save_result: bool = True,
+        model_backend: str = 'sam3',
+        locate_api_base_url: str = '',
+        score_default: float = 0.5,
     ) -> dict[str, Any]:
+        backend = str(model_backend or 'sam3').strip().lower()
+        infer_mode = str(mode).strip().lower()
+        if backend == 'locate-anything' and infer_mode != 'text':
+            raise HTTPException(
+                status_code=400,
+                detail='locate-anything backend supports mode=text only (points/boxes are sam3-only)',
+            )
+        locate_url = self._resolve_locate_api_base_url(locate_api_base_url)
+        self._check_both_loaded_oom_guard(
+            model_backend=backend,
+            sam3_url=api_base_url,
+            locate_url=locate_url,
+        )
+        client, client_url = self._dispatch_infer_client(
+            model_backend=backend, locate_api_base_url=locate_url
+        )
+        is_locate = backend == 'locate-anything'
         final_classes = [str(c).strip() for c in classes if str(c).strip()]
         if not final_classes:
             final_classes = [str(c).strip() for c in project.get('classes', []) if str(c).strip()]
@@ -246,17 +329,28 @@ class InferenceService:
             point_box_size: float | None = None,
             threshold_value: float | None = None,
         ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            result_local = self._sam3.infer(
-                api_base_url=api_base_url,
-                image_path=str(image.get('abs_path') or ''),
-                mode=infer_mode,
-                prompt=prompt,
-                threshold=float(threshold if threshold_value is None else threshold_value),
-                points=infer_points,
-                boxes=infer_boxes,
-                point_box_size=point_box_size,
-                include_mask_png=True,
-            )
+            if is_locate:
+                result_local = client.infer(
+                    api_base_url=client_url,
+                    image_path=str(image.get('abs_path') or ''),
+                    mode='text',
+                    prompt=prompt,
+                    threshold=float(threshold if threshold_value is None else threshold_value),
+                    include_mask_png=False,
+                    score_default=float(score_default),
+                )
+            else:
+                result_local = client.infer(
+                    api_base_url=client_url,
+                    image_path=str(image.get('abs_path') or ''),
+                    mode=infer_mode,
+                    prompt=prompt,
+                    threshold=float(threshold if threshold_value is None else threshold_value),
+                    points=infer_points,
+                    boxes=infer_boxes,
+                    point_box_size=point_box_size,
+                    include_mask_png=True,
+                )
             detections_local = result_local.get('detections', [])
             detections_local = detections_local if isinstance(detections_local, list) else []
             converted_local = _convert_detections(
@@ -330,7 +424,13 @@ class InferenceService:
         boxes: list[list[float | int]],
         threshold: float,
         api_base_url: str,
+        model_backend: str = 'sam3',
     ) -> dict[str, Any]:
+        if str(model_backend or 'sam3').strip().lower() == 'locate-anything':
+            raise HTTPException(
+                status_code=400,
+                detail='example preview (box prompt) is not supported by the locate-anything backend',
+            )
         active = str(active_class or '').strip()
         if not active:
             raise HTTPException(status_code=400, detail='active_class is required for example preview')
@@ -419,6 +519,19 @@ class InferenceService:
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
 
+        backend = str(getattr(payload, 'model_backend', 'sam3') or 'sam3').strip().lower()
+        locate_url = self._resolve_locate_api_base_url(getattr(payload, 'locate_api_base_url', ''))
+        self._check_both_loaded_oom_guard(
+            model_backend=backend,
+            sam3_url=payload.api_base_url,
+            locate_url=locate_url,
+        )
+        batch_client, batch_client_url = self._dispatch_batch_client(
+            model_backend=backend, locate_api_base_url=locate_url
+        )
+        is_locate_batch = backend == 'locate-anything'
+        score_default = float(getattr(payload, 'score_default', 0.5) or 0.5)
+
         classes = [str(c).strip() for c in payload.classes if str(c).strip()]
         if not classes:
             classes = [str(c).strip() for c in project.get('classes', []) if str(c).strip()]
@@ -430,7 +543,10 @@ class InferenceService:
             raise HTTPException(status_code=400, detail='no target images')
 
         requested_batch_size = self._requested_batch_size(payload.batch_size)
-        batch_size = self._effective_sam3_batch_size(payload.batch_size)
+        # locate-anything-api loops images sequentially inside its batch client,
+        # so cap the effective batch size to 1 to keep progress reporting sane.
+        effective_cap = 1 if is_locate_batch else self._max_batch_files
+        batch_size = min(self._requested_batch_size(payload.batch_size), effective_cap)
         prior = resume_state if isinstance(resume_state, dict) else {}
         succeeded = max(0, int(prior.get('succeeded') or 0))
         failed = max(0, int(prior.get('failed') or 0))
@@ -495,16 +611,29 @@ class InferenceService:
 
             batch_paths = [str(img.get('abs_path') or '') for img in batch_images]
             try:
-                batch_result = self._remote_with_retries(
-                    lambda: self._sam3.infer_batch(
-                        api_base_url=payload.api_base_url,
-                        image_paths=batch_paths,
-                        mode='text',
-                        prompt=prompt,
-                        threshold=payload.threshold,
-                        include_mask_png=True,
+                if is_locate_batch:
+                    batch_result = self._remote_with_retries(
+                        lambda: batch_client.infer_batch(
+                            api_base_url=batch_client_url,
+                            image_paths=batch_paths,
+                            mode='text',
+                            prompt=prompt,
+                            threshold=payload.threshold,
+                            include_mask_png=False,
+                            score_default=score_default,
+                        )
                     )
-                )
+                else:
+                    batch_result = self._remote_with_retries(
+                        lambda: batch_client.infer_batch(
+                            api_base_url=batch_client_url,
+                            image_paths=batch_paths,
+                            mode='text',
+                            prompt=prompt,
+                            threshold=payload.threshold,
+                            include_mask_png=True,
+                        )
+                    )
                 items = batch_result.get('items', [])
                 if not isinstance(items, list) or len(items) != len(batch_images):
                     raise RuntimeError(

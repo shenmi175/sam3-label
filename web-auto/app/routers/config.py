@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
+from app.locate_anything_client import LocateAnythingClient
 from app.sam3_client import Sam3Client
 from app.schemas import CacheDirUpdateIn, GlobalConfigUpdateIn
 from app.services.config_service import AppConfigStore
@@ -30,6 +31,8 @@ def create_config_router(
     global_config_info: Callable[[], dict[str, Any]],
     effective_sam3_api_base_url: Callable[[], str],
     allowed_sam3_api_base_urls: Callable[[], list[str]],
+    effective_locate_api_base_url: Callable[[], str],
+    allowed_locate_api_base_urls: Callable[[], list[str]],
     queue_health: Callable[[], dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
@@ -63,6 +66,8 @@ def create_config_router(
         return {
             'sam3_api_base_url': effective_sam3_api_base_url(),
             'allowed_sam3_api_base_urls': allowed_sam3_api_base_urls(),
+            'locate_api_base_url': effective_locate_api_base_url(),
+            'allowed_locate_api_base_urls': allowed_locate_api_base_urls(),
             'sapiens_api_base_url': default_sapiens_api_base_url,
             'ops_api_configured': ops_api_configured,
             'data_dir': str(get_current_data_dir()),
@@ -98,6 +103,15 @@ def create_config_router(
                     except ValueError as exc:
                         raise HTTPException(status_code=400, detail=str(exc)) from exc
                     changes['sam3_api_base_url'] = api_base_url
+
+            if payload.locate_api_base_url is not None:
+                locate_url = str(payload.locate_api_base_url or '').strip().rstrip('/')
+                if locate_url:
+                    try:
+                        locate_url = LocateAnythingClient._api_root(locate_url)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    changes['locate_api_base_url'] = locate_url
 
             if changes:
                 app_config.update(changes)

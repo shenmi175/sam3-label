@@ -120,6 +120,26 @@ def _convert_detections(
                 )
             continue
 
+        # bbox-only branch: polygon < 3 points AND no mask, but a valid bbox is
+        # present. Used by locate-anything-api and any future detector that
+        # emits bounding boxes without a segmentation polygon/mask.
+        if bbox and len(bbox) == 4:
+            out.append(
+                {
+                    'id': str(det.get('id') or f'det_{i:04d}'),
+                    'class_name': class_name,
+                    'raw_label': str(det.get('label') or ''),
+                    'score': float(det.get('score') or 0.0),
+                    'bbox': [float(v) for v in bbox],
+                    'polygon': [],
+                    'area': float(det.get('area') or 0.0)
+                        or max(0.0, (float(bbox[2]) - float(bbox[0])) * (float(bbox[3]) - float(bbox[1]))),
+                    'mask_png_base64': '',
+                    **metadata,
+                }
+            )
+            continue
+
         if not bbox and len(polygon) < 3:
             continue
 

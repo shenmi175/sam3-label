@@ -13,3 +13,4 @@ class GlobalConfigUpdateIn(BaseModel):
     cache_dir: Optional[str] = None
     upload_target_dir: Optional[str] = None
     sam3_api_base_url: Optional[str] = None
+    locate_api_base_url: Optional[str] = None

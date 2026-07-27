@@ -30,6 +30,7 @@ from app.routers.services import create_services_router
 from app.routers.ui_state import create_ui_state_router
 from app.routers.uploads import create_uploads_router
 from app.sam3_client import Sam3Client
+from app.locate_anything_client import LocateAnythingClient
 from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
@@ -56,6 +57,7 @@ DEFAULT_UPLOAD_TARGET_DIR = Path(
 ).expanduser().resolve()
 APP_CONFIG_FILE = DATA_DIR / 'global_config.json'
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
+DEFAULT_LOCATE_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_LOCATE_API_BASE_URL', 'http://127.0.0.1:8004').strip() or 'http://127.0.0.1:8004'
 DEFAULT_SAPIENS_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL', 'http://sapiens-api:8010').strip() or 'http://sapiens-api:8010'
 SAPIENS_API_TOKEN = os.getenv('WEB_AUTO_SAPIENS_API_TOKEN', '').strip()
 OPS_API_BASE_URL = os.getenv('WEB_AUTO_OPS_API_BASE_URL', 'http://ops-api:8020').strip().rstrip('/')
@@ -86,6 +88,7 @@ if _job_db_path.exists() and not os.access(_job_db_path, os.W_OK):
     _job_db_path = Path(tempfile.gettempdir()) / f'web_auto_jobs_{os.getuid()}.sqlite3'
 JOB_QUEUE = PersistentJobQueue(_job_db_path)
 sam3 = Sam3Client(timeout_sec=180)
+locate = LocateAnythingClient(timeout_sec=600)
 OPS_CLIENT = OpsClient(OPS_API_BASE_URL, OPS_API_TOKEN)
 SAPIENS_CLIENT = SapiensClient(DEFAULT_SAPIENS_API_BASE_URL, SAPIENS_API_TOKEN)
 CURRENT_DATA_DIR = Path(storage.base_dir)
@@ -103,8 +106,10 @@ INFER_JOBS = InferenceJobService(
 INFERENCE_SERVICE = InferenceService(
     get_storage=_current_storage,
     sam3=sam3,
+    locate=locate,
     infer_jobs=INFER_JOBS,
     default_api_base_url=DEFAULT_API_BASE_URL,
+    default_locate_api_base_url=DEFAULT_LOCATE_API_BASE_URL,
     max_batch_files=SAM3_MAX_BATCH_FILES,
     max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE,
 )
@@ -307,6 +312,26 @@ def _effective_sam3_api_base_url() -> str:
     return DEFAULT_API_BASE_URL
 
 
+def _allowed_locate_api_base_urls() -> list[str]:
+    raw_allowed = os.getenv(
+        'WEB_AUTO_ALLOWED_LOCATE_API_BASE_URLS',
+        os.getenv('WEB_AUTO_DEFAULT_LOCATE_API_BASE_URL', DEFAULT_LOCATE_API_BASE_URL),
+    )
+    urls: list[str] = []
+    for item in str(raw_allowed or '').split(','):
+        clean = item.strip().rstrip('/')
+        if clean:
+            urls.append(clean)
+    return urls
+
+
+def _effective_locate_api_base_url() -> str:
+    configured = str(APP_CONFIG.read().get('locate_api_base_url') or '').strip().rstrip('/')
+    if configured:
+        return configured
+    return DEFAULT_LOCATE_API_BASE_URL
+
+
 def _configured_upload_target_dir() -> Path:
     configured = str(APP_CONFIG.read().get('upload_target_dir') or '').strip()
     if configured:
@@ -380,6 +405,8 @@ def _global_config_info() -> dict[str, Any]:
         'upload_target_dir': str(upload_dir),
         'sam3_api_base_url': _effective_sam3_api_base_url(),
         'allowed_sam3_api_base_urls': _allowed_sam3_api_base_urls(),
+        'locate_api_base_url': _effective_locate_api_base_url(),
+        'allowed_locate_api_base_urls': _allowed_locate_api_base_urls(),
         'sapiens_api_base_url': DEFAULT_SAPIENS_API_BASE_URL,
         'ops_api_configured': bool(OPS_API_BASE_URL),
         'sam3_max_batch_files': SAM3_MAX_BATCH_FILES,
@@ -416,6 +443,8 @@ app.include_router(
         global_config_info=_global_config_info,
         effective_sam3_api_base_url=_effective_sam3_api_base_url,
         allowed_sam3_api_base_urls=_allowed_sam3_api_base_urls,
+        effective_locate_api_base_url=_effective_locate_api_base_url,
+        allowed_locate_api_base_urls=_allowed_locate_api_base_urls,
         queue_health=JOB_QUEUE.health_summary,
     )
 )

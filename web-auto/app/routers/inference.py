@@ -51,6 +51,9 @@ def create_inference_router(
                 threshold=payload.threshold,
                 api_base_url=payload.api_base_url,
                 save_result=True,
+                model_backend=payload.model_backend,
+                locate_api_base_url=payload.locate_api_base_url,
+                score_default=payload.score_default,
             )
         finally:
             release_interactive_gpu(lease_id)
@@ -84,6 +87,9 @@ def create_inference_router(
                 threshold=payload.threshold,
                 api_base_url=payload.api_base_url,
                 save_result=False,
+                model_backend=payload.model_backend,
+                locate_api_base_url=payload.locate_api_base_url,
+                score_default=payload.score_default,
             )
         finally:
             release_interactive_gpu(lease_id)
@@ -113,6 +119,7 @@ def create_inference_router(
                 boxes=payload.boxes,
                 threshold=payload.threshold,
                 api_base_url=payload.api_base_url,
+                model_backend=getattr(payload, 'model_backend', 'sam3'),
             )
         finally:
             release_interactive_gpu(lease_id)
