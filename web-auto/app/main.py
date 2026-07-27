@@ -312,13 +312,13 @@ def _configured_upload_target_dir() -> Path:
     if configured:
         try:
             return _resolve_dataset_upload_dir(configured)
-        except HTTPException:
+        except (HTTPException, OSError):
             pass
     try:
         return _resolve_dataset_upload_dir(str(DEFAULT_UPLOAD_TARGET_DIR))
-    except HTTPException:
+    except (HTTPException, OSError):
         pass
-    return _resolve_dataset_upload_dir(str(HOST_DATA_ROOT))
+    return HOST_DATA_ROOT
 
 
 def _resolve_project_discovery_roots(scan_root: str = '') -> list[Path]:

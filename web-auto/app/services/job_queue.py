@@ -310,7 +310,7 @@ class PersistentJobQueue:
                         SELECT 1 FROM background_jobs earlier
                         WHERE earlier.project_id=j.project_id
                           AND earlier.created_epoch < j.created_epoch
-                          AND earlier.status IN ('queued','running','pausing','paused')
+                          AND earlier.status IN ('queued','running','pausing')
                       )
                     ORDER BY j.priority ASC, j.created_epoch ASC
                     LIMIT 1

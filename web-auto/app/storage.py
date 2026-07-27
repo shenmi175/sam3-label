@@ -572,18 +572,27 @@ class Storage:
                 project_save_dir = save_dir
             else:
                 project_save_dir = str((workspace_dir / 'output').resolve())
-        ensure_dir(Path(project_save_dir))
+        try:
+            ensure_dir(Path(project_save_dir))
+        except OSError:
+            pass
 
         if not save_base_dir:
             save_base_dir = str(Path(project_save_dir).parent.resolve())
 
         if not annotation_dir:
             annotation_dir = str((Path(project_save_dir) / 'annotations').resolve())
-        ensure_dir(Path(annotation_dir))
+        try:
+            ensure_dir(Path(annotation_dir))
+        except OSError:
+            pass
 
         if not export_dir:
             export_dir = str((Path(project_save_dir) / 'exports').resolve())
-        ensure_dir(Path(export_dir))
+        try:
+            ensure_dir(Path(export_dir))
+        except OSError:
+            pass
 
         images = q.get('images', []) if isinstance(q.get('images', []), list) else []
         normalized_images: list[dict[str, Any]] = []
