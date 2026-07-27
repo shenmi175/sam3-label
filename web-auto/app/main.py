@@ -198,10 +198,12 @@ app.include_router(create_auth_router(AUTH_HTTP))
 app.include_router(
     create_services_router(
         sam3=sam3,
+        locate=locate,
         ops_client=OPS_CLIENT,
         sapiens_client=SAPIENS_CLIENT,
         default_sam3_api_base_url=DEFAULT_API_BASE_URL,
         effective_sam3_api_base_url=lambda: _effective_sam3_api_base_url(),
+        default_locate_api_base_url=DEFAULT_LOCATE_API_BASE_URL,
         default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
     )
 )

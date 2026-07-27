@@ -46,6 +46,24 @@ export const SettingsPage = {
                 <input type="text" id="inp-set-samurl" class="neu-input" />
                 <div id="sam-url-hint" style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;"></div>
               </div>
+              <div>
+                <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('locate_api_url')}</label>
+                <input type="text" id="inp-set-locateurl" class="neu-input" />
+                <div id="locate-url-hint" style="font-size: 12px; color: var(--neu-text-light); margin-top: 8px;"></div>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;">
+                <div>
+                  <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('default_backend')}</label>
+                  <select id="inp-set-backend" class="neu-input">
+                    <option value="sam3">${i18n.t('sam3_backend')}</option>
+                    <option value="locate-anything">${i18n.t('locate_backend')}</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('score_default')}</label>
+                  <input type="number" id="inp-set-score" class="neu-input" min="0" max="1" step="0.01" />
+                </div>
+              </div>
               <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;">
                 <div>
                   <label style="display:block; margin-bottom: 8px; font-weight: 600; font-size: 13px;">${i18n.t('language')}</label>
@@ -215,6 +233,15 @@ export const SettingsPage = {
       store.setConfig('sam3ApiUrl', samUrl);
     }
     document.getElementById('inp-set-samurl').value = samUrl;
+    const locateAllowed = this.config.allowed_locate_api_base_urls || [];
+    let locateUrl = store.state.config.locateApiUrl || this.config.locate_api_base_url || '';
+    if (locateAllowed.length && !locateAllowed.map((item) => String(item).replace(/\/+$/, '')).includes(String(locateUrl).replace(/\/+$/, ''))) {
+      locateUrl = this.config.locate_api_base_url || locateAllowed[0] || locateUrl;
+      store.setConfig('locateApiUrl', locateUrl);
+    }
+    document.getElementById('inp-set-locateurl').value = locateUrl;
+    document.getElementById('inp-set-backend').value = store.state.config.defaultBackend || 'sam3';
+    document.getElementById('inp-set-score').value = store.state.config.scoreDefault ?? 0.5;
     document.getElementById('inp-set-lang').value = store.state.config.language || 'zh';
     document.getElementById('inp-set-theme').value = store.state.config.theme || 'light';
     document.getElementById('inp-set-threshold').value = store.state.config.threshold ?? 0.5;
@@ -228,6 +255,9 @@ export const SettingsPage = {
 
     document.getElementById('sam-url-hint').textContent = allowed.length
       ? i18n.t('allowed_sam_urls', {urls: allowed.join(', ')})
+      : '';
+    document.getElementById('locate-url-hint').textContent = locateAllowed.length
+      ? i18n.t('allowed_locate_urls', {urls: locateAllowed.join(', ')})
       : '';
     this.renderRuntimeInfo();
     this.updateMountCommandPanel();
@@ -261,16 +291,25 @@ export const SettingsPage = {
     const langChanged = newLang !== store.state.config.language;
     const newTheme = document.getElementById('inp-set-theme').value;
     const samUrl = document.getElementById('inp-set-samurl').value.trim();
+    const locateUrl = document.getElementById('inp-set-locateurl').value.trim();
+    const defaultBackend = document.getElementById('inp-set-backend').value;
 
     try {
-      const res = await api.setGlobalConfig({ sam3_api_base_url: samUrl });
+      const res = await api.setGlobalConfig({
+        sam3_api_base_url: samUrl,
+        locate_api_base_url: locateUrl,
+      });
       this.config = res.config || this.config || {};
       store.setConfig('sam3ApiUrl', this.config.sam3_api_base_url || samUrl);
+      store.setConfig('locateApiUrl', this.config.locate_api_base_url || locateUrl);
       document.getElementById('inp-set-samurl').value = store.state.config.sam3ApiUrl || '';
+      document.getElementById('inp-set-locateurl').value = store.state.config.locateApiUrl || '';
+      store.setConfig('defaultBackend', defaultBackend);
       store.setConfig('language', newLang);
       store.setConfig('theme', newTheme);
       store.setConfig('threshold', document.getElementById('inp-set-threshold').value);
       store.setConfig('batchSize', document.getElementById('inp-set-batch').value);
+      store.setConfig('scoreDefault', document.getElementById('inp-set-score').value);
       showToast(i18n.t('settings_saved'), 'success');
       if (langChanged) this.render(this.container);
       else this.renderRuntimeInfo();

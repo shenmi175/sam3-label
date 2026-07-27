@@ -377,6 +377,7 @@ export const ImageWorkspace = {
       <div id="modal-export-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-batch-full" class="modal-overlay" style="display: none;"></div>
       <div id="modal-batch-result" class="modal-overlay" style="display: none;"></div>
+      <div id="modal-both-loaded" class="modal-overlay" style="display: none;"></div>
     `;
 
     this.initializeLayoutControls();

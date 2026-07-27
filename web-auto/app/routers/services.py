@@ -4,18 +4,21 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.locate_anything_client import LocateAnythingClient
 from app.sam3_client import Sam3Client
-from app.schemas import HealthApiIn
+from app.schemas import HealthApiIn, LocateHealthApiIn, LocateUnloadApiIn
 from app.services.integration_clients import OpsClient, SapiensClient, service_management_unavailable
 
 
 def create_services_router(
     *,
     sam3: Sam3Client,
+    locate: LocateAnythingClient,
     ops_client: OpsClient,
     sapiens_client: SapiensClient,
     default_sam3_api_base_url: str,
     effective_sam3_api_base_url: Callable[[], str],
+    default_locate_api_base_url: str,
     default_sapiens_api_base_url: str,
 ) -> APIRouter:
     router = APIRouter()
@@ -53,7 +56,7 @@ def create_services_router(
         clean_action = str(action or '').strip().lower()
         if clean_service == 'web-auto':
             raise HTTPException(status_code=400, detail='web-auto cannot be controlled from the web UI')
-        if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
+        if clean_service not in {'sam3-api', 'locate-anything-api', 'sapiens-api', 'caddy'}:
             raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
         if clean_action not in {'start', 'stop', 'restart'}:
             raise HTTPException(status_code=400, detail='action must be start, stop, or restart')
@@ -65,7 +68,7 @@ def create_services_router(
     @router.get('/api/services/{service}/logs')
     def service_logs(service: str, tail: int = Query(default=120, ge=1, le=1000)) -> dict[str, Any]:
         clean_service = str(service or '').strip()
-        if clean_service not in {'sam3-api', 'sapiens-api', 'caddy'}:
+        if clean_service not in {'sam3-api', 'locate-anything-api', 'sapiens-api', 'caddy'}:
             raise HTTPException(status_code=400, detail=f'unsupported service: {clean_service}')
         try:
             return ops_client.request('GET', f'/v1/services/{clean_service}/logs?tail={tail}', timeout=12.0)
@@ -98,6 +101,30 @@ def create_services_router(
     def sapiens_checkpoint_download_status(job_id: str) -> dict[str, Any]:
         try:
             return sapiens_client.request('GET', f'/v1/pose/checkpoints/download/{job_id}', timeout=8.0)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.post('/api/locate/health')
+    def locate_health(payload: LocateHealthApiIn) -> dict[str, Any]:
+        try:
+            result = locate.health(payload.api_base_url)
+            return {'ok': True, 'result': result}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.get('/api/locate/status')
+    def locate_status(api_base_url: str | None = Query(default=None)) -> dict[str, Any]:
+        target_url = str(api_base_url or default_locate_api_base_url).strip() or default_locate_api_base_url
+        try:
+            result = locate.health(target_url)
+            return {'ok': True, 'api_base_url': target_url, 'result': result}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.post('/api/locate/unload')
+    def locate_unload(payload: LocateUnloadApiIn) -> dict[str, Any]:
+        try:
+            return locate.unload(payload.api_base_url)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 

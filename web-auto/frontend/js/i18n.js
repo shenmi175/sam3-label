@@ -241,7 +241,20 @@ export const i18n = {
     upload_failed: '上传失败: {error}',
     project_deleted: '项目已删除',
     save_success: '保存成功',
-    delete_failed: '删除失败: {error}'
+    delete_failed: '删除失败: {error}',
+
+    // LocateAnything
+    locate_api_url: 'Locate API 地址',
+    locate_backend: 'LocateAnything',
+    sam3_backend: 'SAM3',
+    default_backend: '默认后端',
+    score_default: '默认置信度',
+    both_loaded_title: '模型显存冲突',
+    both_loaded_warning: 'SAM3 和 LocateAnything 同时加载可能导致显存不足。建议卸载其中一个后再推理。',
+    both_loaded_resolve: '前往设置',
+    locate_backend_text_only: 'LocateAnything 后端仅支持文本推理，不支持框选找同类。',
+    allowed_locate_urls: '允许的 Locate API 地址：{urls}',
+    unload_locate: '卸载 Locate'
   },
   en: {
     // Top Bar
@@ -485,7 +498,20 @@ export const i18n = {
     upload_failed: 'Upload failed: {error}',
     project_deleted: 'Project deleted',
     save_success: 'Save successful',
-    delete_failed: 'Delete failed: {error}'
+    delete_failed: 'Delete failed: {error}',
+
+    // LocateAnything
+    locate_api_url: 'Locate API URL',
+    locate_backend: 'LocateAnything',
+    sam3_backend: 'SAM3',
+    default_backend: 'Default Backend',
+    score_default: 'Default Score',
+    both_loaded_title: 'Model VRAM Conflict',
+    both_loaded_warning: 'Loading SAM3 and LocateAnything simultaneously may cause out-of-memory. Unload one before inferring.',
+    both_loaded_resolve: 'Go to Settings',
+    locate_backend_text_only: 'LocateAnything backend supports text inference only, not Find Similar by Box.',
+    allowed_locate_urls: 'Allowed Locate API URLs: {urls}',
+    unload_locate: 'Unload Locate'
   },
   
   t(key, params = {}) {

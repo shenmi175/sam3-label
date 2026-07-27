@@ -14,3 +14,11 @@ services:
         capabilities: [gpu]
     environment:
       SAPIENS_DEVICE: cuda:0
+
+  locate-anything-api:
+    gpus:
+      - driver: nvidia
+        device_ids: ["${LOCATE_GPU_DEVICE_ID:-2}"]
+        capabilities: [gpu]
+    environment:
+      LOCATE_DEVICE: cuda:0

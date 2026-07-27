@@ -6,7 +6,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     LOCATE_API_HOST=0.0.0.0 \
     LOCATE_API_PORT=8004 \
-    HF_HOME=/root/.cache/huggingface
+    LOCATE_CHECKPOINT_PATH=/models/LocateAnything-3B \
+    HF_HOME=/cache/huggingface \
+    TORCH_HOME=/cache/torch \
+    HF_ENDPOINT=
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -14,11 +17,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/locate-anything-api
-COPY requirements.txt ./
+COPY locate-anything-api/requirements.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt
 
-COPY . .
+COPY locate-anything-api/ ./
 
 EXPOSE 8004
 

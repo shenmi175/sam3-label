@@ -13,6 +13,19 @@ export class AutoConfigController {
     const sam3UrlInp = document.getElementById('inp-sam3-url');
     if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
 
+    const locateUrlInp = document.getElementById('inp-locate-url');
+    if (locateUrlInp) locateUrlInp.onchange = (e) => store.setConfig('locateApiUrl', e.target.value);
+
+    const selBackend = document.getElementById('sel-backend');
+    if (selBackend) {
+      selBackend.value = store.state.config.defaultBackend || 'sam3';
+      selBackend.onchange = (e) => {
+        store.setConfig('defaultBackend', e.target.value);
+        this.syncBackendUI();
+      };
+    }
+    this.syncBackendUI();
+
     const btnThresholdDec = document.getElementById('btn-threshold-dec');
     const btnThresholdInc = document.getElementById('btn-threshold-inc');
     const btnBatchDec = document.getElementById('btn-batch-dec');
@@ -25,6 +38,19 @@ export class AutoConfigController {
 
     const btnTest = document.getElementById('btn-test-api');
     if (btnTest) btnTest.onclick = () => this.testApi(btnTest);
+  }
+
+  syncBackendUI() {
+    const isLocate = store.state.config.defaultBackend === 'locate-anything';
+    const sam3UrlInp = document.getElementById('inp-sam3-url');
+    const locateUrlInp = document.getElementById('inp-locate-url');
+    const btnExample = document.getElementById('btn-example-segment');
+    if (sam3UrlInp) sam3UrlInp.style.display = isLocate ? 'none' : '';
+    if (locateUrlInp) locateUrlInp.style.display = isLocate ? '' : 'none';
+    if (btnExample) {
+      btnExample.disabled = isLocate;
+      btnExample.style.opacity = isLocate ? '0.45' : '1';
+    }
   }
 
   syncControls() {
@@ -47,13 +73,20 @@ export class AutoConfigController {
   }
 
   async testApi(btnTest) {
+    const isLocate = store.state.config.defaultBackend === 'locate-anything';
     try {
       btnTest.disabled = true;
       btnTest.innerText = 'Testing...';
-      await api.testSam3(store.state.config.sam3ApiUrl);
-      notify("SAM3 API is Online", "success");
+      if (isLocate) {
+        const res = await api.testLocate(store.state.config.locateApiUrl);
+        const loaded = res?.result?.model_loaded ?? res?.model_loaded ?? false;
+        notify(loaded ? 'LocateAnything API Online (model loaded)' : 'LocateAnything API Online (model not loaded)', 'success');
+      } else {
+        await api.testSam3(store.state.config.sam3ApiUrl);
+        notify("SAM3 API is Online", "success");
+      }
     } catch(e) {
-      notify("SAM3 API Connection Failed: " + e.message, "error");
+      notify((isLocate ? 'LocateAnything' : 'SAM3') + ' API Connection Failed: ' + e.message, "error");
     } finally {
       btnTest.disabled = false;
       btnTest.innerText = i18n.t('test_api');

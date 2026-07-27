@@ -97,6 +97,37 @@ services:
       retries: 5
       start_period: 10s
 
+  locate-anything-api:
+    build:
+      context: .
+      dockerfile: locate-anything-api/Dockerfile
+    image: locate-anything-api:local
+    profiles:
+      - locate
+    restart: unless-stopped
+    environment:
+      LOCATE_API_HOST: 0.0.0.0
+      LOCATE_API_PORT: 8004
+      LOCATE_CHECKPOINT_PATH: /models/LocateAnything-3B
+      LOCATE_API_TOKEN: ${LOCATE_API_TOKEN:-}
+      LOCATE_ATTN_BACKEND: ${LOCATE_ATTN_BACKEND:-la_flash}
+      LOCATE_WARMUP_ON_START: ${LOCATE_WARMUP_ON_START:-false}
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      HF_HOME: /cache/huggingface
+      TORCH_HOME: /cache/torch
+    expose:
+      - "8004"
+    volumes:
+      - ${LOCATE_CHECKPOINT_DIR:-./locate_checkpoints}:/models:rw
+      - locate_hf_cache:/cache/huggingface
+      - locate_torch_cache:/cache/torch
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
   ops-api:
     build:
       context: .
@@ -107,7 +138,7 @@ services:
       OPS_API_HOST: 0.0.0.0
       OPS_API_PORT: 8020
       OPS_API_TOKEN: ${OPS_API_TOKEN:?Set OPS_API_TOKEN in .env}
-      OPS_ALLOWED_SERVICES: ${OPS_ALLOWED_SERVICES:-sam3-api,sapiens-api,caddy}
+      OPS_ALLOWED_SERVICES: ${OPS_ALLOWED_SERVICES:-sam3-api,locate-anything-api,sapiens-api,caddy}
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-sam3-auto-label}
       OPS_PROJECT_ROOT: /workspace
       OPS_HOST_PROJECT_ROOT: ${OPS_HOST_PROJECT_ROOT:-.}
@@ -161,6 +192,9 @@ services:
       WEB_AUTO_SAM3_API_TOKEN: ${SAM3_API_TOKEN:?Set SAM3_API_TOKEN in .env}
       WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL: http://sapiens-api:8010
       WEB_AUTO_SAPIENS_API_TOKEN: ${SAPIENS_API_TOKEN:?Set SAPIENS_API_TOKEN in .env}
+      WEB_AUTO_DEFAULT_LOCATE_API_BASE_URL: http://locate-anything-api:8004
+      WEB_AUTO_ALLOWED_LOCATE_API_BASE_URLS: http://locate-anything-api:8004
+      WEB_AUTO_LOCATE_API_TOKEN: ${LOCATE_API_TOKEN:-}
       WEB_AUTO_OPS_API_BASE_URL: http://ops-api:8020
       WEB_AUTO_OPS_API_TOKEN: ${OPS_API_TOKEN:?Set OPS_API_TOKEN in .env}
       WEB_AUTO_AUTH_ENABLED: ${WEB_AUTO_AUTH_ENABLED:-1}
@@ -200,6 +234,9 @@ services:
       WEB_AUTO_SAM3_API_TOKEN: ${SAM3_API_TOKEN:?Set SAM3_API_TOKEN in .env}
       WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL: http://sapiens-api:8010
       WEB_AUTO_SAPIENS_API_TOKEN: ${SAPIENS_API_TOKEN:?Set SAPIENS_API_TOKEN in .env}
+      WEB_AUTO_DEFAULT_LOCATE_API_BASE_URL: http://locate-anything-api:8004
+      WEB_AUTO_ALLOWED_LOCATE_API_BASE_URLS: http://locate-anything-api:8004
+      WEB_AUTO_LOCATE_API_TOKEN: ${LOCATE_API_TOKEN:-}
       WEB_AUTO_OPS_API_BASE_URL: http://ops-api:8020
       WEB_AUTO_OPS_API_TOKEN: ${OPS_API_TOKEN:?Set OPS_API_TOKEN in .env}
       WEB_AUTO_WORKER_RESOURCE: all
@@ -224,3 +261,5 @@ volumes:
   sam3_torch_cache:
   sapiens_hf_cache:
   sapiens_torch_cache:
+  locate_hf_cache:
+  locate_torch_cache:

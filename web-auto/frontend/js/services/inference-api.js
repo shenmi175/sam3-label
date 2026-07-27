@@ -5,6 +5,14 @@ export const inferenceApi = {
     return request('POST', '/sam3/health', { api_base_url: apiUrl });
   },
 
+  testLocate(apiUrl) {
+    return request('POST', '/locate/health', { api_base_url: apiUrl });
+  },
+
+  unloadLocate(apiUrl) {
+    return request('POST', '/locate/unload', { api_base_url: apiUrl });
+  },
+
   getSam3Status(apiUrl = '') {
     const suffix = apiUrl ? `?api_base_url=${encodeURIComponent(apiUrl)}` : '';
     return request('GET', `/sam3/status${suffix}`);

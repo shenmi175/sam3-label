@@ -14,6 +14,22 @@ export class InferenceController {
     this.workspace = workspace;
   }
 
+  _backendPayload() {
+    return {
+      model_backend: store.state.config.defaultBackend || 'sam3',
+      locate_api_base_url: store.state.config.locateApiUrl || '',
+      score_default: Number(store.state.config.scoreDefault ?? 0.5),
+    };
+  }
+
+  _handleBothLoadedError(e) {
+    if (e?.detail?.code === 'BOTH_LOADED' || e?.code === 'BOTH_LOADED') {
+      this.showBothLoadedModal(e.detail || {});
+      return true;
+    }
+    return false;
+  }
+
   async runSingle() {
     const ws = this.workspace;
     if (!ws.selectedImageId) return notify("Select an image first", "error");
@@ -35,7 +51,8 @@ export class InferenceController {
         mode: 'text',
         classes: ws.getSelectedClassesForInference(),
         threshold: store.state.config.threshold,
-        api_base_url: store.state.config.sam3ApiUrl
+        api_base_url: store.state.config.sam3ApiUrl,
+        ...this._backendPayload(),
       };
 
       await api.infer(payload);
@@ -44,6 +61,7 @@ export class InferenceController {
       await ws.selectImage(ws.selectedImageId, ws.selectedImagePath);
       await ws.loadProjectInfo();
     } catch(e) {
+      if (this._handleBothLoadedError(e)) return;
       notify(e.message, "error");
     } finally {
       if (btn) {
@@ -56,6 +74,9 @@ export class InferenceController {
   async runExamplePreview() {
     const ws = this.workspace;
     if (!ws.selectedImageId) return notify(i18n.t('select_image_first'), "error");
+    if (store.state.config.defaultBackend === 'locate-anything') {
+      return notify(i18n.t('locate_backend_text_only'), 'error');
+    }
 
     const boxes = ws.currentPrompts
       .filter(p => p.type === 'box')
@@ -95,6 +116,7 @@ export class InferenceController {
       ws.updateActionBar();
       notify(i18n.t('found_matches', { count: ws.previews.length }), "info");
     } catch(e) {
+      if (this._handleBothLoadedError(e)) return;
       notify(e.message, "error");
     } finally {
       if (btn) {
@@ -113,7 +135,8 @@ export class InferenceController {
       project_id: ws.projectId,
       threshold: store.state.config.threshold,
       batch_size: store.state.config.batchSize,
-      api_base_url: store.state.config.sam3ApiUrl
+      api_base_url: store.state.config.sam3ApiUrl,
+      ...this._backendPayload(),
     };
 
     const batchConfig = await this.openBatchConfigModal(classes);
@@ -134,7 +157,8 @@ export class InferenceController {
       this.pollTaskStatus();
       notify("Batch task started", "success");
     } catch(e) {
-       notify(e.message, "error");
+      if (this._handleBothLoadedError(e)) return;
+      notify(e.message, "error");
     }
   }
 
@@ -252,7 +276,8 @@ export class InferenceController {
         project_id: ws.projectId,
         threshold: store.state.config.threshold,
         batch_size: store.state.config.batchSize,
-        api_base_url: store.state.config.sam3ApiUrl
+        api_base_url: store.state.config.sam3ApiUrl,
+        ...this._backendPayload(),
       };
       const res = await api.resumeInferJob(payload);
       const job = res?.job || null;
@@ -270,6 +295,7 @@ export class InferenceController {
       if (!ws.isPolling && ws.activeJobId) this.pollTaskStatus();
       notify("Resuming task...");
     } catch(e) {
+      if (this._handleBothLoadedError(e)) return;
       notify(e.message, "error");
     }
   }
@@ -417,7 +443,8 @@ export class InferenceController {
             retry_image_ids: retryImageIds,
             threshold: store.state.config.threshold,
             batch_size: store.state.config.batchSize,
-            api_base_url: store.state.config.sam3ApiUrl
+            api_base_url: store.state.config.sam3ApiUrl,
+            ...this._backendPayload(),
           });
           ws.activeJobId = res?.job?.job_id || '';
           if (!ws.activeJobId) throw new Error('batch task did not return job_id');
@@ -425,9 +452,50 @@ export class InferenceController {
           this.pollTaskStatus();
           notify('已启动未完成图片重试', 'success');
         } catch (e) {
+          if (this._handleBothLoadedError(e)) return;
           notify(e.message, 'error');
         }
       };
     }
+  }
+
+  showBothLoadedModal(detail) {
+    const modal = document.getElementById('modal-both-loaded');
+    if (!modal) return;
+    const locateUrl = detail?.locate_api_base_url || store.state.config.locateApiUrl || '';
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 480px; max-width: calc(100vw - 40px); padding: 28px; position: relative;">
+        <button class="neu-button" id="btn-close-both-loaded" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; color: #ef4444;">×</button>
+        <h2 style="margin: 0 0 14px 0; font-size: 18px; color: #d97706;">${i18n.t('both_loaded_title')}</h2>
+        <div class="neu-box" style="padding: 14px; border-radius: 12px; background: rgba(217,119,6,0.08); border: 1px solid rgba(217,119,6,0.24);">
+          <div style="font-size: 13px; line-height: 1.7; color: var(--neu-text);">${escapeHtml(i18n.t('both_loaded_warning'))}</div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+          <button id="btn-unload-locate" class="neu-button" style="color: #ef4444; font-weight: 700;">${i18n.t('unload_locate')}</button>
+          <button id="btn-both-loaded-settings" class="neu-button">${i18n.t('both_loaded_resolve')}</button>
+          <button id="btn-close-both-loaded-2" class="neu-button">${i18n.t('close')}</button>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    const close = () => {
+      modal.style.display = 'none';
+      modal.innerHTML = '';
+    };
+    document.getElementById('btn-close-both-loaded').onclick = close;
+    document.getElementById('btn-close-both-loaded-2').onclick = close;
+    document.getElementById('btn-unload-locate').onclick = async () => {
+      try {
+        await api.unloadLocate(locateUrl);
+        notify('LocateAnything model unloaded', 'success');
+        close();
+      } catch (e) {
+        notify('Unload failed: ' + e.message, 'error');
+      }
+    };
+    document.getElementById('btn-both-loaded-settings').onclick = () => {
+      close();
+      window.location.hash = '/settings';
+    };
   }
 }

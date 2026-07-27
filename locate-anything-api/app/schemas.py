@@ -16,7 +16,6 @@ class DetectionOut(BaseModel):
     id: str
     label: str
     class_id: Optional[int] = None
-    score: float
     bbox_xyxy: list[float]
     bbox_xywh: list[float]
     polygon: Optional[list[list[float]]] = None
@@ -32,7 +31,6 @@ class InferResultOut(BaseModel):
     device: str
     mode: str = "text"
     prompt: str
-    threshold: float
     image: dict[str, Any]
     num_detections: int
     detections: list[DetectionOut]

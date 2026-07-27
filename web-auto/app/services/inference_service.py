@@ -335,9 +335,7 @@ class InferenceService:
                     image_path=str(image.get('abs_path') or ''),
                     mode='text',
                     prompt=prompt,
-                    threshold=float(threshold if threshold_value is None else threshold_value),
                     include_mask_png=False,
-                    score_default=float(score_default),
                 )
             else:
                 result_local = client.infer(
@@ -618,9 +616,7 @@ class InferenceService:
                             image_paths=batch_paths,
                             mode='text',
                             prompt=prompt,
-                            threshold=payload.threshold,
                             include_mask_png=False,
-                            score_default=score_default,
                         )
                     )
                 else:

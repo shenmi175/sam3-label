@@ -10,6 +10,8 @@ from app.schemas.inference import (
     InferIn,
     InferJobControlIn,
     InferJobResumeIn,
+    LocateHealthApiIn,
+    LocateUnloadApiIn,
 )
 from app.schemas.pose import PoseInferIn
 from app.schemas.projects import ImportExistingProjectIn, ImportImagesIn, OpenProjectIn, UpdateClassesIn
@@ -31,6 +33,8 @@ __all__ = [
     'InferIn',
     'InferJobControlIn',
     'InferJobResumeIn',
+    'LocateHealthApiIn',
+    'LocateUnloadApiIn',
     'OpenProjectIn',
     'PoseInferIn',
     'SaveAnnIn',

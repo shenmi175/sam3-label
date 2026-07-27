@@ -554,7 +554,14 @@ ensure_env() {
     set_env_var OPS_API_TOKEN "$ops_token"
     info "Generated OPS_API_TOKEN in .env"
   fi
-  [[ -n "$(get_env_var OPS_ALLOWED_SERVICES || true)" ]] || set_env_var OPS_ALLOWED_SERVICES "sam3-api,sapiens-api,caddy"
+  local locate_token
+  locate_token="$(get_env_var LOCATE_API_TOKEN || true)"
+  if [[ -z "${locate_token//[[:space:]]/}" ]]; then
+    locate_token="$(generate_token)"
+    set_env_var LOCATE_API_TOKEN "$locate_token"
+    info "Generated LOCATE_API_TOKEN in .env"
+  fi
+  [[ -n "$(get_env_var OPS_ALLOWED_SERVICES || true)" ]] || set_env_var OPS_ALLOWED_SERVICES "sam3-api,locate-anything-api,sapiens-api,caddy"
   set_env_var OPS_HOST_PROJECT_ROOT "$ROOT_DIR"
 
   local admin_user admin_password
@@ -586,6 +593,7 @@ ensure_env() {
       [[ -n "$(get_env_var SAM3_GPU_DEVICE_ID || true)" ]] || set_env_var SAM3_GPU_DEVICE_ID "1"
       [[ -n "$(get_env_var SAPIENS_GPU_DEVICE_ID || true)" ]] || set_env_var SAPIENS_GPU_DEVICE_ID "0"
       [[ -n "$(get_env_var SAPIENS_DEVICE || true)" ]] || set_env_var SAPIENS_DEVICE "cuda:0"
+      [[ -n "$(get_env_var LOCATE_GPU_DEVICE_ID || true)" ]] || set_env_var LOCATE_GPU_DEVICE_ID "2"
       ;;
     cpu)
       set_env_var SAM3_DEPLOY_PROFILE "cpu"
@@ -616,6 +624,8 @@ ensure_env() {
   fi
   [[ -n "$(get_env_var SAPIENS_API_DATA_DIR || true)" ]] || set_env_var SAPIENS_API_DATA_DIR "./sapiens-api/data"
   [[ -n "$(get_env_var SAPIENS_CHECKPOINT_ROOT || true)" ]] || set_env_var SAPIENS_CHECKPOINT_ROOT "./sapiens_checkpoints"
+  [[ -n "$(get_env_var LOCATE_CHECKPOINT_DIR || true)" ]] || set_env_var LOCATE_CHECKPOINT_DIR "./locate_checkpoints"
+  [[ -n "$(get_env_var LOCATE_ENABLED || true)" ]] || set_env_var LOCATE_ENABLED "0"
 
   local access_mode
   access_mode="$(get_env_var SAM3_ACCESS_MODE || true)"
@@ -804,6 +814,12 @@ sapiens_enabled() {
   [[ "${enabled,,}" =~ ^(1|true|yes|on)$ ]]
 }
 
+locate_enabled() {
+  local enabled
+  enabled="$(get_env_var LOCATE_ENABLED || true)"
+  [[ "${enabled,,}" =~ ^(1|true|yes|on)$ ]]
+}
+
 compose_args() {
   printf '%s\0' -f docker-compose.yml
   if [[ -f "$MOUNTS_COMPOSE_FILE" ]]; then
@@ -814,6 +830,9 @@ compose_args() {
   fi
   if sapiens_enabled; then
     printf '%s\0' --profile sapiens
+  fi
+  if locate_enabled; then
+    printf '%s\0' --profile locate
   fi
   if [[ "$(effective_profile)" == "gpu" ]]; then
     printf '%s\0' -f docker-compose.gpu.yml
@@ -1870,10 +1889,10 @@ services_usage() {
   cat <<'EOF'
 Usage:
   ./deploy.sh services status
-  ./deploy.sh services start <sam3-api|sapiens-api|caddy>
-  ./deploy.sh services stop <sam3-api|sapiens-api|caddy>
-  ./deploy.sh services restart <sam3-api|sapiens-api|caddy>
-  ./deploy.sh services logs <sam3-api|sapiens-api|caddy>
+  ./deploy.sh services start <sam3-api|locate-anything-api|sapiens-api|caddy>
+  ./deploy.sh services stop <sam3-api|locate-anything-api|sapiens-api|caddy>
+  ./deploy.sh services restart <sam3-api|locate-anything-api|sapiens-api|caddy>
+  ./deploy.sh services logs <sam3-api|locate-anything-api|sapiens-api|caddy>
 
 Notes:
   - web-auto is intentionally not managed here to avoid killing the UI from the UI.
@@ -1896,7 +1915,7 @@ cmd_services() {
       local service="${1:-}"
       [[ -n "$service" ]] || die "services $subcommand requires a service name."
       case "$service" in
-        sam3-api|sapiens-api|caddy) ;;
+        sam3-api|locate-anything-api|sapiens-api|caddy) ;;
         web-auto) die "web-auto is not controlled by services; use './deploy.sh restart web-auto' from the server." ;;
         *) die "Unsupported service: $service" ;;
       esac
@@ -1913,7 +1932,7 @@ cmd_services() {
       local service="${1:-}"
       [[ -n "$service" ]] || die "services logs requires a service name."
       case "$service" in
-        sam3-api|sapiens-api|caddy) ;;
+        sam3-api|locate-anything-api|sapiens-api|caddy) ;;
         *) die "Unsupported service: $service" ;;
       esac
       ensure_env ""

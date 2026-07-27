@@ -362,7 +362,7 @@ export const ProjectsPage = {
   renderServicePanel() {
     const list = document.getElementById('model-services-list');
     if (!list) return;
-    const names = ['sam3-api', 'sapiens-api', 'caddy'];
+    const names = ['sam3-api', 'locate-anything-api', 'sapiens-api', 'caddy'];
     list.innerHTML = names.map((name) => this.renderServiceCard(name)).join('');
   },
 

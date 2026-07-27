@@ -21,6 +21,7 @@ ALLOWED_SERVICES = {
 }
 SERVICE_COMMANDS = {
     "sam3-api": "./deploy.sh start",
+    "locate-anything-api": "./deploy.sh services start locate-anything-api",
     "sapiens-api": "./deploy.sh sapiens enable",
     "caddy": "./deploy.sh install --proxy",
 }

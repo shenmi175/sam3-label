@@ -7,6 +7,11 @@ export function renderAutoAnnotatePanel() {
       <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light);">${i18n.t('sam3_api')}</label>
       <input type="text" id="inp-sam3-url" class="neu-input" style="width: 180px; height: 32px; font-size: 11px;" value="${store.state.config.sam3ApiUrl}" />
       <button id="btn-test-api" class="neu-button" style="height: 32px; padding: 0 10px; font-size: 11px;">${i18n.t('test_api')}</button>
+      <select id="sel-backend" class="neu-input" style="width: 140px; height: 32px; font-size: 11px;">
+        <option value="sam3">${i18n.t('sam3_backend')}</option>
+        <option value="locate-anything">${i18n.t('locate_backend')}</option>
+      </select>
+      <input type="text" id="inp-locate-url" class="neu-input" style="width: 180px; height: 32px; font-size: 11px; display: ${store.state.config.defaultBackend === 'locate-anything' ? '' : 'none'};" value="${store.state.config.locateApiUrl}" placeholder="${i18n.t('locate_api_url')}" />
     </div>
 
     <div class="ws-auto-only" data-default-display="block" style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>

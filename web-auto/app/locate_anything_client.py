@@ -16,7 +16,7 @@ class LocateAnythingClient:
 
     * only ``mode='text'`` is honored
     * ``include_mask_png`` is forced to ``false`` (the service never returns masks)
-    * ``score_default`` is forwarded (defaults to 0.5)
+    * no confidence scores — LocateAnything-3B is a generative VLM
     """
 
     def __init__(self, timeout_sec: float = 240.0):
@@ -92,13 +92,11 @@ class LocateAnythingClient:
         image_path: str,
         mode: str,
         prompt: str,
-        threshold: float,
         points: list[list[float | int]] | None = None,
         boxes: list[list[float | int]] | None = None,
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
-        score_default: float = 0.5,
     ) -> dict[str, Any]:
         mode_norm = str(mode or 'text').strip().lower()
         if mode_norm != 'text':
@@ -112,10 +110,8 @@ class LocateAnythingClient:
 
         payload: dict[str, str] = {
             'mode': 'text',
-            'threshold': str(float(threshold)),
             'include_mask_png': 'false',
             'max_detections': str(int(max_detections)),
-            'score_default': str(float(score_default)),
         }
         if prompt:
             payload['prompt'] = prompt
@@ -148,13 +144,11 @@ class LocateAnythingClient:
         image_paths: list[str],
         mode: str,
         prompt: str,
-        threshold: float,
         points: list[list[float | int]] | None = None,
         boxes: list[list[float | int]] | None = None,
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
-        score_default: float = 0.5,
     ) -> dict[str, Any]:
         """Loop sequentially over images with the single-image endpoint.
 
@@ -177,9 +171,7 @@ class LocateAnythingClient:
                     image_path=path,
                     mode='text',
                     prompt=prompt,
-                    threshold=threshold,
                     max_detections=max_detections,
-                    score_default=score_default,
                 )
                 succeeded += 1
                 items.append({'filename': Path(path).name, 'ok': True, 'result': result, 'error': None})

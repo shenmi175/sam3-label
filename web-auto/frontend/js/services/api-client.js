@@ -17,10 +17,13 @@ export async function request(method, endpoint, data = null, isFormData = false,
   if (!response.ok) {
     let errorMsg = response.statusText;
     let errorCode = '';
+    let errorDetail = null;
     try {
       const d = await response.json();
       if (d && d.code) errorCode = String(d.code);
       if (d && d.detail) errorMsg = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail);
+      if (d && d.message) errorMsg = String(d.message);
+      errorDetail = d?.detail || d;
     } catch (e) {}
     if (response.status === 401 || errorCode === 'login_required') {
       window.location.href = '/login';
@@ -34,7 +37,10 @@ export async function request(method, endpoint, data = null, isFormData = false,
       window.location.href = '/login';
       throw new Error('Admin credentials are not configured');
     }
-    throw new Error(`API Error ${response.status}: ${errorMsg}`);
+    const err = new Error(`API Error ${response.status}: ${errorMsg}`);
+    err.code = errorCode;
+    err.detail = errorDetail;
+    throw err;
   }
   return response.json();
 }

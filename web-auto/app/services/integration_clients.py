@@ -129,6 +129,7 @@ def service_management_unavailable(error: str) -> dict[str, Any]:
         'error': error,
         'services': [
             {'service': 'sam3-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart sam3-api'},
+            {'service': 'locate-anything-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart locate-anything-api'},
             {'service': 'sapiens-api', 'status': 'unknown', 'manage_command': './deploy.sh sapiens enable'},
             {'service': 'caddy', 'status': 'unknown', 'manage_command': './deploy.sh install --proxy'},
         ],

@@ -16,6 +16,7 @@ sam3-api/data
 sapiens-api/data
 /sam3_checkpoints
 /sapiens_checkpoints
+/locate_checkpoints
 /datasets
 /outputs
 *.log

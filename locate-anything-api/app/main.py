@@ -141,25 +141,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 detail=f"image is too large: {len(raw)} bytes > {settings.max_image_bytes} bytes",
             )
 
-        use_threshold = (
-            float(threshold) if threshold is not None else float(settings.default_threshold)
-        )
-        if not 0.0 <= use_threshold <= 1.0:
-            raise HTTPException(status_code=400, detail="threshold must be in [0, 1]")
-
-        use_score = float(score_default)
-        if not 0.0 <= use_score <= 1.0:
-            raise HTTPException(status_code=400, detail="score_default must be in [0, 1]")
+        del threshold, score_default  # accepted for wire compat, not used
 
         try:
             image = load_image_from_bytes(raw)
             return engine.infer(
                 image=image,
                 prompt=prompt.strip(),
-                threshold=use_threshold,
                 include_mask_png=include_mask_png,
                 max_detections=max(1, int(max_detections)),
-                score_default=use_score,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc

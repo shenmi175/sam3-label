@@ -112,10 +112,8 @@ class LocateAnythingEngine:
         *,
         image: _Image,
         prompt: str,
-        threshold: float,
         include_mask_png: bool,  # accepted, always ignored (no mask produced)
         max_detections: int,
-        score_default: float,
     ) -> dict[str, Any]:
         del include_mask_png  # bbox-only backend; mask flag has no effect
 
@@ -133,7 +131,6 @@ class LocateAnythingEngine:
             parsed=parsed,
             categories=categories,
             max_detections=max_detections,
-            score_default=float(score_default),
         )
 
         return {
@@ -141,7 +138,6 @@ class LocateAnythingEngine:
             "device": str(self.settings.device),
             "mode": "text",
             "prompt": prompt,
-            "threshold": float(threshold),
             "image": {"width": image.width, "height": image.height},
             "num_detections": len(detections),
             "detections": detections,
@@ -174,23 +170,22 @@ _BOX_TOKEN_RE = __import__("re").compile(
 def _parse_answer(answer: str, *, width: int, height: int) -> list[dict[str, Any]]:
     """Parse LocateAnything answer text into pixel-coordinate bboxes.
 
-    The worker groups outputs in fixed-length blocks whose first token is
-    ``<c>CATEGORY</c>``. We extract per-box categories when present;
-    otherwise the caller assigns the first requested category.
+    The model outputs ``<ref>CATEGORY</ref><box>…</box>`` blocks (some
+    versions use ``<c>CATEGORY</c>``).  We match both tag styles and
+    assign each box to the most recent preceding category tag.
     """
 
     import re
 
     out: list[dict[str, Any]] = []
-    # Split into <c>…</c> blocks. The text between two <c> tags is the
-    # category for all boxes that follow until the next <c> tag.
-    cat_re = re.compile(r"<c>([^<]*)</c>")
-    cursor = 0
-    current_category = ""
-    for match in cat_re.finditer(answer):
-        # Consume boxes between the previous cursor and this <c> tag and
-        # assign them to the previous category.
-        segment = answer[cursor : match.start()]
+    cat_re = re.compile(r"<(?:c|ref)>([^<]*)</(?:c|ref)>")
+    matches = list(cat_re.finditer(answer))
+
+    for i, match in enumerate(matches):
+        current_category = match.group(1).strip()
+        seg_start = match.end()
+        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(answer)
+        segment = answer[seg_start:seg_end]
         for bm in _BOX_TOKEN_RE.finditer(segment):
             x1, y1, x2, y2 = (int(g) for g in bm.groups())
             out.append(
@@ -204,24 +199,39 @@ def _parse_answer(answer: str, *, width: int, height: int) -> list[dict[str, Any
                     ),
                 }
             )
-        current_category = match.group(1).strip()
-        cursor = match.end()
 
-    # Trailing boxes after the last </c>.
-    tail = answer[cursor:]
-    for bm in _BOX_TOKEN_RE.finditer(tail):
-        x1, y1, x2, y2 = (int(g) for g in bm.groups())
-        out.append(
-            {
-                "category": current_category,
-                "xyxy": (
-                    x1 / 1000.0 * width,
-                    y1 / 1000.0 * height,
-                    x2 / 1000.0 * width,
-                    y2 / 1000.0 * height,
-                ),
-            }
-        )
+    # Boxes before the first category tag (shouldn't happen normally).
+    if matches:
+        leading = answer[: matches[0].start()]
+        default_label = ""
+        for bm in _BOX_TOKEN_RE.finditer(leading):
+            x1, y1, x2, y2 = (int(g) for g in bm.groups())
+            out.insert(
+                0,
+                {
+                    "category": default_label,
+                    "xyxy": (
+                        x1 / 1000.0 * width,
+                        y1 / 1000.0 * height,
+                        x2 / 1000.0 * width,
+                        y2 / 1000.0 * height,
+                    ),
+                },
+            )
+    else:
+        for bm in _BOX_TOKEN_RE.finditer(answer):
+            x1, y1, x2, y2 = (int(g) for g in bm.groups())
+            out.append(
+                {
+                    "category": "",
+                    "xyxy": (
+                        x1 / 1000.0 * width,
+                        y1 / 1000.0 * height,
+                        x2 / 1000.0 * width,
+                        y2 / 1000.0 * height,
+                    ),
+                }
+            )
     return out
 
 
@@ -230,7 +240,6 @@ def _build_detections(
     parsed: list[dict[str, Any]],
     categories: list[str],
     max_detections: int,
-    score_default: float,
 ) -> list[dict[str, Any]]:
     """Emit DetectionOut-compatible dicts. Label is forced to the user's first
     requested category when the model did not emit one — this matches the
@@ -248,7 +257,6 @@ def _build_detections(
             {
                 "id": f"la_{i:04d}",
                 "label": label,
-                "score": float(score_default),
                 "bbox_xyxy": xyxy,
                 "bbox_xywh": [xyxy[0], xyxy[1], xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]],
                 "polygon": None,
