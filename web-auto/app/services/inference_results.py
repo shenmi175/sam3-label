@@ -49,6 +49,7 @@ def _convert_detections(
     detections: list[dict[str, Any]],
     classes: list[str],
     forced_class: str = '',
+    source_model: str = 'sam3',
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for i, det in enumerate(detections, start=1):
@@ -80,6 +81,7 @@ def _convert_detections(
                     'polygon': polygon,
                     'area': float(det.get('area') or 0.0),
                     'mask_png_base64': det.get('mask_png_base64') or '',
+                    'source_model': source_model,
                     **metadata,
                 }
             )
@@ -115,6 +117,7 @@ def _convert_detections(
                         'polygon': component_polygon,
                         'area': float(component.get('area') or 0.0),
                         'mask_png_base64': component.get('mask_png_base64') or '',
+                        'source_model': source_model,
                         **component_metadata,
                     }
                 )
@@ -135,6 +138,7 @@ def _convert_detections(
                     'area': float(det.get('area') or 0.0)
                         or max(0.0, (float(bbox[2]) - float(bbox[0])) * (float(bbox[3]) - float(bbox[1]))),
                     'mask_png_base64': '',
+                    'source_model': source_model,
                     **metadata,
                 }
             )
@@ -153,6 +157,7 @@ def _convert_detections(
                 'polygon': polygon if len(polygon) >= 3 else [],
                 'area': float(det.get('area') or 0.0),
                 'mask_png_base64': det.get('mask_png_base64') or '',
+                'source_model': source_model,
                 **metadata,
             }
         )
@@ -164,6 +169,7 @@ def _replace_by_classes(
     *,
     impacted_classes: list[str],
     new_annotations: list[dict[str, Any]],
+    source_model: str = 'sam3',
 ) -> list[dict[str, Any]]:
     impacted_norm: set[str] = set()
     for c in impacted_classes:
@@ -184,7 +190,8 @@ def _replace_by_classes(
         if not cls_norm:
             kept.append(a)
             continue
-        if cls_norm in impacted_norm:
+        ann_source = str(a.get('source_model') or '').strip()
+        if cls_norm in impacted_norm and (not ann_source or ann_source == source_model):
             continue
         kept.append(a)
 

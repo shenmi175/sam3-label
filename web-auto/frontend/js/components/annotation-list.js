@@ -1,4 +1,5 @@
 import { escapeAttr, escapeHtml } from '../utils/html.js';
+import { i18n } from '../i18n.js';
 
 export function renderAnnotationList(
   container,
@@ -28,12 +29,21 @@ export function renderAnnotationList(
     const annIdAttr = escapeAttr(annId);
     const classNameHtml = escapeHtml(className);
     const isFocused = String(focusedAnnotationId || '') === annId;
+    const sourceModel = String(ann.source_model || '').trim();
+    const sourceLabel = sourceModel === 'locate-anything'
+      ? i18n.t('source_la')
+      : sourceModel === 'manual'
+        ? i18n.t('source_manual')
+        : sourceModel && sourceModel !== 'sam3' ? sourceModel : '';
+    const sourceTagHtml = sourceLabel
+      ? `<span style="font-size:9px; opacity:0.55; margin-left:4px; font-weight:600;">[${escapeHtml(sourceLabel)}]</span>`
+      : '';
     return `
       <div class="neu-box ann-item-focus" data-ann-id="${annIdAttr}" style="padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; background: ${isFocused ? 'var(--neu-bg-light)' : 'var(--neu-bg)'}; box-shadow: ${isFocused ? 'var(--neu-inset)' : 'var(--neu-inset-sm)'}; cursor: pointer;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="width: 10px; height: 10px; border-radius: 50%; background: ${getClassColor(className)};"></span>
-            <span style="font-size: 13px; font-weight: 700;">${classNameHtml}</span>
+            <span style="font-size: 13px; font-weight: 700;">${classNameHtml}${sourceTagHtml}</span>
           </div>
           <div style="display: flex; gap: 5px;">
             <button type="button" class="neu-button ann-edit-class-btn" data-ann-id="${annIdAttr}" title="修改该标注类别" style="width: 28px; height: 24px; padding: 0; font-size: 11px; font-weight: 800; color: var(--neu-text-active);">改</button>

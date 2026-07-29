@@ -92,6 +92,7 @@ export const ImageWorkspace = {
   workspaceMode: 'auto',
   routeWorkspaceMode: 'auto',
   reviewContinuousMode: true,
+  annotationSourceFilter: null,
   
   async render(container, params) {
     this.container = container;
@@ -138,8 +139,9 @@ export const ImageWorkspace = {
     this.annotationRedoStack = [];
     this.workspaceMode = 'auto';
     this.reviewContinuousMode = true;
+    this.annotationSourceFilter = new Set(['sam3', 'locate-anything', 'manual']);
     this.annotationController = new AnnotationController(this);
-    this.autoConfigController = new AutoConfigController();
+    this.autoConfigController = new AutoConfigController(this);
     this.classController = new ClassController(this);
     this.dataDashboardController = new DataDashboardController(this);
     this.exportController = new ExportController(this);
@@ -218,6 +220,7 @@ export const ImageWorkspace = {
           <div style="display: flex; gap: 8px;">
             <button id="btn-task-stop" class="neu-button" style="height: 28px; padding: 0 12px; font-size: 10px; font-weight: 700; color: #ef4444;">${i18n.t('stop')}</button>
             <button id="btn-task-resume" class="neu-button" style="height: 28px; padding: 0 12px; font-size: 10px; font-weight: 700; color: #10b981; display: none;">${i18n.t('resume')}</button>
+            <button id="btn-task-cancel" class="neu-button" style="height: 28px; padding: 0 12px; font-size: 10px; font-weight: 700; color: #ef4444; display: none;">${i18n.t('cancel_task')}</button>
           </div>
         </div>
         
@@ -344,7 +347,15 @@ export const ImageWorkspace = {
              <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                 <div style="padding: 12px 20px; border-bottom: 1px solid rgba(0,0,0,0.03); display: flex; justify-content: space-between; align-items: center;">
                    <h3 style="margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--neu-text-light);">${i18n.t('标注列表') || '标注列表'}</h3>
-                   <button id="btn-collapse-anns" class="neu-button" style="width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px;" title="折叠/展开">−</button>
+                   <div style="display: flex; gap: 6px;">
+                     <button id="btn-migrate-sources" class="neu-button" style="height: 26px; padding: 0 10px; font-size: 10px; font-weight: 600;" title="${i18n.t('migrate_sources')}">${i18n.t('migrate_sources')}</button>
+                     <button id="btn-collapse-anns" class="neu-button" style="width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 12px;" title="折叠/展开">−</button>
+                   </div>
+                </div>
+                <div id="source-filter-bar" style="padding: 6px 20px; display: flex; gap: 6px; border-bottom: 1px solid rgba(0,0,0,0.03);">
+                  <button class="neu-button source-chip" data-source="sam3" style="height: 22px; padding: 0 8px; font-size: 10px; border-radius: 11px;">sam3</button>
+                  <button class="neu-button source-chip" data-source="locate-anything" style="height: 22px; padding: 0 8px; font-size: 10px; border-radius: 11px;">LA</button>
+                  <button class="neu-button source-chip" data-source="manual" style="height: 22px; padding: 0 8px; font-size: 10px; border-radius: 11px;">${i18n.t('source_manual')}</button>
                 </div>
                 <div id="annotation-list-wrapper" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
                   <div id="annotation-list-container" style="flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px;">
@@ -691,6 +702,22 @@ export const ImageWorkspace = {
     const btnResume = document.getElementById('btn-task-resume');
     if (btnResume) btnResume.onclick = () => this.resumeActiveTask();
 
+    const btnCancel = document.getElementById('btn-task-cancel');
+    if (btnCancel) btnCancel.onclick = () => this.cancelActiveTask();
+
+    // Source Filter Chips (single-select)
+    document.querySelectorAll('.source-chip').forEach(chip => {
+      chip.onclick = () => {
+        const src = chip.dataset.source;
+        this.annotationSourceFilter = new Set([src]);
+        this.updateSourceChipStyles();
+        this.renderAnnotations();
+        if (this.viewer) this.viewer.setAnnotations(this.visibleAnnotations());
+        this.scheduleProjectUIStateSave();
+      };
+    });
+    this.updateSourceChipStyles();
+
     // Image List (Event Delegation)
     const listCont = document.getElementById('image-list-container');
     if (listCont) {
@@ -792,6 +819,10 @@ export const ImageWorkspace = {
         btnCollapseAnns.innerText = collapsed ? '\u2212' : '+';
       };
     }
+
+    // Migrate annotation sources (tag legacy annotations)
+    const btnMigrateSources = document.getElementById('btn-migrate-sources');
+    if (btnMigrateSources) btnMigrateSources.onclick = () => this.migrateAnnotationSources();
 
     const chkShowMasks = document.getElementById('chk-show-masks');
     if (chkShowMasks) chkShowMasks.onchange = (e) => {
@@ -1258,7 +1289,7 @@ export const ImageWorkspace = {
       this.viewer.closeImageTiles?.();
       this.scheduleTileStatusPoll(bundle.id, bundle.relPath);
     }
-    this.viewer.setAnnotations(this.annotations);
+    this.viewer.setAnnotations(this.visibleAnnotations());
     this.viewer.setFocusedAnnotation(null);
     this.setCanvasPlaceholder(!(previewShown || tileReady), i18n.t('loading_image_annotations'));
     const imageStatus = document.getElementById('ws-image-status');
@@ -1416,13 +1447,50 @@ export const ImageWorkspace = {
     await this.inferenceController.resumeActiveTask();
   },
 
+  async cancelActiveTask() {
+    await this.inferenceController.cancelActiveTask();
+  },
+
+  async migrateAnnotationSources() {
+    if (!this.projectId) return;
+    if (!confirm(i18n.t('migrate_sources_confirm'))) return;
+    try {
+      const res = await api.migrateSources(this.projectId);
+      const total = Number(res?.total || 0);
+      const migrated = Number(res?.migrated || 0);
+      showToast(i18n.t('migrate_done', { total: migrated, kept: total - migrated }), 'success');
+      await this.loadProjectInfo();
+      if (this.selectedImageId && this.selectedImagePath) {
+        await this.selectImage(this.selectedImageId, this.selectedImagePath);
+      }
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  },
+
+  visibleAnnotations() {
+    const filter = this.annotationSourceFilter;
+    return (this.annotations || []).filter(a => filter.has(String(a.source_model || 'sam3')));
+  },
+
+  updateSourceChipStyles() {
+    document.querySelectorAll('.source-chip').forEach(chip => {
+      const active = this.annotationSourceFilter && this.annotationSourceFilter.has(chip.dataset.source);
+      chip.style.background = active ? 'var(--neu-bg)' : 'transparent';
+      chip.style.color = active ? 'var(--neu-text-active)' : 'var(--neu-text-light)';
+      chip.style.boxShadow = active ? 'var(--neu-inset-sm)' : 'none';
+      chip.style.fontWeight = active ? '700' : '500';
+    });
+  },
+
   renderAnnotations() {
     const list = document.getElementById('annotation-list-container');
-    renderAnnotationList(list, this.annotations, {
+    const visible = this.visibleAnnotations();
+    renderAnnotationList(list, visible, {
       focusedAnnotationId: this.focusedAnnotationId,
       isLoading: this.isImageLoading,
       loadingText: i18n.t('loading_image_annotations'),
-      emptyText: '无标注数据',
+      emptyText: i18n.t('no_annotations_visible'),
       getClassColor: (className) => this.getClassColor(className),
     });
     bindAnnotationListEvents(list, {

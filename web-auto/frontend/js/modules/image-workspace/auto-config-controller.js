@@ -9,6 +9,10 @@ function notify(message, type = 'info') {
 }
 
 export class AutoConfigController {
+  constructor(workspace) {
+    this.workspace = workspace;
+  }
+
   bind() {
     const sam3UrlInp = document.getElementById('inp-sam3-url');
     if (sam3UrlInp) sam3UrlInp.onchange = (e) => store.setConfig('sam3ApiUrl', e.target.value);
@@ -22,9 +26,11 @@ export class AutoConfigController {
       selBackend.onchange = (e) => {
         store.setConfig('defaultBackend', e.target.value);
         this.syncBackendUI();
+        this.syncSourceFilter();
       };
     }
     this.syncBackendUI();
+    this.syncSourceFilter();
 
     const btnThresholdDec = document.getElementById('btn-threshold-dec');
     const btnThresholdInc = document.getElementById('btn-threshold-inc');
@@ -50,6 +56,18 @@ export class AutoConfigController {
     if (btnExample) {
       btnExample.disabled = isLocate;
       btnExample.style.opacity = isLocate ? '0.45' : '1';
+    }
+  }
+
+  syncSourceFilter() {
+    const ws = this.workspace;
+    if (!ws || !ws.annotationSourceFilter) return;
+    const backend = store.state.config.defaultBackend || 'sam3';
+    ws.annotationSourceFilter = new Set([backend]);
+    if (typeof ws.updateSourceChipStyles === 'function') ws.updateSourceChipStyles();
+    if (typeof ws.renderAnnotations === 'function') ws.renderAnnotations();
+    if (ws.viewer && typeof ws.visibleAnnotations === 'function') {
+      ws.viewer.setAnnotations(ws.visibleAnnotations());
     }
   }
 

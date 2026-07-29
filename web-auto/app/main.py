@@ -483,6 +483,7 @@ app.include_router(
         get_latest_infer_job_for_project=INFER_JOBS.get_latest_job_for_project,
         get_infer_job_state_or_404=INFER_JOBS.get_job_state_or_404,
         pause_infer_job=INFER_JOBS.pause_job,
+        cancel_infer_job=INFER_JOBS.cancel_job,
         update_infer_job_state=INFER_JOBS.update_job_state,
         resume_infer_job=INFERENCE_SERVICE.resume_infer_job,
         acquire_interactive_gpu=JOB_QUEUE.acquire_interactive_gpu,

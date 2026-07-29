@@ -173,6 +173,7 @@ export class InferenceController {
     const statusEl = document.getElementById('task-status-text');
     const stopBtn = document.getElementById('btn-task-stop');
     const resumeBtn = document.getElementById('btn-task-resume');
+    const cancelBtn = document.getElementById('btn-task-cancel');
 
     if (bar) bar.style.display = 'flex';
 
@@ -196,7 +197,7 @@ export class InferenceController {
         if (fillEl) fillEl.style.width = `${pct}%`;
         if (statusEl) statusEl.innerText = `${job.message || `${Math.round(pct)}%`}`;
 
-        if (job.status === 'done' || job.status === 'error') {
+        if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
           if (bar) setTimeout(() => { bar.style.display = 'none'; }, 3000);
           if (job.job_type === 'text_batch' && job.status === 'done') {
             this.showBatchResultModal(job);
@@ -207,6 +208,7 @@ export class InferenceController {
           ws.activeJobId = null;
           ws.isPolling = false;
           if (resumeBtn) resumeBtn.style.display = 'none';
+          if (cancelBtn) cancelBtn.style.display = 'none';
           if (stopBtn) {
             stopBtn.style.display = 'block';
             stopBtn.disabled = false;
@@ -219,6 +221,7 @@ export class InferenceController {
           return;
         } else if (job.status === 'pausing') {
           if (resumeBtn) resumeBtn.style.display = 'none';
+          if (cancelBtn) cancelBtn.style.display = 'none';
           if (stopBtn) {
             stopBtn.style.display = 'block';
             stopBtn.disabled = true;
@@ -226,6 +229,7 @@ export class InferenceController {
           }
         } else if (job.status === 'paused') {
           if (resumeBtn) resumeBtn.style.display = 'block';
+          if (cancelBtn) cancelBtn.style.display = 'block';
           if (stopBtn) {
             stopBtn.style.display = 'none';
             stopBtn.disabled = false;
@@ -233,6 +237,7 @@ export class InferenceController {
           }
         } else {
           if (resumeBtn) resumeBtn.style.display = 'none';
+          if (cancelBtn) cancelBtn.style.display = 'none';
           if (stopBtn) {
             stopBtn.style.display = 'block';
             stopBtn.disabled = false;
@@ -260,10 +265,10 @@ export class InferenceController {
       if (job?.job_id) ws.activeJobId = job.job_id;
       if (stopBtn) {
         stopBtn.disabled = true;
-        stopBtn.innerText = 'Stopping...';
+        stopBtn.innerText = i18n.t('task_paused');
       }
-      if (statusEl) statusEl.innerText = 'Stopping task...';
-      notify("Stopping task...");
+      if (statusEl) statusEl.innerText = i18n.t('task_paused');
+      notify(i18n.t('task_paused'));
     } catch(e) {
       notify(e.message, "error");
     }
@@ -284,8 +289,10 @@ export class InferenceController {
       if (job?.job_id) ws.activeJobId = job.job_id;
       const stopBtn = document.getElementById('btn-task-stop');
       const resumeBtn = document.getElementById('btn-task-resume');
+      const cancelBtn = document.getElementById('btn-task-cancel');
       const statusEl = document.getElementById('task-status-text');
       if (resumeBtn) resumeBtn.style.display = 'none';
+      if (cancelBtn) cancelBtn.style.display = 'none';
       if (stopBtn) {
         stopBtn.style.display = 'block';
         stopBtn.disabled = false;
@@ -296,6 +303,32 @@ export class InferenceController {
       notify("Resuming task...");
     } catch(e) {
       if (this._handleBothLoadedError(e)) return;
+      notify(e.message, "error");
+    }
+  }
+
+  async cancelActiveTask() {
+    const ws = this.workspace;
+    if (!confirm(i18n.t('cancel_task_confirm'))) return;
+    try {
+      const res = await api.cancelInferJob(ws.projectId);
+      const job = res?.job || null;
+      const stopBtn = document.getElementById('btn-task-stop');
+      const resumeBtn = document.getElementById('btn-task-resume');
+      const cancelBtn = document.getElementById('btn-task-cancel');
+      const statusEl = document.getElementById('task-status-text');
+      if (resumeBtn) resumeBtn.style.display = 'none';
+      if (cancelBtn) cancelBtn.style.display = 'none';
+      if (stopBtn) {
+        stopBtn.style.display = 'block';
+        stopBtn.disabled = false;
+        stopBtn.innerText = 'Stop';
+      }
+      if (statusEl) statusEl.innerText = i18n.t('cancel_task');
+      ws.activeJobId = null;
+      ws.isPolling = false;
+      notify(job ? i18n.t('cancel_task') : 'Cancelled');
+    } catch(e) {
       notify(e.message, "error");
     }
   }

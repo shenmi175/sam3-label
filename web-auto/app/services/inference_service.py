@@ -355,6 +355,7 @@ class InferenceService:
                 detections=detections_local,
                 classes=final_classes,
                 forced_class=forced_class,
+                source_model='locate-anything' if is_locate else 'sam3',
             )
             return result_local, converted_local
 
@@ -393,6 +394,7 @@ class InferenceService:
                     old_annotations=old,
                     impacted_classes=impacted_classes,
                     new_annotations=converted,
+                    source_model='locate-anything' if is_locate else 'sam3',
                 )
             else:
                 merged = _merge_visual_annotations(
@@ -452,7 +454,12 @@ class InferenceService:
 
         detections = result.get('detections', [])
         detections = detections if isinstance(detections, list) else []
-        converted = _convert_detections(detections=detections, classes=[active], forced_class=active)
+        converted = _convert_detections(
+            detections=detections,
+            classes=[active],
+            forced_class=active,
+            source_model='sam3',
+        )
         merged = self.storage.load_annotations(str(project.get('id')), str(image.get('id')))
         return {
             'result': result,
@@ -688,12 +695,19 @@ class InferenceService:
                         raise RuntimeError('remote batch item result is invalid')
                     detections = result.get('detections', [])
                     detections = detections if isinstance(detections, list) else []
-                    converted = _convert_detections(detections=detections, classes=classes, forced_class='')
+                    batch_source = 'locate-anything' if is_locate_batch else 'sam3'
+                    converted = _convert_detections(
+                        detections=detections,
+                        classes=classes,
+                        forced_class='',
+                        source_model=batch_source,
+                    )
                     old = self.storage.load_annotations(payload.project_id, image_id)
                     merged = _replace_by_classes(
                         old_annotations=old,
                         impacted_classes=classes,
                         new_annotations=converted,
+                        source_model=batch_source,
                     )
                     self.storage.save_annotations(payload.project_id, image_id, merged)
                     succeeded += 1

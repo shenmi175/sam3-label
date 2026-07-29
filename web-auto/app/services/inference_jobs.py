@@ -155,6 +155,9 @@ class InferenceJobService:
         state = self.queue.active(project_id, job_prefix='infer:')
         return bool(state and self.queue.request_pause(str(state.get('job_id') or '')))
 
+    def cancel_job(self, job_id: str) -> bool:
+        return bool(job_id and self.queue.cancel(str(job_id)))
+
     def count_running_jobs(self) -> int:
         return self.queue.count_running(job_prefix='infer:')
 

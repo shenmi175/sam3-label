@@ -101,14 +101,10 @@ def run_forever(resource_class: str = 'gpu') -> None:
                 result = _execute_job(job, worker_id)
             preview_entry = result.pop('_preview_entry', None)
             current_state = JOB_QUEUE.get(job_id) or {}
+            current_status = str(current_state.get('status') or '')
             total = int(current_state.get('progress_total') or result.get('requested') or result.get('image_count') or result.get('changed_images') or 0)
             done = int(current_state.get('progress_done') or total)
-            JOB_QUEUE.update(
-                job_id,
-                status='done',
-                running=False,
-                finished_at=now_ts(),
-                message=str(result.get('message') or 'done'),
+            completion = dict(
                 result=result,
                 preview_entry=preview_entry if isinstance(preview_entry, dict) else current_state.get('preview_entry', {}),
                 requested=int(result.get('requested') or 0),
@@ -123,6 +119,11 @@ def run_forever(resource_class: str = 'gpu') -> None:
                 pending_image_ids=[],
                 pending_image_count=0,
             )
+            if current_status not in {'paused', 'cancelled', 'pausing'}:
+                completion['status'] = 'done'
+                completion['running'] = False
+                completion['finished_at'] = now_ts()
+            JOB_QUEUE.update(job_id, **completion)
         except InferJobPaused as exc:
             current_status = str((JOB_QUEUE.get(job_id) or {}).get('status') or '')
             if current_status != 'cancelled':

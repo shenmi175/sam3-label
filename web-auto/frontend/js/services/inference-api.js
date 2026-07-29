@@ -73,4 +73,8 @@ export const inferenceApi = {
   resumeInferJob(data) {
     return request('POST', '/infer/jobs/resume', data);
   },
+
+  cancelInferJob(projectId) {
+    return request('POST', '/infer/jobs/cancel', { project_id: projectId });
+  },
 };

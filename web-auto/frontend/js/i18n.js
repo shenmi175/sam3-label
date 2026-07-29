@@ -206,6 +206,13 @@ export const i18n = {
     task_params: '参数',
     stop: '停止',
     resume: '继续',
+    cancel_task: '取消任务',
+    cancel_task_confirm: '确定取消此任务？取消后无法恢复。',
+    source_la: 'LA',
+    source_manual: '手动',
+    migrate_sources: '标注来源迁移',
+    migrate_sources_confirm: '将为所有缺少来源标记的标注推断来源（sam3 / LA / 手动），并写回磁盘。继续？',
+    migrate_done: '迁移完成：{total} 条标注已标记来源',
     
     // Image Workspace - Main
     annotations_summary: '标注统计',
@@ -254,7 +261,11 @@ export const i18n = {
     both_loaded_resolve: '前往设置',
     locate_backend_text_only: 'LocateAnything 后端仅支持文本推理，不支持框选找同类。',
     allowed_locate_urls: '允许的 Locate API 地址：{urls}',
-    unload_locate: '卸载 Locate'
+    unload_locate: '卸载 Locate',
+    task_paused: '已暂停',
+    source_filter_all: '全部',
+    no_annotations_visible: '当前筛选无标注',
+    source_manual: '手动'
   },
   en: {
     // Top Bar
@@ -463,6 +474,13 @@ export const i18n = {
     task_params: 'Parameters',
     stop: 'Stop',
     resume: 'Resume',
+    cancel_task: 'Cancel Task',
+    cancel_task_confirm: 'Cancel this task? This cannot be undone.',
+    source_la: 'LA',
+    source_manual: 'Manual',
+    migrate_sources: 'Migrate Sources',
+    migrate_sources_confirm: 'This will infer a source tag (sam3 / LA / manual) for every untagged annotation and rewrite annotation files on disk. Continue?',
+    migrate_done: 'Migration done: {total} annotations tagged',
     
     // Image Workspace - Main
     annotations_summary: 'Annotations Summary',
@@ -511,7 +529,11 @@ export const i18n = {
     both_loaded_resolve: 'Go to Settings',
     locate_backend_text_only: 'LocateAnything backend supports text inference only, not Find Similar by Box.',
     allowed_locate_urls: 'Allowed Locate API URLs: {urls}',
-    unload_locate: 'Unload Locate'
+    unload_locate: 'Unload Locate',
+    task_paused: 'Paused',
+    source_filter_all: 'All',
+    no_annotations_visible: 'No annotations visible',
+    source_manual: 'Manual'
   },
   
   t(key, params = {}) {

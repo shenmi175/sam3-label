@@ -72,7 +72,7 @@ export class AnnotationController {
       ws.focusedAnnotationId = null;
     }
     if (ws.viewer) {
-      ws.viewer.setAnnotations(ws.annotations);
+      ws.viewer.setAnnotations(ws.visibleAnnotations());
       ws.viewer.setFocusedAnnotation(ws.focusedAnnotationId);
     }
     ws.updateAnnotationSelectionControls();
@@ -139,7 +139,7 @@ export class AnnotationController {
     ws.annotations = [...(ws.annotations || []), ann];
     ws.focusedAnnotationId = ann.id;
     if (ws.viewer) {
-      ws.viewer.setAnnotations(ws.annotations);
+      ws.viewer.setAnnotations(ws.visibleAnnotations());
       ws.viewer.setFocusedAnnotation(ann.id);
     }
     ws.setPromptMode('pointer');
@@ -266,7 +266,7 @@ export class AnnotationController {
     ws.annotations = newAnns;
     if (String(ws.focusedAnnotationId || '') === String(annId || '')) ws.focusedAnnotationId = null;
     if (ws.viewer) {
-      ws.viewer.setAnnotations(ws.annotations);
+      ws.viewer.setAnnotations(ws.visibleAnnotations());
       ws.viewer.setFocusedAnnotation(ws.focusedAnnotationId);
     }
     ws.updateAnnotationSelectionControls();
@@ -315,7 +315,7 @@ export class AnnotationController {
       ws.updateCurrentImageBundleAnnotations(newAnns);
       ws.selectedClass = cleanClass;
       if (ws.viewer) {
-        ws.viewer.setAnnotations(ws.annotations);
+        ws.viewer.setAnnotations(ws.visibleAnnotations());
         ws.viewer.setFocusedAnnotation(ws.focusedAnnotationId);
       }
       ws.renderAnnotations();

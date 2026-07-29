@@ -47,6 +47,23 @@ def _catalog_locked(method: Any) -> Any:
     return wrapped
 
 
+def _ensure_source_model(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(annotations, list):
+        return annotations
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        existing = str(ann.get('source_model') or '').strip()
+        if existing:
+            continue
+        src = str(ann.get('source') or '').strip()
+        if src == 'manual':
+            ann['source_model'] = 'manual'
+        else:
+            ann['source_model'] = 'sam3'
+    return annotations
+
+
 class Storage:
     PROJECT_MANIFEST_NAME = ProjectManifestRepository.MANIFEST_NAME
     PROJECT_MANIFEST_SCHEMA = ProjectManifestRepository.MANIFEST_SCHEMA
@@ -1086,6 +1103,7 @@ class Storage:
                     data = read_json(self._annotation_read_path(project, image_id), [])
                     raw_annotations = data if isinstance(data, list) else []
                     annotations = self._normalize_annotation_ids_with_used_set(raw_annotations, used_annotation_ids)
+                    annotations = _ensure_source_model(annotations)
                     self._replace_annotations_db(project_id, image_id, annotations, conn=conn, updated_at=ts)
                     self._replace_annotation_ids_db(
                         project_id,
@@ -1128,6 +1146,63 @@ class Storage:
             'unlabeled_images': max(0, len(image_ids) - labeled_images),
             'annotation_count': annotation_count,
             'rebuilt_at': ts,
+        }
+
+    @_catalog_locked
+    def migrate_project_sources(self, project_id: str) -> dict[str, Any]:
+        """Tag every annotation that lacks ``source_model`` with an inferred
+        source (locate-anything / sam3 / manual) based on ID prefix and the
+        ``source`` field. Rewrites the annotation JSON for affected images and
+        rebuilds the annotation index.
+        """
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+
+        by_source: dict[str, int] = {'sam3': 0, 'locate-anything': 0, 'manual': 0}
+        migrated = 0
+        total = 0
+
+        image_ids = self._iter_project_image_ids_db(project_id)
+        affected_image_ids: list[str] = []
+        for image_id in image_ids:
+            data = read_json(self._annotation_read_path(project, image_id), [])
+            annotations = data if isinstance(data, list) else []
+            touched = False
+            for ann in annotations:
+                if not isinstance(ann, dict):
+                    continue
+                total += 1
+                existing = str(ann.get('source_model') or '').strip()
+                if existing:
+                    by_source[existing] = by_source.get(existing, 0) + 1
+                    continue
+                ann_id = str(ann.get('id') or '')
+                src_field = str(ann.get('source') or '').strip()
+                if src_field == 'manual':
+                    inferred = 'manual'
+                elif ann_id.startswith('la_'):
+                    inferred = 'locate-anything'
+                else:
+                    inferred = 'sam3'
+                ann['source_model'] = inferred
+                by_source[inferred] = by_source.get(inferred, 0) + 1
+                migrated += 1
+                touched = True
+            if touched:
+                path = self._annotation_read_path(project, image_id)
+                atomic_write_json(path, annotations)
+                affected_image_ids.append(image_id)
+
+        if affected_image_ids:
+            self.rebuild_annotation_index(project_id)
+
+        return {
+            'project_id': project_id,
+            'migrated': migrated,
+            'total': total,
+            'by_source': by_source,
+            'affected_images': len(affected_image_ids),
         }
 
     @_catalog_locked
@@ -1752,6 +1827,7 @@ class Storage:
         if image is None:
             raise ValueError('image not found')
         annotations = self._normalize_annotation_ids(project_id, image_id, annotations)
+        annotations = _ensure_source_model(annotations)
         annotations = normalize_annotation_masks(
             base_dir=self.base_dir,
             project_id=project_id,

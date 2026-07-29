@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "sam3-auto-label").strip() or "sam3-auto-label"
 ALLOWED_SERVICES = {
     item.strip()
-    for item in os.getenv("OPS_ALLOWED_SERVICES", "sam3-api,sapiens-api,caddy").split(",")
+    for item in os.getenv("OPS_ALLOWED_SERVICES", "sam3-api,locate-anything-api,sapiens-api,caddy").split(",")
     if item.strip()
 }
 SERVICE_COMMANDS = {

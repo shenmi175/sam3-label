@@ -116,4 +116,11 @@ def create_projects_router(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.post('/api/projects/{project_id}/migrate-sources')
+    def migrate_annotation_sources(project_id: str) -> dict[str, Any]:
+        try:
+            return get_storage().migrate_project_sources(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     return router

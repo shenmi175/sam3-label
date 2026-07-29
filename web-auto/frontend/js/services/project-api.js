@@ -39,4 +39,8 @@ export const projectApi = {
   deleteClass(projectId, className) {
     return request('DELETE', `/projects/${projectId}/classes/${encodeURIComponent(className)}`);
   },
+
+  migrateSources(projectId) {
+    return request('POST', `/projects/${projectId}/migrate-sources`);
+  },
 };

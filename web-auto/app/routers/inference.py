@@ -25,6 +25,7 @@ def create_inference_router(
     get_latest_infer_job_for_project: Callable[..., dict[str, Any] | None],
     get_infer_job_state_or_404: Callable[[str], dict[str, Any]],
     pause_infer_job: Callable[[str], bool],
+    cancel_infer_job: Callable[[str], bool],
     update_infer_job_state: Callable[..., None],
     resume_infer_job: Callable[[InferJobResumeIn], dict[str, Any]],
     acquire_interactive_gpu: Callable[[], str],
@@ -173,18 +174,40 @@ def create_inference_router(
             raise HTTPException(status_code=400, detail='infer pause currently supports image project only')
 
         state = get_active_infer_job_for_project(payload.project_id)
-        if not pause_infer_job(payload.project_id):
+        if not state:
             paused = get_latest_infer_job_for_project(payload.project_id, statuses={'paused', 'pausing'})
-            return {'job': paused or state}
-        if state and str(state.get('job_id') or '').strip():
-            update_infer_job_state(str(state.get('job_id') or ''), status='pausing')
-        return {
-            'job': get_active_infer_job_for_project(payload.project_id)
-            or get_latest_infer_job_for_project(payload.project_id, statuses={'pausing'})
-        }
+            return {'job': paused or get_latest_infer_job_for_project(payload.project_id)}
+        job_id = str(state.get('job_id') or '').strip()
+        if not job_id:
+            return {'job': state}
+        current_status = str(state.get('status') or '')
+        if current_status in {'done', 'error', 'cancelled'}:
+            return {'job': state}
+        # Force the state to 'paused' immediately so the UI reflects the pause
+        # within one poll cycle. The worker, still mid-HTTP-call, will observe
+        # the terminal status on its next cooperative check and exit cleanly.
+        update_infer_job_state(job_id, status='paused', running=False, message='paused')
+        return {'job': get_infer_job_state_or_404(job_id)}
 
     @router.post('/api/infer/jobs/resume')
     def resume_infer_job_endpoint(payload: InferJobResumeIn) -> dict[str, Any]:
         return resume_infer_job(payload)
+
+    @router.post('/api/infer/jobs/cancel')
+    def cancel_infer_job_endpoint(payload: InferJobControlIn) -> dict[str, Any]:
+        project = get_project_or_404(payload.project_id, enrich=False, include_images=False)
+        if project.get('project_type') != 'image':
+            raise HTTPException(status_code=400, detail='image project only')
+        state = get_active_infer_job_for_project(payload.project_id)
+        if not state:
+            state = get_latest_infer_job_for_project(
+                payload.project_id, statuses={'paused', 'pausing', 'queued', 'running'}
+            )
+        if not state:
+            raise HTTPException(status_code=404, detail='no active or paused job')
+        job_id = str(state.get('job_id') or '')
+        if not cancel_infer_job(job_id):
+            raise HTTPException(status_code=409, detail='job cannot be cancelled')
+        return {'job': get_infer_job_state_or_404(job_id)}
 
     return router
