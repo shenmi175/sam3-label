@@ -45,6 +45,17 @@ export const imageApi = {
     return request('GET', `/projects/${projectId}/images/${imageId}/tiles/info${suffix}`, null, false, requestOptions);
   },
 
+  getImageBundle(projectId, imageId, requestOptions = {}, params = {}) {
+    const query = new URLSearchParams();
+    if (params.priority) query.set('priority', String(params.priority));
+    if (params.enqueue !== undefined) query.set('enqueue', params.enqueue ? 'true' : 'false');
+    if (params.includeAnnotations !== undefined) query.set('include_annotations', params.includeAnnotations ? 'true' : 'false');
+    if (params.includePreview !== undefined) query.set('include_preview', params.includePreview ? 'true' : 'false');
+    if (params.includeTileInfo !== undefined) query.set('include_tile_info', params.includeTileInfo ? 'true' : 'false');
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request('GET', `/projects/${projectId}/images/${imageId}/bundle${suffix}`, null, false, requestOptions);
+  },
+
   getImagePreviewInfo(projectId, imageId, requestOptions = {}) {
     return request('GET', `/projects/${projectId}/images/${imageId}/preview/info`, null, false, requestOptions);
   },

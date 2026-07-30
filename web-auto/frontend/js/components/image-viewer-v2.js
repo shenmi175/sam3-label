@@ -42,7 +42,7 @@ export class ImageViewerV2 {
       top: '0',
       width: '100%',
       height: '100%',
-      display: 'block',
+      display: 'none',
       zIndex: '15',
       pointerEvents: 'none',
       transformOrigin: '0 0',
@@ -209,6 +209,9 @@ export class ImageViewerV2 {
     });
     this.viewer.addHandler('tile-loaded', () => {
       this.hidePreview();
+      this.staticRenderState = null;
+      this.requestStaticRedraw(true);
+      this.requestDraw();
     });
     ['animation', 'animation-finish', 'pan', 'zoom', 'resize'].forEach((eventName) => {
       this.viewer.addHandler(eventName, () => this.onViewportChanged());
@@ -218,8 +221,8 @@ export class ImageViewerV2 {
 
   onViewportChanged() {
     this.updateStaticTransform();
-    if (this.hasLiveOverlay()) this.requestDraw();
-    this.requestStaticRedraw(false);
+    this.requestDraw();
+    this.requestStaticRedraw(true);
   }
 
   hasLiveOverlay() {
@@ -232,26 +235,7 @@ export class ImageViewerV2 {
   }
 
   setImageSource(tileInfo) {
-    if (!tileInfo?.dzi_url) return false;
-    const viewer = this.ensureViewer();
-    this.tileInfo = tileInfo;
-    this.image = {
-      width: Number(tileInfo.width || 0),
-      height: Number(tileInfo.height || 0),
-    };
-    this.isPanning = false;
-    this.isDrawingBox = false;
-    this.isDraggingAnnotation = false;
-    this.activePolygonPoints = [];
-    this.isTileOpen = false;
-    this.staticRenderState = null;
-    this.staticExcludeAnnotationId = null;
-    this.boxStart = null;
-    this.boxEnd = null;
-    if (this.staticCtx) this.staticCtx.clearRect(0, 0, this.staticCanvas.width, this.staticCanvas.height);
-    viewer.open(tileInfo.dzi_url);
-    this.requestDraw();
-    return true;
+    return false;
   }
 
   setPreviewSource(previewInfo) {
@@ -265,9 +249,26 @@ export class ImageViewerV2 {
       width: Number(previewInfo.source_width || previewInfo.width || previewInfo.preview_width || 0),
       height: Number(previewInfo.source_height || previewInfo.height || previewInfo.preview_height || 0),
     };
+    this.isPanning = false;
+    this.isDrawingBox = false;
+    this.isDraggingAnnotation = false;
+    this.activePolygonPoints = [];
+    this.isTileOpen = false;
+    this.staticRenderState = null;
+    this.staticExcludeAnnotationId = null;
+    this.boxStart = null;
+    this.boxEnd = null;
+    if (this.staticCtx) this.staticCtx.clearRect(0, 0, this.staticCanvas.width, this.staticCanvas.height);
     this.previewImage.src = url;
     this.previewImage.style.display = 'block';
     this.previewImage.style.opacity = '1';
+    const viewer = this.ensureViewer();
+    viewer.open({
+      type: 'image',
+      url: url,
+      buildPyramid: false,
+    });
+    this.requestDraw();
     return true;
   }
 
@@ -407,10 +408,13 @@ export class ImageViewerV2 {
     this.ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
     if (!this.image || !this.isTileOpen || !this.viewer?.viewport) return;
 
-    if (this.staticExcludeAnnotationId) {
-      const liveAnn = (this.annotations || []).find((ann) => String(ann?.id || '') === String(this.staticExcludeAnnotationId));
-      if (liveAnn && this.annotationVisible(liveAnn)) this.drawAnnotation(liveAnn, false);
+    for (const ann of this.annotations || []) {
+      if (this.annotationVisible(ann)) this.drawAnnotation(ann, false);
     }
+    for (const pre of this.previews || []) {
+      if (this.annotationVisible(pre)) this.drawAnnotation(pre, true);
+    }
+    for (const p of this.prompts) this.drawPrompt(p);
     this.drawFocusedHandles();
     this.drawActivePolygon();
     if (this.isDrawingBox && this.boxStart && this.boxEnd) this.drawBoxDraft();
@@ -528,18 +532,24 @@ export class ImageViewerV2 {
   }
 
   screenToImage(clientX, clientY) {
-    if (!this.viewer?.viewport) return [0, 0];
+    if (!this.viewer?.viewport || !this.image) return [0, 0];
     const OpenSeadragon = window.OpenSeadragon;
     const [x, y] = this.screenPoint(clientX, clientY);
-    const viewportPoint = this.viewer.viewport.pointFromPixel(new OpenSeadragon.Point(x, y), true);
-    const imagePoint = this.viewer.viewport.viewportToImageCoordinates(viewportPoint);
-    return this.clampPoint([imagePoint.x, imagePoint.y]);
+    const vp = this.viewer.viewport.pointFromPixel(new OpenSeadragon.Point(x, y), true);
+    return this.clampPoint([
+      vp.x * this.image.width,
+      vp.y * this.image.width,
+    ]);
   }
 
   imageToScreenRaw(point) {
-    if (!this.viewer?.viewport) return [0, 0];
+    if (!this.viewer?.viewport || !this.image) return [0, 0];
     const OpenSeadragon = window.OpenSeadragon;
-    const vp = this.viewer.viewport.imageToViewportCoordinates(Number(point?.[0] || 0), Number(point?.[1] || 0));
+    const ix = Number(point?.[0] || 0);
+    const iy = Number(point?.[1] || 0);
+    // OSD viewport coords normalize BOTH axes by image width (image width = 1.0, height = H/W)
+    const w = this.image.width || 1;
+    const vp = new OpenSeadragon.Point(ix / w, iy / w);
     const px = this.viewer.viewport.pixelFromPoint(vp, true);
     return [px.x, px.y];
   }
@@ -1089,9 +1099,14 @@ export class ImageViewerV2 {
   }
 
   centerTransformOnBbox(bbox) {
-    if (!this.viewer?.viewport || !Array.isArray(bbox) || bbox.length !== 4) return false;
+    if (!this.viewer?.viewport || !this.image || !Array.isArray(bbox) || bbox.length !== 4) return false;
+    const OpenSeadragon = window.OpenSeadragon;
     const [x1, y1, x2, y2] = bbox.map((v) => Number(v || 0));
-    const rect = this.viewer.viewport.imageToViewportRectangle(x1, y1, Math.max(1, x2 - x1), Math.max(1, y2 - y1));
+    const w = this.image.width || 1;
+    const rect = new OpenSeadragon.Rect(
+      x1 / w, y1 / w,
+      Math.max(1, x2 - x1) / w, Math.max(1, y2 - y1) / w,
+    );
     this.viewer.viewport.fitBoundsWithConstraints(rect, true);
     this.onViewportChanged();
     return true;

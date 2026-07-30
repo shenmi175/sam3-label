@@ -512,6 +512,14 @@ def create_app() -> FastAPI:
 
 frontend_dir = BASE_DIR / 'frontend'
 if frontend_dir.exists():
+    @app.middleware('http')
+    async def no_cache_static(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.endswith(('.js', '.css')) or path.endswith('.js.map'):
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
+
     app.mount('/', StaticFiles(directory=str(frontend_dir), html=True), name='frontend')
 else:
     logger.warning(f'Frontend directory not found at {frontend_dir}')

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import HTTPException
-from PIL import Image, ImageOps
+from PIL import Image
 
 from app.utils import ensure_dir, new_id
 
@@ -31,7 +31,7 @@ class ImagePreviewService:
 
     def preview_cache_dir(self, project_id: str, image_id: str, image_path: Path) -> Path:
         stat = image_path.stat()
-        key_raw = f'{project_id}:{image_id}:{image_path}:{stat.st_mtime_ns}:{stat.st_size}:preview-v1'
+        key_raw = f'{project_id}:{image_id}:{image_path}:{stat.st_mtime_ns}:{stat.st_size}:preview-v3'
         key = hashlib.sha256(key_raw.encode('utf-8')).hexdigest()[:24]
         return ensure_dir(self.get_current_data_dir() / '.preview-cache' / str(project_id) / f'{image_id}_{key}')
 
@@ -85,15 +85,16 @@ class ImagePreviewService:
                 image = image.convert('RGB')
         elif image.mode == 'L':
             image = image.convert('RGB')
-        image.save(output, format='JPEG', quality=85, optimize=True)
+        image.info.pop('exif', None)
+        image.save(output, format='JPEG', quality=85, optimize=True, exif=b'')
         return int(image.size[0]), int(image.size[1])
 
     def generate_previews(self, cache_dir: Path, image_path: Path) -> dict[str, Any]:
         tmp_dir = cache_dir.with_name(f'{cache_dir.name}.tmp_{new_id()}')
         ensure_dir(tmp_dir)
         try:
-            with Image.open(image_path) as raw:
-                source = ImageOps.exif_transpose(raw)
+            with Image.open(image_path) as source:
+                source.load()
                 source_width, source_height = int(source.size[0]), int(source.size[1])
                 preview_width, preview_height = self._save_jpeg(source, self._preview_path(tmp_dir), self.preview_max_edge)
                 thumb_width, thumb_height = self._save_jpeg(source, self._thumbnail_path(tmp_dir), self.thumbnail_max_edge)

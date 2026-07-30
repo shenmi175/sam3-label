@@ -80,6 +80,67 @@ def create_image_files_router(
             )
         return out
 
+    def _build_tile_info(project_id: str, image_id: str, image_path: Path, priority: str, enqueue: bool) -> dict[str, Any]:
+        status = tile_service.tile_status(project_id, image_id, image_path, enqueue=enqueue, priority=priority)
+        metadata = status.get('metadata') if isinstance(status.get('metadata'), dict) else None
+        out: dict[str, Any] = {
+            'status': status.get('status') or 'missing',
+            'dzi_url': f'/api/projects/{project_id}/images/{image_id}/tiles/image.dzi',
+            'tiles_url': f'/api/projects/{project_id}/images/{image_id}/tiles/image_files/',
+            'cache_dir': str(status.get('tile_dir') or ''),
+            'error': status.get('error') or '',
+        }
+        if metadata:
+            out.update(
+                {
+                    'width': metadata['width'],
+                    'height': metadata['height'],
+                    'tile_size': metadata['tile_size'],
+                    'overlap': metadata['overlap'],
+                    'format': metadata['format'],
+                }
+            )
+        return out
+
+    @router.get('/api/projects/{project_id}/images/{image_id}/bundle')
+    def get_image_bundle(
+        project_id: str,
+        image_id: str,
+        priority: str = Query('high'),
+        enqueue: bool = Query(True),
+        include_annotations: bool = Query(True),
+        include_preview: bool = Query(True),
+        include_tile_info: bool = Query(True),
+    ) -> dict[str, Any]:
+        storage = get_storage()
+        project = _get_project_or_404(storage, project_id)
+        image = _get_image_or_404(storage, project, image_id)
+        image_path = tile_service.image_file_path_or_404(image)
+        tile_info = None
+        if include_tile_info:
+            tile_info = _build_tile_info(project_id, image_id, image_path, priority, enqueue)
+        annotations = None
+        if include_annotations:
+            annotations = storage.load_annotations(project_id, image_id)
+        preview_info = None
+        if include_preview:
+            try:
+                cache_dir, metadata = preview_service.ensure_image_previews(project_id, image_id, image_path)
+                preview_info = dict(metadata)
+                preview_info.update(
+                    {
+                        'status': 'ready',
+                        'width': metadata.get('source_width'),
+                        'height': metadata.get('source_height'),
+                        'preview_url': f'/api/projects/{project_id}/images/{image_id}/preview/preview.jpg?v={cache_dir.name}',
+                        'thumbnail_url': f'/api/projects/{project_id}/images/{image_id}/preview/thumbnail.jpg?v={cache_dir.name}',
+                        'cache_dir': str(cache_dir),
+                    }
+                )
+            except Exception:
+                preview_info = None
+        return {'tile_info': tile_info, 'annotations': annotations, 'preview_info': preview_info}
+
     @router.get('/api/projects/{project_id}/images/{image_id}/tiles/image.dzi')
     def get_image_dzi(project_id: str, image_id: str) -> Response:
         storage = get_storage()

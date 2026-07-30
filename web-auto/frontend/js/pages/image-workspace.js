@@ -74,8 +74,8 @@ export const ImageWorkspace = {
   imageBundleCache: null,
   imageBundlePromises: null,
   lowTilePrefetchKeys: null,
-  imageBundleCacheLimit: 8,
-  imagePrefetchRadius: 3,
+  imageBundleCacheLimit: 20,
+  imagePrefetchRadius: 10,
   tileStatusPollTimer: null,
   uiStateSaveTimer: null,
   activeJobId: '',
@@ -431,7 +431,6 @@ export const ImageWorkspace = {
       this.imageLoadAbortController.abort();
       this.imageLoadAbortController = null;
     }
-    this.clearTileStatusPoll();
     this.clearImageBundleCache();
     this.flushProjectUIState();
     if (this.viewer) {
@@ -1148,7 +1147,6 @@ export const ImageWorkspace = {
     const requirements = {
       annotations: options.includeAnnotations !== false,
       preview: options.includePreview !== false,
-      tileInfo: options.includeTileInfo !== false,
     };
     if (bundleSatisfies(cached, requirements)) return cached;
 
@@ -1157,43 +1155,32 @@ export const ImageWorkspace = {
       key,
       requirements.annotations ? 'ann' : 'noann',
       requirements.preview ? 'preview' : 'nopreview',
-      requirements.tileInfo ? 'tile' : 'notile',
-      options.tilePriority || 'high',
     ].join(':');
     if (!this.imageBundlePromises) this.imageBundlePromises = new Map();
     const existing = this.imageBundlePromises.get(promiseKey);
     if (existing) return existing;
 
     const requestOptions = options.signal ? { signal: options.signal } : {};
-    const tilePromise = requirements.tileInfo && !cached?.tileInfoLoaded
-      ? api.getImageTilesInfo(this.projectId, id, requestOptions, {
-        priority: options.tilePriority || 'high',
-        enqueue: options.enqueueTile !== false,
-      })
-      : Promise.resolve(cached?.imageInfo || null);
-    const annotationsPromise = requirements.annotations && !cached?.annotationsLoaded
-      ? api.getAnnotations(this.projectId, id, requestOptions)
-      : Promise.resolve({ annotations: cached?.annotations || [] });
-    const previewPromise = requirements.preview && !cached?.previewLoaded
-      ? api.getImagePreviewInfo(this.projectId, id, requestOptions).catch(() => cached?.previewInfo || null)
-      : Promise.resolve(cached?.previewInfo || null);
-
-    const promise = Promise.all([tilePromise, annotationsPromise, previewPromise]).then(([imageInfo, annsRes, previewInfo]) => {
+    const needAnn = requirements.annotations && !cached?.annotationsLoaded;
+    const needPreview = requirements.preview && !cached?.previewLoaded;
+    const promise = api.getImageBundle(this.projectId, id, requestOptions, {
+      includeAnnotations: needAnn,
+      includePreview: needPreview,
+      includeTileInfo: false,
+    }).then(res => {
       this.storeImageBundle(
         id,
         relPath,
-        imageInfo || cached?.imageInfo || null,
-        requirements.annotations ? annsRes?.annotations : (cached?.annotations || []),
-        previewInfo || cached?.previewInfo || null,
+        cached?.imageInfo || null,
+        needAnn ? (res?.annotations ?? cached?.annotations ?? []) : (cached?.annotations || []),
+        res?.preview_info || cached?.previewInfo || null,
         {
           annotationsLoaded: Boolean(requirements.annotations || cached?.annotationsLoaded),
           previewLoaded: Boolean(requirements.preview || cached?.previewLoaded),
-          tileInfoLoaded: Boolean(requirements.tileInfo || cached?.tileInfoLoaded),
         },
       );
       const bundle = this.getCachedImageBundle(id);
       if (bundle?.previewInfo) this.warmPreviewImage(bundle.previewInfo);
-      if (options.warmLowResTile && bundle?.imageInfo?.status === 'ready') this.warmLowResTile(bundle.imageInfo);
       return bundle;
     });
 
@@ -1210,10 +1197,6 @@ export const ImageWorkspace = {
     return promise;
   },
 
-  tileInfoReady(imageInfo) {
-    return Boolean(imageInfo && imageInfo.status === 'ready' && imageInfo.dzi_url);
-  },
-
   warmPreviewImage(previewInfo) {
     const url = previewInfo?.preview_url || previewInfo?.thumbnail_url || '';
     if (!url || typeof Image === 'undefined') return;
@@ -1222,81 +1205,20 @@ export const ImageWorkspace = {
     img.src = url;
   },
 
-  warmLowResTile(imageInfo) {
-    if (!this.tileInfoReady(imageInfo) || !imageInfo.tiles_url || !imageInfo.format || typeof Image === 'undefined') return;
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = `${imageInfo.tiles_url}0/0_0.${imageInfo.format}`;
-  },
-
-  clearTileStatusPoll() {
-    if (this.tileStatusPollTimer) {
-      clearTimeout(this.tileStatusPollTimer);
-      this.tileStatusPollTimer = null;
-    }
-  },
-
-  scheduleTileStatusPoll(id, relPath, delay = 1200) {
-    this.clearTileStatusPoll();
-    if (!id || this.isUnmounted) return;
-    this.tileStatusPollTimer = setTimeout(async () => {
-      this.tileStatusPollTimer = null;
-      if (this.isUnmounted || String(this.selectedImageId) !== String(id)) return;
-      try {
-        const imageInfo = await api.getImageTilesInfo(this.projectId, id, {}, { priority: 'high', enqueue: true });
-        const cached = this.getCachedImageBundle(id);
-        this.storeImageBundle(
-          id,
-          relPath || cached?.relPath || '',
-          imageInfo,
-          cached?.annotations || [],
-          cached?.previewInfo || null,
-          {
-            annotationsLoaded: Boolean(cached?.annotationsLoaded),
-            previewLoaded: Boolean(cached?.previewLoaded),
-            tileInfoLoaded: true,
-          },
-        );
-        if (this.isUnmounted || String(this.selectedImageId) !== String(id)) return;
-        if (this.tileInfoReady(imageInfo)) {
-          this.viewer?.setImageSource(imageInfo);
-          const imageStatus = document.getElementById('ws-image-status');
-          if (imageStatus) {
-            const modeText = this.getPromptModeLabel();
-            imageStatus.innerText = `${this.selectedImagePath || relPath || id} | ${modeText}`;
-          }
-          return;
-        }
-      } catch (e) {
-        console.warn('Failed to refresh tile status:', e);
-      }
-      if (!this.isUnmounted && String(this.selectedImageId) === String(id)) this.scheduleTileStatusPoll(id, relPath, 1400);
-    }, delay);
-  },
-
   commitImageBundle(bundle) {
     if (!bundle || !this.viewer) return;
-    this.clearTileStatusPoll();
     this.annotationController.resetForImage(bundle.annotations);
     this.isImageLoading = false;
     this.viewer.setPrompts([]);
     this.viewer.setPreviews([]);
     const previewShown = this.viewer.setPreviewSource?.(bundle.previewInfo) || false;
-    const tileReady = this.tileInfoReady(bundle.imageInfo);
-    if (tileReady) {
-      this.viewer.setImageSource(bundle.imageInfo);
-    } else {
-      this.viewer.closeImageTiles?.();
-      this.scheduleTileStatusPoll(bundle.id, bundle.relPath);
-    }
     this.viewer.setAnnotations(this.visibleAnnotations());
     this.viewer.setFocusedAnnotation(null);
-    this.setCanvasPlaceholder(!(previewShown || tileReady), i18n.t('loading_image_annotations'));
+    this.setCanvasPlaceholder(!previewShown, i18n.t('loading_image_annotations'));
     const imageStatus = document.getElementById('ws-image-status');
     if (imageStatus) {
       const modeText = this.getPromptModeLabel();
-      const tileStatus = tileReady ? '' : ` | tiles: ${bundle.imageInfo?.status || 'generating'}`;
-      imageStatus.innerText = `${this.selectedImagePath || bundle.relPath || bundle.id} | ${modeText}${tileStatus}`;
+      imageStatus.innerText = `${this.selectedImagePath || bundle.relPath || bundle.id} | ${modeText}`;
     }
     this.renderClasses();
     this.renderAnnotations();
@@ -1316,30 +1238,13 @@ export const ImageWorkspace = {
     queue.forEach((index) => {
       const img = this.images[index];
       if (!img?.id) return;
-      const key = this.imageBundleKey(img.id);
       const step = Math.abs(index - anchorIndex);
-      const requirements = { annotations: step <= 1, preview: true, tileInfo: true };
-      const cached = this.imageBundleCache?.get(key);
-      if (bundleSatisfies(cached, requirements)) return;
       this.loadImageBundle(img.id, img.rel_path, {
         includeAnnotations: step <= 1,
         includePreview: true,
-        includeTileInfo: true,
-        tilePriority: 'medium',
-        enqueueTile: true,
-        warmLowResTile: step <= 1,
+        includeTileInfo: false,
       }).catch(() => {});
     });
-
-    for (let index = 0; index < this.images.length; index += 1) {
-      if (Math.abs(index - anchorIndex) <= this.imagePrefetchRadius) continue;
-      const img = this.images[index];
-      if (!img?.id) continue;
-      const key = this.imageBundleKey(img.id);
-      if (this.lowTilePrefetchKeys?.has(key)) continue;
-      this.lowTilePrefetchKeys?.add(key);
-      api.getImageTilesInfo(this.projectId, img.id, {}, { priority: 'low', enqueue: true }).catch(() => {});
-    }
   },
 
   async selectImage(id, relPath, options = {}) {
@@ -1365,7 +1270,7 @@ export const ImageWorkspace = {
     this.previews = [];
     this.annotationController.resetEmptySelection();
     const cachedBundle = this.getCachedImageBundle(id);
-    const cachedBundleReady = bundleSatisfies(cachedBundle, { annotations: true, preview: true, tileInfo: true });
+    const cachedBundleReady = bundleSatisfies(cachedBundle, { annotations: true, preview: true });
     this.isImageLoading = !cachedBundleReady;
     
     if (this.viewer) {
