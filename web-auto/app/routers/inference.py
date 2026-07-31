@@ -20,6 +20,7 @@ def create_inference_router(
     infer_single_impl: Callable[..., dict[str, Any]],
     infer_example_preview_impl: Callable[..., dict[str, Any]],
     run_infer_batch: Callable[..., dict[str, Any]],
+    precheck_infer_batch: Callable[[InferBatchIn], None],
     spawn_infer_job: Callable[..., dict[str, Any]],
     get_active_infer_job_for_project: Callable[[str], dict[str, Any] | None],
     get_latest_infer_job_for_project: Callable[..., dict[str, Any] | None],
@@ -55,6 +56,7 @@ def create_inference_router(
                 model_backend=payload.model_backend,
                 locate_api_base_url=payload.locate_api_base_url,
                 score_default=payload.score_default,
+                contour_mode=payload.contour_mode,
             )
         finally:
             release_interactive_gpu(lease_id)
@@ -91,6 +93,7 @@ def create_inference_router(
                 model_backend=payload.model_backend,
                 locate_api_base_url=payload.locate_api_base_url,
                 score_default=payload.score_default,
+                contour_mode=payload.contour_mode,
             )
         finally:
             release_interactive_gpu(lease_id)
@@ -141,6 +144,7 @@ def create_inference_router(
 
     @router.post('/api/infer/jobs/start_batch')
     def start_infer_batch_job(payload: InferBatchIn) -> dict[str, Any]:
+        precheck_infer_batch(payload)
         job = spawn_infer_job(
             project_id=payload.project_id,
             job_type='text_batch',

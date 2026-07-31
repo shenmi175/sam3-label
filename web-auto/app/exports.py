@@ -79,9 +79,16 @@ def export_coco(
             bbox_xywh = _xyxy_to_xywh(bbox_xyxy)
             polygon = ann.get('polygon') or []
             segmentation: list[list[float]] = []
-            flat = _flatten_polygon(polygon)
-            if len(flat) >= 6:
-                segmentation = [flat]
+            raw_polygons = ann.get('polygons')
+            if isinstance(raw_polygons, list) and raw_polygons:
+                for poly in raw_polygons:
+                    flat_multi = _flatten_polygon(poly if isinstance(poly, list) else [])
+                    if len(flat_multi) >= 6:
+                        segmentation.append(flat_multi)
+            if not segmentation:
+                flat = _flatten_polygon(polygon)
+                if len(flat) >= 6:
+                    segmentation = [flat]
 
             area = ann.get('area')
             if area is None:
@@ -158,6 +165,8 @@ def export_yolo(
                 cy = y1 + bh / 2.0
                 txt_lines.append(f"{class_to_idx[cls]} {cx / w:.6f} {cy / h:.6f} {bw / w:.6f} {bh / h:.6f}")
             else:
+                # YOLO-seg has no multi-polygon form; merged annotations export
+                # their main contour only.
                 polygon = ann.get('polygon') or []
                 flat = _flatten_polygon(polygon)
                 if len(flat) < 6:

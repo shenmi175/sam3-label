@@ -12,6 +12,8 @@ DEFAULT_LOCATE_API_BASE_URL = 'http://127.0.0.1:8004'
 
 ModelBackend = Literal['sam3', 'locate-anything']
 
+ContourMode = Literal['split', 'merged']
+
 
 class InferIn(BaseModel):
     project_id: str
@@ -26,10 +28,12 @@ class InferIn(BaseModel):
     model_backend: ModelBackend = 'sam3'
     locate_api_base_url: str = DEFAULT_LOCATE_API_BASE_URL
     score_default: float = Field(default=0.5, ge=0.0, le=1.0)
+    contour_mode: ContourMode = 'split'
 
 
 class InferBatchIn(BaseModel):
     project_id: str
+    mode: Literal['text', 'la_boxes'] = 'text'
     classes: list[str] = Field(default_factory=list)
     image_ids: list[str] = Field(default_factory=list)
     retry_image_ids: list[str] = Field(default_factory=list)
@@ -42,6 +46,7 @@ class InferBatchIn(BaseModel):
     model_backend: ModelBackend = 'sam3'
     locate_api_base_url: str = DEFAULT_LOCATE_API_BASE_URL
     score_default: float = Field(default=0.5, ge=0.0, le=1.0)
+    contour_mode: ContourMode = 'split'
 
 
 class InferExamplePreviewIn(BaseModel):

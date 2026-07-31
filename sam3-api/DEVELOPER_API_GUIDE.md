@@ -84,11 +84,14 @@ curl http://127.0.0.1:8001/health
 - `threshold`
 - `include_mask_png`
 - `max_detections`
+- `contour_mode`: `split | merged`，默认 `split`
 
 说明:
 
 - 这条链路的图像输入尺寸固定对齐原生 image model。
 - 对非默认 `input_size` 的请求会收敛到默认值，不再先报错再回退。
+- `contour_mode=split`（默认）: 每个实例 mask 按外轮廓拆成多条 detection（id 形如 `det_0001_c001`）。
+- `contour_mode=merged`: 每个实例只输出一条 detection，`polygon` 为最大轮廓，新增 `polygons` 字段包含全部轮廓，`mask_png_base64` 为整张实例 mask，`contour_index=null`、`contour_count` 为轮廓数。`/v1/infer_batch` 同样支持该参数。
 
 ### `POST /v1/semantic/infer`
 

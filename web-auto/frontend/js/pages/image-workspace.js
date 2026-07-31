@@ -681,6 +681,9 @@ export const ImageWorkspace = {
     
     const btnBatch = document.getElementById('btn-batch-infer');
     if (btnBatch) btnBatch.onclick = () => this.startBatchTask();
+
+    const btnLaBoxes = document.getElementById('btn-la-boxes-batch');
+    if (btnLaBoxes) btnLaBoxes.onclick = () => this.startLaBoxesBatchTask();
     
     const btnExSeg = document.getElementById('btn-example-segment');
     if (btnExSeg) btnExSeg.onclick = () => this.runExamplePreview();
@@ -1338,6 +1341,10 @@ export const ImageWorkspace = {
 
   async startBatchTask() {
     await this.inferenceController.startBatchTask();
+  },
+
+  async startLaBoxesBatchTask() {
+    await this.inferenceController.startLaBoxesBatchTask();
   },
 
   async pollTaskStatus() {

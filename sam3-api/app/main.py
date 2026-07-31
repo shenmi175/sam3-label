@@ -125,6 +125,13 @@ def _parse_boxes(raw: Optional[str]) -> list[tuple[float, float, float, float, b
     return boxes
 
 
+def _parse_contour_mode(raw: Optional[str]) -> str:
+    mode = str(raw or "split").strip().lower()
+    if mode not in {"split", "merged"}:
+        raise ValueError("contour_mode must be one of: split, merged")
+    return mode
+
+
 def _is_oom_error(exc: BaseException) -> bool:
     text = str(exc or "").lower()
     return ("out of memory" in text) or ("cuda oom" in text) or ("cuda out of memory" in text)
@@ -399,9 +406,11 @@ def create_app() -> FastAPI:
         threshold: Optional[float] = Form(None),
         include_mask_png: bool = Form(False),
         max_detections: int = Form(100),
+        contour_mode: str = Form("split"),
     ) -> dict:
         try:
             mode_norm = str(mode or "text").strip().lower()
+            contour_mode_norm = _parse_contour_mode(contour_mode)
             points_payload = _parse_points(points) if mode_norm in {"points", "point"} else []
             boxes_payload = _parse_boxes(boxes) if mode_norm in {"boxes", "box"} else []
 
@@ -431,6 +440,7 @@ def create_app() -> FastAPI:
                     "threshold": use_threshold,
                     "include_mask_png": bool(include_mask_png),
                     "max_detections": max(0, int(max_detections)),
+                    "contour_mode": contour_mode_norm,
                 },
             )
         except ValueError as exc:
@@ -495,6 +505,7 @@ def create_app() -> FastAPI:
         threshold: Optional[float] = Form(None),
         include_mask_png: bool = Form(False),
         max_detections: int = Form(100),
+        contour_mode: str = Form("split"),
     ) -> dict:
         if len(files) > settings.max_batch_files:
             raise HTTPException(
@@ -512,6 +523,7 @@ def create_app() -> FastAPI:
 
         mode_norm = str(mode or "text").strip().lower()
         try:
+            contour_mode_norm = _parse_contour_mode(contour_mode)
             points_payload = _parse_points(points) if mode_norm in {"points", "point"} else []
             boxes_payload = _parse_boxes(boxes) if mode_norm in {"boxes", "box"} else []
         except ValueError as exc:
@@ -538,6 +550,7 @@ def create_app() -> FastAPI:
                     threshold=use_threshold,
                     include_mask_png=bool(include_mask_png),
                     max_detections=max(0, int(max_detections)),
+                    contour_mode=contour_mode_norm,
                 )
                 if len(results) != len(loaded):
                     raise RuntimeError(f"batch result count mismatch: {len(results)} != {len(loaded)}")
@@ -570,6 +583,7 @@ def create_app() -> FastAPI:
                             threshold=use_threshold,
                             include_mask_png=bool(include_mask_png),
                             max_detections=max(0, int(max_detections)),
+                            contour_mode=contour_mode_norm,
                         )
                         items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
                         succeeded += 1
@@ -598,6 +612,7 @@ def create_app() -> FastAPI:
                     threshold=use_threshold,
                     include_mask_png=bool(include_mask_png),
                     max_detections=max(0, int(max_detections)),
+                    contour_mode=contour_mode_norm,
                 )
                 items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
                 succeeded += 1

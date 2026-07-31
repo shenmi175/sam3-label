@@ -372,6 +372,18 @@
 
 启动文本批推任务。
 
+批量模式由 `mode` 字段决定：
+
+- `mode="text"`（默认）：按 `classes` 做全图文本批推
+- `mode="la_boxes"`：读取已保存标注中 `source_model="locate-anything"` 的框，按类别分组作为 box prompt 送入 sam3-api 得到分割结果，并替换匹配上的 LA 框；没有 LA 框的图片计入 `skipped`
+  - 仅支持 `model_backend="sam3"`
+  - 启动前会检查 sam3-api 可达且 locate-anything-api 未占用显存，否则返回 409 与 `code="SAM3_NOT_READY"`
+
+`contour_mode` 适用于所有 sam3 推理接口（单图 / 预览 / 批量）：
+
+- `"split"`（默认）：一个实例的每个连通域各生成一条标注
+- `"merged"`：一个实例只生成一条标注，全部轮廓保存在 `polygons` 字段中
+
 ### `GET /api/infer/jobs/active?project_id=...`
 
 获取项目当前活动任务或暂停任务。

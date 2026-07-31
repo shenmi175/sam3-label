@@ -19,12 +19,17 @@ export class InferenceController {
       model_backend: store.state.config.defaultBackend || 'sam3',
       locate_api_base_url: store.state.config.locateApiUrl || '',
       score_default: Number(store.state.config.scoreDefault ?? 0.5),
+      contour_mode: store.state.config.contourMode || 'split',
     };
   }
 
   _handleBothLoadedError(e) {
     if (e?.detail?.code === 'BOTH_LOADED' || e?.code === 'BOTH_LOADED') {
       this.showBothLoadedModal(e.detail || {});
+      return true;
+    }
+    if (e?.detail?.code === 'SAM3_NOT_READY' || e?.code === 'SAM3_NOT_READY') {
+      this.showSam3NotReadyModal(e.detail || {});
       return true;
     }
     return false;
@@ -159,6 +164,44 @@ export class InferenceController {
     } catch(e) {
       if (this._handleBothLoadedError(e)) return;
       notify(e.message, "error");
+    }
+  }
+
+  async startLaBoxesBatchTask() {
+    const ws = this.workspace;
+    const classes = ws.getSelectedClassesForInference();
+
+    const batchConfig = await this.openBatchConfigModal(classes, { title: i18n.t('la_boxes_batch') });
+    if (!batchConfig) return;
+
+    const payload = {
+      project_id: ws.projectId,
+      mode: 'la_boxes',
+      classes,
+      threshold: store.state.config.threshold,
+      batch_size: store.state.config.batchSize,
+      api_base_url: store.state.config.sam3ApiUrl,
+      ...this._backendPayload(),
+      model_backend: 'sam3',
+      scope_mode: batchConfig.scope_mode,
+      related_classes: batchConfig.related_classes || [],
+      image_ids: batchConfig.image_ids || [],
+      retry_image_ids: batchConfig.retry_image_ids || [],
+    };
+    payload.all_images = batchConfig.scope_mode === 'all'
+      && payload.image_ids.length === 0
+      && payload.retry_image_ids.length === 0;
+
+    try {
+      const res = await api.startBatchInfer(payload);
+      ws.activeJobId = res?.job?.job_id || '';
+      if (!ws.activeJobId) throw new Error('batch task did not return job_id');
+      ws.batchResultShownForJobId = '';
+      this.pollTaskStatus();
+      notify('LA boxes segmentation started', 'success');
+    } catch (e) {
+      if (this._handleBothLoadedError(e)) return;
+      notify(e.message, 'error');
     }
   }
 
@@ -333,7 +376,7 @@ export class InferenceController {
     }
   }
 
-  openBatchConfigModal(defaultClasses = []) {
+  openBatchConfigModal(defaultClasses = [], options = {}) {
     const ws = this.workspace;
     return new Promise((resolve) => {
       const modal = document.getElementById('modal-batch-full');
@@ -342,11 +385,12 @@ export class InferenceController {
         return;
       }
       const classes = ws.projectMeta?.classes || [];
+      const title = String(options.title || '全图文本推理');
       const defaultSet = new Set((defaultClasses || []).map(x => String(x)));
       modal.innerHTML = `
         <div class="neu-card" style="width: 520px; max-width: calc(100vw - 40px); padding: 28px; position: relative;">
           <button class="neu-button" id="btn-close-batch-modal" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; color: #ef4444;">×</button>
-          <h2 style="margin: 0 0 18px 0; font-size: 18px;">全图文本推理</h2>
+          <h2 style="margin: 0 0 18px 0; font-size: 18px;">${escapeHtml(title)}</h2>
           <div style="display: flex; flex-direction: column; gap: 18px;">
             <div class="neu-box" style="padding: 14px; border-radius: 12px; background: var(--neu-bg-light);">
               <div style="font-size: 12px; font-weight: 700; margin-bottom: 10px;">本次将推理这些类别</div>
@@ -467,17 +511,20 @@ export class InferenceController {
     document.getElementById('btn-confirm-batch-result').onclick = close;
     const retryBtn = document.getElementById('btn-retry-batch-result');
     if (retryBtn) {
+      const jobMode = String(job.payload_dict?.mode || 'text');
       retryBtn.onclick = async () => {
         close();
         try {
           const res = await api.startBatchInfer({
             project_id: ws.projectId,
+            mode: jobMode,
             classes: ws.getSelectedClassesForInference(),
             retry_image_ids: retryImageIds,
             threshold: store.state.config.threshold,
             batch_size: store.state.config.batchSize,
             api_base_url: store.state.config.sam3ApiUrl,
             ...this._backendPayload(),
+            ...(jobMode === 'la_boxes' ? { model_backend: 'sam3' } : {}),
           });
           ws.activeJobId = res?.job?.job_id || '';
           if (!ws.activeJobId) throw new Error('batch task did not return job_id');
@@ -527,6 +574,51 @@ export class InferenceController {
       }
     };
     document.getElementById('btn-both-loaded-settings').onclick = () => {
+      close();
+      window.location.hash = '/settings';
+    };
+  }
+
+  showSam3NotReadyModal(detail) {
+    const modal = document.getElementById('modal-both-loaded');
+    if (!modal) return;
+    const locateUrl = detail?.locate_api_base_url || store.state.config.locateApiUrl || '';
+    const sam3Url = detail?.sam3_api_base_url || store.state.config.sam3ApiUrl || '';
+    modal.innerHTML = `
+      <div class="neu-card" style="width: 480px; max-width: calc(100vw - 40px); padding: 28px; position: relative;">
+        <button class="neu-button" id="btn-close-sam3-not-ready" style="position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; padding: 0; border-radius: 50%; color: #ef4444;">×</button>
+        <h2 style="margin: 0 0 14px 0; font-size: 18px; color: #d97706;">${i18n.t('sam3_not_ready_title')}</h2>
+        <div class="neu-box" style="padding: 14px; border-radius: 12px; background: rgba(217,119,6,0.08); border: 1px solid rgba(217,119,6,0.24);">
+          <div style="font-size: 13px; line-height: 1.7; color: var(--neu-text);">${escapeHtml(i18n.t('sam3_not_ready_hint'))}</div>
+          <div style="margin-top: 10px; font-size: 11px; color: var(--neu-text-light); line-height: 1.6;">
+            sam3-api: ${escapeHtml(sam3Url)}<br />
+            locate-anything-api: ${escapeHtml(locateUrl)}
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+          <button id="btn-sam3-not-ready-unload" class="neu-button" style="color: #ef4444; font-weight: 700;">${i18n.t('unload_locate')}</button>
+          <button id="btn-sam3-not-ready-settings" class="neu-button">${i18n.t('both_loaded_resolve')}</button>
+          <button id="btn-close-sam3-not-ready-2" class="neu-button">${i18n.t('close')}</button>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    const close = () => {
+      modal.style.display = 'none';
+      modal.innerHTML = '';
+    };
+    document.getElementById('btn-close-sam3-not-ready').onclick = close;
+    document.getElementById('btn-close-sam3-not-ready-2').onclick = close;
+    document.getElementById('btn-sam3-not-ready-unload').onclick = async () => {
+      try {
+        await api.unloadLocate(locateUrl);
+        notify('LocateAnything model unloaded', 'success');
+        close();
+      } catch (e) {
+        notify('Unload failed: ' + e.message, 'error');
+      }
+    };
+    document.getElementById('btn-sam3-not-ready-settings').onclick = () => {
       close();
       window.location.hash = '/settings';
     };

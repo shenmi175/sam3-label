@@ -30,6 +30,12 @@ export function renderAutoAnnotatePanel() {
         <span id="lbl-batch-size-value" style="min-width: 32px; text-align: center; font-size: 12px; font-weight: 800; color: var(--neu-text); font-variant-numeric: tabular-nums;">${store.state.config.batchSize}</span>
         <button id="btn-batch-inc" class="neu-button" title="Batch size +1" style="width: 24px; height: 24px; padding: 0; border-radius: 8px; font-size: 12px;">+</button>
       </div>
+
+      <label style="font-size: 11px; font-weight: 700; color: var(--neu-text-light); margin-left: 5px; white-space: nowrap;">${i18n.t('contour_mode')}</label>
+      <select id="sel-contour-mode" class="neu-input" style="width: 132px; height: 32px; font-size: 11px;">
+        <option value="split">${i18n.t('contour_split')}</option>
+        <option value="merged">${i18n.t('contour_merged')}</option>
+      </select>
     </div>
 
     <div class="ws-auto-only" data-default-display="block" style="width: 1px; height: 24px; background: rgba(0,0,0,0.05);"></div>
@@ -37,6 +43,7 @@ export function renderAutoAnnotatePanel() {
     <div class="ws-auto-only" data-default-display="flex" style="display: flex; gap: 8px;">
       <button id="btn-infer-current" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 700; color: var(--neu-text-active);">${i18n.t('infer_current')}</button>
       <button id="btn-batch-infer" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('batch_infer')}</button>
+      <button id="btn-la-boxes-batch" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('la_boxes_batch')}</button>
       <button id="btn-example-segment" class="neu-button" style="height: 32px; padding: 0 12px; font-size: 11px; font-weight: 600;">${i18n.t('example_segment')}</button>
     </div>
   `;

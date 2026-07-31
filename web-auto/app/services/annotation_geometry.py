@@ -182,6 +182,11 @@ def _annotation_area_value(ann: dict[str, Any]) -> float:
         raw_area = 0.0
     if raw_area > 0.0:
         return raw_area
+    polygons = ann.get('polygons')
+    if isinstance(polygons, list) and polygons:
+        multi_area = sum(_polygon_area(p) for p in polygons if isinstance(p, list))
+        if multi_area > 0.0:
+            return multi_area
     poly_area = _polygon_area(ann.get('polygon') or [])
     if poly_area > 0.0:
         return poly_area

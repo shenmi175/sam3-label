@@ -11,6 +11,7 @@ class DetectionOut(BaseModel):
     bbox_xyxy: list[float]
     bbox_xywh: list[float]
     polygon: Optional[list[list[float]]] = None
+    polygons: Optional[list[list[list[float]]]] = None
     area: Optional[int] = None
     mask_png_base64: Optional[str] = None
     model_det_id: Optional[str] = None

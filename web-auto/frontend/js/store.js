@@ -13,6 +13,10 @@ function clampBatchSize(value) {
   return Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : 1;
 }
 
+function normalizeContourMode(value) {
+  return String(value || '').trim().toLowerCase() === 'merged' ? 'merged' : 'split';
+}
+
 export const store = {
   state: {
     config: {
@@ -20,6 +24,7 @@ export const store = {
       locateApiUrl: localStorage.getItem('locateApiUrl') || 'http://127.0.0.1:8004',
       defaultBackend: localStorage.getItem('defaultBackend') || 'sam3',
       scoreDefault: clamp01(localStorage.getItem('scoreDefault')),
+      contourMode: normalizeContourMode(localStorage.getItem('contourMode')),
       theme: localStorage.getItem('theme') || 'light',
       language: localStorage.getItem('language') || 'zh',
       threshold: clampThreshold(localStorage.getItem('threshold')),
@@ -42,6 +47,8 @@ export const store = {
       value = clampBatchSize(value);
     } else if (key === 'scoreDefault') {
       value = clamp01(value);
+    } else if (key === 'contourMode') {
+      value = normalizeContourMode(value);
     }
     this.state.config[key] = value;
     if (key === 'sam3ApiUrl') {
@@ -52,6 +59,8 @@ export const store = {
       localStorage.setItem('defaultBackend', value);
     } else if (key === 'scoreDefault') {
       localStorage.setItem('scoreDefault', value);
+    } else if (key === 'contourMode') {
+      localStorage.setItem('contourMode', value);
     } else if (key === 'theme') {
       localStorage.setItem('theme', value);
       this.applyTheme(value);

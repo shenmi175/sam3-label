@@ -32,6 +32,12 @@ export class AutoConfigController {
     this.syncBackendUI();
     this.syncSourceFilter();
 
+    const selContour = document.getElementById('sel-contour-mode');
+    if (selContour) {
+      selContour.value = store.state.config.contourMode || 'split';
+      selContour.onchange = (e) => store.setConfig('contourMode', e.target.value);
+    }
+
     const btnThresholdDec = document.getElementById('btn-threshold-dec');
     const btnThresholdInc = document.getElementById('btn-threshold-inc');
     const btnBatchDec = document.getElementById('btn-batch-dec');
@@ -53,6 +59,11 @@ export class AutoConfigController {
     const btnExample = document.getElementById('btn-example-segment');
     if (sam3UrlInp) sam3UrlInp.style.display = isLocate ? 'none' : '';
     if (locateUrlInp) locateUrlInp.style.display = isLocate ? '' : 'none';
+    const selContour = document.getElementById('sel-contour-mode');
+    if (selContour) {
+      selContour.disabled = isLocate;
+      selContour.style.opacity = isLocate ? '0.45' : '1';
+    }
     if (btnExample) {
       btnExample.disabled = isLocate;
       btnExample.style.opacity = isLocate ? '0.45' : '1';

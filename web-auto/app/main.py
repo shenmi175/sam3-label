@@ -478,6 +478,7 @@ app.include_router(
         infer_single_impl=INFERENCE_SERVICE.infer_single,
         infer_example_preview_impl=INFERENCE_SERVICE.infer_example_preview,
         run_infer_batch=INFERENCE_SERVICE.run_infer_batch,
+        precheck_infer_batch=INFERENCE_SERVICE.precheck_infer_batch,
         spawn_infer_job=INFER_JOBS.spawn_job,
         get_active_infer_job_for_project=INFER_JOBS.get_active_job_for_project,
         get_latest_infer_job_for_project=INFER_JOBS.get_latest_job_for_project,

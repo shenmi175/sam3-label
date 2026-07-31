@@ -64,6 +64,34 @@ def _convert_detections(
                 metadata[key] = det.get(key)
 
         polygon = det.get('polygon') if isinstance(det.get('polygon'), list) else []
+
+        # merged contour mode: detection carries all contours of one instance
+        # in `polygons`; keep them under a single annotation.
+        raw_polygons = det.get('polygons') if isinstance(det.get('polygons'), list) else []
+        polygons = [p for p in raw_polygons if isinstance(p, list) and len(p) >= 3]
+        if polygons:
+            main_polygon = polygon if len(polygon) >= 3 else max(polygons, key=len)
+            if not bbox:
+                bbox = _bbox_from_polygon(main_polygon)
+            if not bbox:
+                continue
+            out.append(
+                {
+                    'id': str(det.get('id') or f'det_{i:04d}'),
+                    'class_name': class_name,
+                    'raw_label': str(det.get('label') or ''),
+                    'score': float(det.get('score') or 0.0),
+                    'bbox': [float(v) for v in bbox],
+                    'polygon': main_polygon,
+                    'polygons': polygons,
+                    'area': float(det.get('area') or 0.0),
+                    'mask_png_base64': det.get('mask_png_base64') or '',
+                    'source_model': source_model,
+                    **metadata,
+                }
+            )
+            continue
+
         if len(polygon) >= 3:
             if (not bbox) and len(polygon) >= 3:
                 bbox = _bbox_from_polygon(polygon)

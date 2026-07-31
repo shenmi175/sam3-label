@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.schemas import InferBatchIn, InferJobResumeIn
 from app.services.inference_jobs import InferenceJobService, InferJobPaused
+from app.services.annotation_geometry import _ann_bbox
 from app.services.inference_results import _convert_detections, _replace_by_classes
 from app.services.inference_visual_prompts import (
     _filter_negative_only,
@@ -268,6 +269,7 @@ class InferenceService:
         model_backend: str = 'sam3',
         locate_api_base_url: str = '',
         score_default: float = 0.5,
+        contour_mode: str = 'split',
     ) -> dict[str, Any]:
         backend = str(model_backend or 'sam3').strip().lower()
         infer_mode = str(mode).strip().lower()
@@ -348,6 +350,7 @@ class InferenceService:
                     boxes=infer_boxes,
                     point_box_size=point_box_size,
                     include_mask_png=True,
+                    contour_mode=contour_mode,
                 )
             detections_local = result_local.get('detections', [])
             detections_local = detections_local if isinstance(detections_local, list) else []
@@ -520,6 +523,13 @@ class InferenceService:
         should_stop: Optional[Callable[[], bool]] = None,
         resume_state: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        if str(getattr(payload, 'mode', 'text') or 'text').strip().lower() == 'la_boxes':
+            return self.run_la_boxes_batch(
+                payload,
+                progress_cb=progress_cb,
+                should_stop=should_stop,
+                resume_state=resume_state,
+            )
         project = self._get_project_or_404(payload.project_id, include_images=False)
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
@@ -536,6 +546,7 @@ class InferenceService:
         )
         is_locate_batch = backend == 'locate-anything'
         score_default = float(getattr(payload, 'score_default', 0.5) or 0.5)
+        contour_mode = str(getattr(payload, 'contour_mode', 'split') or 'split').strip().lower()
 
         classes = [str(c).strip() for c in payload.classes if str(c).strip()]
         if not classes:
@@ -635,6 +646,7 @@ class InferenceService:
                             prompt=prompt,
                             threshold=payload.threshold,
                             include_mask_png=True,
+                            contour_mode=contour_mode,
                         )
                     )
                 items = batch_result.get('items', [])
@@ -779,6 +791,304 @@ class InferenceService:
             'message': summary,
         }
 
+
+    def _check_sam3_ready_for_la_boxes(self, *, sam3_url: str, locate_url: str) -> None:
+        """Refuse to start a la_boxes job unless sam3-api can actually serve it.
+
+        Both services compete for the same VRAM, so the user must stop or
+        unload locate-anything-api first. The structured 409 lets the frontend
+        surface that instruction instead of a generic backend error.
+        """
+        def _fail(message: str, **extra: Any) -> None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'code': 'SAM3_NOT_READY',
+                    'message': message,
+                    'sam3_api_base_url': sam3_url,
+                    'locate_api_base_url': locate_url,
+                    **extra,
+                },
+            )
+
+        try:
+            self._sam3.health(sam3_url)
+        except Exception as exc:  # noqa: BLE001
+            _fail(
+                'sam3-api is unreachable. Stop locate-anything-api and start sam3-api '
+                'before running LA boxes segmentation.',
+                error=str(exc),
+            )
+
+        if self._locate is None:
+            return
+        try:
+            locate_loaded = bool(self._locate.health(locate_url).get('model_loaded'))
+        except Exception:  # noqa: BLE001
+            locate_loaded = False
+        if locate_loaded:
+            _fail(
+                'locate-anything-api still holds the model in GPU memory. '
+                'Unload or stop it before running LA boxes segmentation.'
+            )
+
+    @staticmethod
+    def _group_la_boxes_by_class(
+        annotations: list[dict[str, Any]],
+        *,
+        classes: list[str],
+    ) -> dict[str, list[list[float]]]:
+        allowed = {c for c in classes if c}
+        grouped: dict[str, list[list[float]]] = {}
+        for ann in annotations if isinstance(annotations, list) else []:
+            if not isinstance(ann, dict):
+                continue
+            if str(ann.get('source_model') or '').strip().lower() != 'locate-anything':
+                continue
+            class_name = str(ann.get('class_name') or ann.get('label') or '').strip()
+            if not class_name or (allowed and class_name not in allowed):
+                continue
+            bbox = _ann_bbox(ann)
+            if not bbox:
+                continue
+            grouped.setdefault(class_name, []).append([*bbox, 1.0])
+        return grouped
+
+    def precheck_infer_batch(self, payload: InferBatchIn) -> None:
+        """Validate a batch payload before the job is spawned.
+
+        Job workers run in background threads, so readiness failures must be
+        raised here to reach the client as an HTTP response.
+        """
+        if str(getattr(payload, 'mode', 'text') or 'text').strip().lower() != 'la_boxes':
+            return
+        if str(getattr(payload, 'model_backend', 'sam3') or 'sam3').strip().lower() == 'locate-anything':
+            raise HTTPException(
+                status_code=400,
+                detail='LA boxes segmentation runs on the sam3 backend only',
+            )
+        self._check_sam3_ready_for_la_boxes(
+            sam3_url=payload.api_base_url,
+            locate_url=self._resolve_locate_api_base_url(getattr(payload, 'locate_api_base_url', '')),
+        )
+
+    def run_la_boxes_batch(
+        self,
+        payload: InferBatchIn,
+        *,
+        progress_cb: Optional[Callable[..., None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
+        resume_state: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        project = self._get_project_or_404(payload.project_id, include_images=False)
+        if project.get('project_type') != 'image':
+            raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
+
+        backend = str(getattr(payload, 'model_backend', 'sam3') or 'sam3').strip().lower()
+        if backend == 'locate-anything':
+            raise HTTPException(
+                status_code=400,
+                detail='LA boxes segmentation runs on the sam3 backend only',
+            )
+        locate_url = self._resolve_locate_api_base_url(getattr(payload, 'locate_api_base_url', ''))
+        self._check_sam3_ready_for_la_boxes(sam3_url=payload.api_base_url, locate_url=locate_url)
+
+        contour_mode = str(getattr(payload, 'contour_mode', 'split') or 'split').strip().lower()
+        classes = [str(c).strip() for c in payload.classes if str(c).strip()]
+
+        target_images, selection_meta = self._select_text_batch_target_images(
+            project, payload, impacted_classes=classes or [str(c).strip() for c in project.get('classes', [])]
+        )
+        if not target_images:
+            raise HTTPException(status_code=400, detail='no target images')
+
+        requested_batch_size = self._requested_batch_size(payload.batch_size)
+        # Each image carries its own box prompts, so images are sent one by one.
+        batch_size = 1
+        prior = resume_state if isinstance(resume_state, dict) else {}
+        succeeded = max(0, int(prior.get('succeeded') or 0))
+        failed = max(0, int(prior.get('failed') or 0))
+        skipped = max(0, int(prior.get('skipped') or 0))
+        total_new = max(0, int(prior.get('new_annotations') or 0))
+        errors = list(prior.get('errors', [])) if isinstance(prior.get('errors'), list) else []
+        failed_image_ids = [str(x).strip() for x in prior.get('failed_image_ids', []) if str(x).strip()]
+        skipped_image_ids = [str(x).strip() for x in prior.get('skipped_image_ids', []) if str(x).strip()]
+        image_results = list(prior.get('image_results', [])) if isinstance(prior.get('image_results'), list) else []
+        completed_image_ids = {
+            str(item.get('image_id') or '').strip()
+            for item in image_results
+            if isinstance(item, dict) and str(item.get('status') or '') in {'saved', 'skipped'}
+        }
+        if completed_image_ids:
+            target_images = [
+                image for image in target_images
+                if str(image.get('id') or '').strip() not in completed_image_ids
+            ]
+        class_additions = dict(prior.get('class_additions', {})) if isinstance(prior.get('class_additions'), dict) else {}
+        processed = max(0, int(prior.get('progress_done') or 0))
+        total = max(int(prior.get('progress_total') or 0), processed + len(target_images))
+        pending_images = list(target_images)
+
+        def emit_progress(**extra: Any) -> None:
+            if not progress_cb:
+                return
+            progress_cb(
+                requested=total,
+                batch_size=batch_size,
+                requested_batch_size=requested_batch_size,
+                max_remote_batch_size=self._max_batch_files,
+                succeeded=succeeded,
+                failed=failed,
+                skipped=skipped,
+                new_annotations=total_new,
+                failed_image_ids=failed_image_ids,
+                skipped_image_ids=skipped_image_ids,
+                class_additions=class_additions,
+                image_results=image_results,
+                selection=selection_meta,
+                **self._pending_image_progress_payload(pending_images),
+                **extra,
+            )
+
+        emit_progress(
+            message=f'Preparing LA boxes segmentation, remaining {len(target_images)} images',
+            progress_done=processed,
+            progress_total=total,
+        )
+
+        for image in target_images:
+            if should_stop and should_stop():
+                emit_progress(
+                    status='paused',
+                    message='Paused. Adjust parameters and resume when ready.',
+                    progress_done=processed,
+                    progress_total=total,
+                )
+                raise InferJobPaused('Paused. Adjust parameters and resume when ready.')
+
+            processed += 1
+            image_id = str(image.get('id') or '')
+            rel_path = str(image.get('rel_path') or image_id)
+            message = f'Processing {processed}/{total}: {rel_path}'
+            try:
+                old = self.storage.load_annotations(payload.project_id, image_id)
+                grouped = self._group_la_boxes_by_class(old, classes=classes)
+                if not grouped:
+                    skipped += 1
+                    skipped_image_ids.append(image_id)
+                    message = f'Skipped {processed}/{total}: {rel_path} (no LA boxes)'
+                    image_results.append(
+                        {
+                            'image_id': image_id,
+                            'rel_path': rel_path,
+                            'status': 'skipped',
+                            'reason': 'no_la_boxes',
+                            'new_annotations': 0,
+                        }
+                    )
+                else:
+                    merged = list(old)
+                    new_total = 0
+                    for class_name, group_boxes in grouped.items():
+                        result = self._remote_with_retries(
+                            lambda boxes=group_boxes, image_path=str(image.get('abs_path') or ''): self._sam3.infer(
+                                api_base_url=payload.api_base_url,
+                                image_path=image_path,
+                                mode='boxes',
+                                prompt='',
+                                threshold=payload.threshold,
+                                boxes=boxes,
+                                include_mask_png=True,
+                                contour_mode=contour_mode,
+                            )
+                        )
+                        detections = result.get('detections', [])
+                        converted = _convert_detections(
+                            detections=detections if isinstance(detections, list) else [],
+                            classes=[class_name],
+                            forced_class=class_name,
+                            source_model='sam3',
+                        )
+                        # SAM3 treats boxes as exemplars and may return other
+                        # similar instances, so scope results back to the prompts.
+                        converted = _filter_visual_detections(converted, points=[], boxes=group_boxes)
+                        if not converted:
+                            continue
+                        merged = _merge_visual_annotations(
+                            merged,
+                            new_annotations=converted,
+                            points=[],
+                            boxes=group_boxes,
+                        )
+                        new_total += len(converted)
+                        class_additions[class_name] = int(class_additions.get(class_name, 0) or 0) + len(converted)
+                    self.storage.save_annotations(payload.project_id, image_id, merged)
+                    succeeded += 1
+                    total_new += new_total
+                    image_results.append(
+                        {
+                            'image_id': image_id,
+                            'rel_path': rel_path,
+                            'status': 'saved',
+                            'reason': 'ok',
+                            'new_annotations': new_total,
+                        }
+                    )
+            except InferJobPaused:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                message = f'Failed {processed}/{total}: {rel_path}'
+                errors.append({'image_id': image_id, 'error': str(exc)})
+                failed_image_ids.append(image_id)
+                image_results.append(
+                    {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'status': 'failed',
+                        'reason': 'la_boxes_infer_failed',
+                        'new_annotations': 0,
+                        'error': str(exc),
+                    }
+                )
+            if pending_images:
+                pending_images.pop(0)
+            emit_progress(
+                message=message,
+                progress_done=processed,
+                progress_total=total,
+                current_image_id=image_id,
+                current_image_rel_path=rel_path,
+            )
+
+        summary = (
+            f'LA boxes segmentation complete: success {succeeded}, failed {failed}, skipped {skipped}, new {total_new}'
+            if failed > 0 or skipped > 0
+            else f'LA boxes segmentation complete: success {succeeded}, new {total_new}'
+        )
+        return {
+            'project_id': payload.project_id,
+            'requested': total,
+            'processed_images': processed,
+            'saved_images': succeeded,
+            'failed_images': failed,
+            'skipped_images': skipped,
+            'requested_batch_size': requested_batch_size,
+            'batch_size': batch_size,
+            'max_remote_batch_size': self._max_batch_files,
+            'succeeded': succeeded,
+            'failed': failed,
+            'skipped': skipped,
+            'new_annotations': total_new,
+            'errors': errors,
+            'failed_image_ids': failed_image_ids,
+            'skipped_image_ids': skipped_image_ids,
+            'retry_image_ids': failed_image_ids,
+            'class_additions': class_additions,
+            'image_results': image_results,
+            'selection': selection_meta,
+            'message': summary,
+        }
 
     def _normalize_prompt_boxes(self, raw: Any) -> list[list[float]]:
         boxes: list[list[float]] = []

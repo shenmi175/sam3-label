@@ -612,15 +612,17 @@ export class ImageViewerV2 {
   }
 
   getAnnotationGeometry(ann) {
-    if (!ann || typeof ann !== 'object') return { bbox: null, polygon: [] };
+    if (!ann || typeof ann !== 'object') return { bbox: null, polygon: [], polygons: [] };
     const bboxRef = ann.bbox || ann.bbox_xyxy || ann.box || null;
     const polygonRef = ann.polygon || null;
+    const polygonsRef = ann.polygons || null;
     const pointsRef = ann.points || null;
     const cached = this.annotationGeometryCache.get(ann);
     if (
       cached
       && cached.bboxRef === bboxRef
       && cached.polygonRef === polygonRef
+      && cached.polygonsRef === polygonsRef
       && cached.pointsRef === pointsRef
       && cached.imageWidth === this.image?.width
       && cached.imageHeight === this.image?.height
@@ -629,11 +631,15 @@ export class ImageViewerV2 {
     }
 
     const polygon = this.polygonToPairs(polygonRef || pointsRef);
+    const polygons = Array.isArray(polygonsRef)
+      ? polygonsRef.map((p) => this.polygonToPairs(p)).filter((p) => p.length >= 3)
+      : [];
     const bbox = this.normalizeBbox(bboxRef) || this.bboxFromPairs(polygon);
-    const geometry = { bbox, polygon };
+    const geometry = { bbox, polygon, polygons };
     this.annotationGeometryCache.set(ann, {
       bboxRef,
       polygonRef,
+      polygonsRef,
       pointsRef,
       imageWidth: this.image?.width,
       imageHeight: this.image?.height,
@@ -738,6 +744,13 @@ export class ImageViewerV2 {
     return inside;
   }
 
+  pointInAnnotationPolygons(point, geom) {
+    if (Array.isArray(geom.polygons) && geom.polygons.length > 0) {
+      return geom.polygons.some((poly) => this.pointInPolygon(point, poly));
+    }
+    return geom.polygon.length >= 3 && this.pointInPolygon(point, geom.polygon);
+  }
+
   distance(a, b) {
     const dx = Number(a?.[0] || 0) - Number(b?.[0] || 0);
     const dy = Number(a?.[1] || 0) - Number(b?.[1] || 0);
@@ -777,7 +790,7 @@ export class ImageViewerV2 {
         for (let i = 0; i < polygon.length; i += 1) {
           if (this.distance(point, polygon[i]) <= tolerance) return { annotation: selected, operation: 'polygon-vertex', vertexIndex: i };
         }
-        if (this.pointInPolygon(point, polygon)) return { annotation: selected, operation: 'move' };
+        if (this.pointInAnnotationPolygons(point, selectedGeom)) return { annotation: selected, operation: 'move' };
       }
       if (this.pointNearBboxEdge(point, bbox, tolerance)) {
         return { annotation: selected, operation: 'bbox-body' };
@@ -792,7 +805,7 @@ export class ImageViewerV2 {
       const polygon = geom.polygon;
       const bbox = geom.bbox;
       if (!this.pointInExpandedBbox(point, bbox, tolerance)) continue;
-      if (polygon.length >= 3 && this.pointInPolygon(point, polygon)) return { annotation: ann, operation: 'move' };
+      if (this.pointInAnnotationPolygons(point, geom)) return { annotation: ann, operation: 'move' };
       if (this.pointNearBboxEdge(point, bbox, tolerance)) return { annotation: ann, operation: 'bbox-body' };
       if (this.pointInBbox(point, bbox)) {
         return { annotation: ann, operation: polygon.length >= 3 ? 'bbox-body' : 'move' };
@@ -805,6 +818,9 @@ export class ImageViewerV2 {
     return {
       bbox: ann?.bbox ? [...ann.bbox] : null,
       polygon: ann?.polygon ? this.polygonToPairs(ann.polygon).map((p) => [...p]) : null,
+      polygons: Array.isArray(ann?.polygons)
+        ? ann.polygons.map((poly) => this.polygonToPairs(poly).map((p) => [...p]))
+        : null,
       points: ann?.points ? this.polygonToPairs(ann.points).map((p) => [...p]) : null,
     };
   }
@@ -812,6 +828,9 @@ export class ImageViewerV2 {
   applyMoveGeometry(ann, original, dx, dy) {
     const originalBbox = original.bbox || this.getAnnotationBbox(ann);
     const originalPoints = original.polygon || original.points;
+    if (original.polygons && original.polygons.length > 0) {
+      ann.polygons = original.polygons.map((poly) => poly.map((p) => this.clampPoint([p[0] + dx, p[1] + dy])));
+    }
     if (originalPoints && originalPoints.length > 0) {
       ann.polygon = originalPoints.map((p) => this.clampPoint([p[0] + dx, p[1] + dy]));
       delete ann.points;
@@ -842,6 +861,8 @@ export class ImageViewerV2 {
     points[vertexIndex] = this.clampPoint(point);
     ann.polygon = points;
     delete ann.points;
+    // Manual reshape degrades a merged multi-contour annotation to its main polygon.
+    delete ann.polygons;
     this.setAnnotationBbox(ann, this.bboxFromPolygon(points));
     this.invalidateAnnotationGeometry(ann);
   }
@@ -1127,16 +1148,21 @@ export class ImageViewerV2 {
     const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
     const geom = this.getAnnotationGeometry(ann);
     const points = geom.polygon;
-    if (this.options.showMasks && points && points.length > 2) {
-      this.drawPath(points, true);
-      const alpha = isPreview ? 0.45 : 0.3;
-      this.ctx.fillStyle = this.colorWithAlpha(color, alpha);
-      this.ctx.fill();
-      this.ctx.strokeStyle = isPreview ? 'rgba(255, 255, 255, 0.8)' : color;
-      if (isPreview) this.ctx.setLineDash([4, 4]);
-      this.ctx.lineWidth = isPreview ? 2 : 1.5;
-      this.ctx.stroke();
-      this.ctx.setLineDash([]);
+    const paths = (geom.polygons && geom.polygons.length > 0)
+      ? geom.polygons
+      : (points && points.length > 2 ? [points] : []);
+    if (this.options.showMasks && paths.length > 0) {
+      for (const path of paths) {
+        this.drawPath(path, true);
+        const alpha = isPreview ? 0.45 : 0.3;
+        this.ctx.fillStyle = this.colorWithAlpha(color, alpha);
+        this.ctx.fill();
+        this.ctx.strokeStyle = isPreview ? 'rgba(255, 255, 255, 0.8)' : color;
+        if (isPreview) this.ctx.setLineDash([4, 4]);
+        this.ctx.lineWidth = isPreview ? 2 : 1.5;
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+      }
     }
 
     const bbox = geom.bbox;
@@ -1215,16 +1241,19 @@ export class ImageViewerV2 {
     const geom = this.getAnnotationGeometry(ann);
     const polygon = geom.polygon;
     const bbox = geom.bbox;
-    if (polygon.length >= 3) {
-      this.drawPath(polygon, true);
+    const focusPaths = (geom.polygons && geom.polygons.length > 0)
+      ? geom.polygons
+      : (polygon.length >= 3 ? [polygon] : []);
+    for (const path of focusPaths) {
+      this.drawPath(path, true);
       this.ctx.strokeStyle = color;
       this.ctx.lineWidth = 2;
       this.ctx.setLineDash([6, 4]);
       this.ctx.stroke();
       this.ctx.setLineDash([]);
-      if (this.shouldDrawPolygonVertices(polygon)) {
-        polygon.forEach((point) => this.drawHandle(point, '#ffffff'));
-      }
+    }
+    if (polygon.length >= 3 && this.shouldDrawPolygonVertices(polygon)) {
+      polygon.forEach((point) => this.drawHandle(point, '#ffffff'));
     }
     if (!bbox) return;
     const p1 = this.imageToScreen([bbox[0], bbox[1]]);

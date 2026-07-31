@@ -104,6 +104,7 @@ class Sam3Client:
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
+        contour_mode: str = 'split',
     ) -> dict[str, Any]:
         infer_url = self._infer_url(api_base_url)
         image_file = Path(image_path)
@@ -116,6 +117,8 @@ class Sam3Client:
             'include_mask_png': 'true' if include_mask_png else 'false',
             'max_detections': str(int(max_detections)),
         }
+        if str(contour_mode or '').strip().lower() == 'merged':
+            payload['contour_mode'] = 'merged'
         if prompt:
             payload['prompt'] = prompt
 
@@ -161,6 +164,7 @@ class Sam3Client:
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
+        contour_mode: str = 'split',
     ) -> dict[str, Any]:
         infer_url = self._api_root(api_base_url) + '/v1/infer_batch'
         clean_paths = [Path(p) for p in (image_paths or []) if str(p).strip()]
@@ -176,6 +180,8 @@ class Sam3Client:
             'include_mask_png': 'true' if include_mask_png else 'false',
             'max_detections': str(int(max_detections)),
         }
+        if str(contour_mode or '').strip().lower() == 'merged':
+            payload['contour_mode'] = 'merged'
         if prompt:
             payload['prompt'] = prompt
         if payload['mode'] == 'points':

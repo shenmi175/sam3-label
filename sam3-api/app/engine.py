@@ -133,6 +133,8 @@ class Sam3InferenceEngine:
             model_key = str(det.pop("_model_det_key", "") or "")
             if contour_index is None:
                 det["id"] = f"det_{det_idx:04d}"
+                if det.get("model_det_id") is not None:
+                    det["model_det_id"] = det["id"]
                 continue
 
             if not model_key:
@@ -250,6 +252,7 @@ class Sam3InferenceEngine:
         class_id: int | None,
         include_mask_png: bool,
         max_detections: int,
+        contour_mode: str = "split",
     ) -> list[dict[str, Any]]:
         boxes_tensor = state.get("boxes")
         scores_tensor = state.get("scores")
@@ -304,6 +307,28 @@ class Sam3InferenceEngine:
             components = split_mask_components(mask)
             contour_count = len(components)
             model_key = f"{label}:{int(class_id)}:{int(source_idx)}" if class_id is not None else ""
+
+            if contour_mode == "merged":
+                if not components:
+                    detections.append(base_payload)
+                    continue
+                largest = max(components, key=lambda component: component.area)
+                payload = dict(base_payload)
+                payload.update(
+                    {
+                        "area": int(mask.sum()),
+                        "polygon": largest.polygon,
+                        "polygons": [component.polygon for component in components],
+                        "model_det_id": base_id,
+                        "contour_index": None,
+                        "contour_count": contour_count,
+                    }
+                )
+                if include_mask_png:
+                    payload["mask_png_base64"] = mask_to_png_base64(mask)
+                detections.append(payload)
+                continue
+
             for contour_idx, component in enumerate(components, start=1):
                 payload = dict(base_payload)
                 payload.update(
@@ -547,6 +572,7 @@ class Sam3InferenceEngine:
         include_mask_png: bool,
         max_detections: int,
         input_size: int | None = None,
+        contour_mode: str = "split",
     ) -> list[dict[str, Any]]:
         self._ensure_model()
         if not images:
@@ -598,6 +624,7 @@ class Sam3InferenceEngine:
                     class_id=class_idx,
                     include_mask_png=include_mask_png,
                     max_detections=max_detections,
+                    contour_mode=contour_mode,
                 )
                 per_image_detections[img_idx].extend(class_dets)
 
@@ -640,6 +667,7 @@ class Sam3InferenceEngine:
         boxes: list[tuple[float, float, float, float, bool]] | None = None,
         point_box_size: float = 16.0,
         input_size: int | None = None,
+        contour_mode: str = "split",
     ) -> dict[str, Any]:
         self._ensure_model()
 
@@ -669,6 +697,7 @@ class Sam3InferenceEngine:
                         class_id=class_idx,
                         include_mask_png=include_mask_png,
                         max_detections=max_detections,
+                        contour_mode=contour_mode,
                     )
                     detections_all.extend(class_dets)
 
@@ -737,6 +766,7 @@ class Sam3InferenceEngine:
                     class_id=None,
                     include_mask_png=include_mask_png,
                     max_detections=max_detections,
+                    contour_mode=contour_mode,
                 )
             else:
                 raise ValueError("mode must be one of: text, points, boxes")
