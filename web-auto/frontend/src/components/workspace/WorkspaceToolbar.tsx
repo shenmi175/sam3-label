@@ -1,4 +1,5 @@
-import { Box, Button, Tooltip, Typography } from '@mui/material';
+import { useState } from 'react';
+import { Box, Button } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useLayoutStore, type WorkspaceMode } from '../../stores/workspace/layoutStore';
@@ -6,6 +7,9 @@ import { useViewerStore } from '../../stores/workspace/viewerStore';
 import { useAnnotationStore } from '../../stores/workspace/annotationStore';
 import { toast } from '../../utils/notify';
 import { AutoAnnotatePanel } from './AutoAnnotatePanel';
+import { ReviewToolbar } from './ReviewToolbar';
+import { ExportPanel } from './ExportPanel';
+import { DataDashboardPanel } from './DataDashboardPanel';
 
 interface WorkspaceToolbarProps {
   projectId: string;
@@ -16,15 +20,19 @@ interface WorkspaceToolbarProps {
  *   - auto/review mode switch (guarded route navigation, legacy
  *     navigateWorkspaceRoute: commit pending polygon → flush dirty → hash nav)
  *   - auto mode: AutoAnnotatePanel
- *   - review mode: reserved slot for the phase-9 review toolbar
- *   - right side: data dashboard / smart filter / export buttons, kept as
- *     reserved phase-9 slots (panels are wired by later phases).
+ *   - review mode: ReviewToolbar (accept/reject/recategorize/save-next flow)
+ *   - right side: data dashboard / smart filter / export entry points
+ *     (dashboard + export open dialogs, smart filter toggles the right-column
+ *     panel).
  */
 export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const workspaceMode = useLayoutStore((s) => s.workspaceMode);
   const routeWorkspaceMode = useLayoutStore((s) => s.routeWorkspaceMode);
+  const smartFilterOpen = useLayoutStore((s) => s.smartFilterOpen);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
 
   const switchMode = async (mode: WorkspaceMode) => {
     if (mode === workspaceMode) return;
@@ -43,10 +51,6 @@ export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
       return;
     }
     useLayoutStore.getState().setWorkspaceMode(mode);
-  };
-
-  const reservedSlot = (label: string) => {
-    toast(`${label}: ${t('phase9_slot_desc')}`, 'info');
   };
 
   return (
@@ -97,42 +101,26 @@ export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
       </Box>
 
       {/* Mode-specific panels */}
-      {workspaceMode === 'auto' ? (
-        <AutoAnnotatePanel />
-      ) : (
-        <Tooltip title={t('phase9_slot_desc')}>
-          <Box
-            sx={{
-              height: 32,
-              px: 1.5,
-              display: 'flex',
-              alignItems: 'center',
-              borderRadius: '10px',
-              border: '1px dashed',
-              borderColor: 'divider',
-            }}
-          >
-            <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
-              {t('review_toolbar_slot')}
-            </Typography>
-          </Box>
-        </Tooltip>
-      )}
+      {workspaceMode === 'auto' ? <AutoAnnotatePanel /> : <ReviewToolbar />}
 
       <Box sx={{ flex: 1 }} />
 
-      {/* Phase-9 reserved slots: data dashboard / smart filter / export */}
+      {/* Data dashboard / smart filter / export entry points */}
       <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => reservedSlot(t('data_dashboard'))}>
+        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setDashboardOpen(true)}>
           {t('data_dashboard')}
         </Button>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => reservedSlot(t('smart_filter'))}>
+        <Button size="small" variant={smartFilterOpen ? 'contained' : 'outlined'} sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => useLayoutStore.getState().toggleSmartFilter()}>
           {t('smart_filter')}
         </Button>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => reservedSlot(t('export'))}>
+        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setExportOpen(true)}>
           {t('export')}
         </Button>
       </Box>
+
+      {/* Phase-9 dialogs */}
+      <ExportPanel projectId={projectId} open={exportOpen} onClose={() => setExportOpen(false)} />
+      <DataDashboardPanel projectId={projectId} open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
     </Box>
   );
 }

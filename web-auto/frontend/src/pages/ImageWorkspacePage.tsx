@@ -26,11 +26,13 @@ import { useViewerStore, filterAnnotationsBySource } from '../stores/workspace/v
 import { useInferenceStore } from '../stores/workspace/inferenceStore';
 import { useLayoutStore } from '../stores/workspace/layoutStore';
 import { useTasksStore } from '../stores/workspace/tasksStore';
+import { useSmartFilterStore } from '../stores/workspace/smartFilterStore';
 import { useImageNavigation } from '../hooks/useImageNavigation';
 import { useKeyboardCommands } from '../hooks/useKeyboardCommands';
 import { useUiStateSync, restoreUiState } from '../hooks/useUiStateSync';
 import { useJobPolling, stopJobPolling } from '../hooks/useJobPolling';
 import { usePreviewInference } from '../hooks/usePreviewInference';
+import { useBackendHealth } from '../hooks/useBackendHealth';
 import { ImageList } from '../components/workspace/ImageList';
 import { FilterBar } from '../components/workspace/FilterBar';
 import { ClassPanel } from '../components/workspace/ClassPanel';
@@ -39,6 +41,7 @@ import { WorkspaceToolbar } from '../components/workspace/WorkspaceToolbar';
 import { TaskProgressBar } from '../components/workspace/TaskProgressBar';
 import { GpuStatusWidget } from '../components/workspace/GpuStatusWidget';
 import { PreviewResultsPanel } from '../components/workspace/PreviewResultsPanel';
+import { SmartFilterPanel } from '../components/workspace/SmartFilterPanel';
 import { BatchConfigModal } from '../components/workspace/BatchConfigModal';
 import { BatchResultModal } from '../components/workspace/BatchResultModal';
 import { BackendErrorModal } from '../components/workspace/BackendErrorModal';
@@ -107,6 +110,10 @@ export function ImageWorkspacePage() {
   const classesSectionCollapsed = useLayoutStore((s) => s.classesSectionCollapsed);
   const annotationsSectionCollapsed = useLayoutStore((s) => s.annotationsSectionCollapsed);
   const unlabeledNavigationEnabled = useLayoutStore((s) => s.unlabeledNavigationEnabled);
+  const smartFilterOpen = useLayoutStore((s) => s.smartFilterOpen);
+
+  // Backend health indicator — legacy startHealthCheck (10 s /api/health).
+  const backendHealth = useBackendHealth();
 
   // Effective mode: review-only UI is a phase-9 slot; auto-only UI is
   // conditionally rendered through this flag (legacy .ws-auto-only elements).
@@ -231,6 +238,7 @@ export function ImageWorkspacePage() {
     useViewerStore.getState().reset();
     useInferenceStore.getState().reset();
     useLayoutStore.getState().reset();
+    useSmartFilterStore.getState().reset();
 
     useViewerStore
       .getState()
@@ -275,6 +283,7 @@ export function ImageWorkspacePage() {
       // clear the bundle cache, abort + reset every workspace store.
       useTasksStore.getState().reset();
       stopJobPolling();
+      useSmartFilterStore.getState().reset();
       clearBundleCache();
       useImageStore.getState().reset();
       useInferenceStore.getState().reset();
@@ -444,6 +453,32 @@ export function ImageWorkspacePage() {
         <Box sx={{ flex: 1 }} />
         <GpuStatusWidget active />
         <Box sx={{ flex: 1 }} />
+
+        {/* Backend health indicator (legacy startHealthCheck, 10 s polling) */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Box
+            sx={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              bgcolor:
+                backendHealth === 'online'
+                  ? '#10b981'
+                  : backendHealth === 'checking'
+                    ? '#fbbf24'
+                    : '#ef4444',
+            }}
+          />
+          <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>
+            {backendHealth === 'online'
+              ? t('backend_online')
+              : backendHealth === 'error'
+                ? t('backend_error')
+                : backendHealth === 'offline'
+                  ? t('backend_offline')
+                  : t('backend_checking')}
+          </Typography>
+        </Box>
 
         {/* Mode indicator (review-specific UI is a phase-9 slot) */}
         <Chip
@@ -850,10 +885,24 @@ export function ImageWorkspacePage() {
                 </Box>
               )}
 
-              {/*
-                Phase-9 panel slots: review toolbar extras, smart filter,
-                export and data dashboard panels mount here.
-              */}
+              {/* Smart filter workbench (toolbar-toggled, right-column slot) */}
+              {smartFilterOpen && (
+                <Box
+                  sx={{
+                    borderTop: '1px solid',
+                    borderColor: 'divider',
+                    flexShrink: 0,
+                    maxHeight: '55%',
+                    overflowY: 'auto',
+                    minHeight: 0,
+                  }}
+                >
+                  <SmartFilterPanel
+                    projectId={projectId}
+                    onClose={() => useLayoutStore.getState().toggleSmartFilter()}
+                  />
+                </Box>
+              )}
             </Box>
           </Box>
         )}
