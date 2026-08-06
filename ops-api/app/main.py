@@ -4,6 +4,7 @@ import hmac
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import docker
@@ -11,6 +12,10 @@ from docker.errors import DockerException, NotFound
 from docker.types import DeviceRequest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from model_registry import MODELS, get_model
+from model_registry.status import load_env_file
+from model_registry.status import status as model_status
 
 
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "sam3-auto-label").strip() or "sam3-auto-label"
@@ -380,6 +385,68 @@ def services() -> dict[str, Any]:
         "project": PROJECT_NAME,
         "services": [_service_status(service) for service in sorted(ALLOWED_SERVICES)],
     }
+
+
+def _models_env_file() -> dict[str, str]:
+    return load_env_file(Path(OPS_PROJECT_ROOT))
+
+
+def _models_root() -> Path:
+    return Path(OPS_PROJECT_ROOT)
+
+
+def _reachable(host_dir: str) -> bool:
+    # ops-api only sees paths under OPS_PROJECT_ROOT (mounted host root) and
+    # anything that happens to exist in the container filesystem. Absolute host
+    # paths outside the mount (e.g. an external checkpoint disk) are not visible.
+    if os.path.exists(host_dir):
+        return True
+    resolved = os.path.realpath(host_dir)
+    workspace = os.path.realpath(OPS_PROJECT_ROOT)
+    return resolved == workspace or resolved.startswith(workspace + os.sep)
+
+
+def _model_entry(spec: Any) -> dict[str, Any]:
+    st = model_status(spec, root=_models_root(), env_file=_models_env_file())
+    state = st.state if _reachable(st.host_dir) else "unknown"
+    return {
+        "id": spec.id,
+        "display_name": spec.display_name,
+        "api_service": spec.api_service,
+        "api_port": spec.api_port,
+        "host_dir": st.host_dir,
+        "host_dir_exists": st.host_dir_exists,
+        "state": state,
+        "approx_size_gb": spec.approx_size_gb,
+        "download": {
+            "kind": spec.download.kind,
+            "hf_repo_id": spec.download.hf_repo_id,
+            "instructions": spec.download.instructions,
+        },
+        "files": [
+            {
+                "path": f.rel_path,
+                "exists": f.exists,
+                "optional": f.optional,
+                "size_bytes": f.size_bytes,
+            }
+            for f in st.files
+        ],
+    }
+
+
+@app.get("/v1/models")
+def models() -> dict[str, Any]:
+    return {"models": [_model_entry(spec) for spec in MODELS]}
+
+
+@app.get("/v1/models/{model_id}")
+def model_detail(model_id: str) -> dict[str, Any]:
+    try:
+        spec = get_model(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _model_entry(spec)
 
 
 @app.post("/v1/services/{service}/{action}")

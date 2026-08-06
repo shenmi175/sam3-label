@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     VIRTUAL_ENV=/opt/venv \
-    PYTHONPATH=/app/ops-api
+    PYTHONPATH=/app/ops-api:/app
 ENV PATH="/opt/venv/bin:${PATH}"
 
 WORKDIR /app
@@ -15,6 +15,7 @@ RUN python -m venv "$VIRTUAL_ENV" \
 COPY ops-api/requirements.txt /tmp/ops-api-requirements.txt
 RUN "$VIRTUAL_ENV/bin/python" -m pip install -r /tmp/ops-api-requirements.txt
 
+COPY model_registry /app/model_registry
 COPY ops-api /app/ops-api
 RUN python -c "from app.main import app; print('ops-api imports ok')"
 
