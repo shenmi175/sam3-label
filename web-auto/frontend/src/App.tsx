@@ -4,6 +4,7 @@ import { ThemeProvider, CssBaseline } from '@mui/material';
 import { buildTheme } from './theme';
 import { router } from './router';
 import { ToastProvider } from './components/common/ToastProvider';
+import { TaskWidget } from './components/workspace/TaskWidget';
 import { useSettingsStore } from './stores/settingsStore';
 import './i18n';
 
@@ -20,6 +21,7 @@ export function App() {
       <CssBaseline />
       <ToastProvider>
         <RouterProvider router={router} />
+        <TaskWidget />
       </ToastProvider>
     </ThemeProvider>
   );

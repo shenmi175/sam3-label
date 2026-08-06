@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Snackbar } from '@mui/material';
+import { registerToast } from '../../utils/notify';
 
 type ToastType = 'info' | 'success' | 'error' | 'warning';
 
@@ -29,6 +30,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => [...prev, { key, message, type }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.key !== key)), 4000);
   }, []);
+
+  useEffect(() => {
+    registerToast(showToast);
+  }, [showToast]);
 
   const value = useMemo(() => ({ showToast }), [showToast]);
 
