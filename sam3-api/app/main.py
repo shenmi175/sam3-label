@@ -360,6 +360,8 @@ def create_app() -> FastAPI:
 
     @app.get("/health", response_model=HealthOut)
     def health() -> dict:
+        from app.sam3_compat import SAM3_PIN_SHA
+
         return {
             "status": "ok",
             "model_loaded": engine.loaded,
@@ -368,6 +370,8 @@ def create_app() -> FastAPI:
             "device": settings.device,
             "checkpoint_path": str(settings.checkpoint_path),
             "gpu": _gpu_status(),
+            "sam3_pin_sha": SAM3_PIN_SHA,
+            "expected_ckpt_generation": settings.expected_ckpt_generation,
         }
 
     @app.post("/v1/warmup")

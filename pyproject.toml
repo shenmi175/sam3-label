@@ -1,39 +1,19 @@
-[build-system]
-requires = ["setuptools>=61", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "sam3"
-dynamic = ["version"]
-description = "SAM3 (Segment Anything Model 3) implementation"
+name = "sam3-auto-label"
+version = "1.0.0"
+description = "Auto-labeling platform: web-auto annotation UI, sam3-api / sapiens-api / locate-anything-api / ops-api inference services, deployment tooling"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {file = "LICENSE"}
+requires-python = ">=3.10"
+license = { text = "Platform code proprietary; vendored sam3 governed by the SAM License (see LICENSE and LICENSES/SAM-LICENSE)" }
 authors = [
-    {name = "Meta AI Research"}
+    {name = "shenmi175"}
 ]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
-dependencies = [
-    "timm>=1.0.17",
-    "numpy>=1.26,<2",
-    "tqdm",
-    "ftfy==6.1.1",
-    "regex",
-    "iopath>=0.1.10",
-    "typing_extensions",
-    "huggingface_hub",
-]
+
+# This pyproject only carries platform tooling configuration (pytest / formatters / mypy)
+# and the dev dependency group. It is NOT a Python distribution: the sam3 package is
+# vendored in external/sam3 (git submodule) and installed separately, and each service
+# (web-auto, sam3-api, sapiens-api, locate-anything-api, ops-api) ships its own
+# requirements.txt consumed by its Dockerfile.
 
 [project.optional-dependencies]
 dev = [
@@ -43,54 +23,10 @@ dev = [
     "ufmt==2.8.0",
     "ruff-api==0.1.0",
     "usort==1.0.2",
-    "gitpython==3.1.31",
-    "yt-dlp",
-    "pandas",
-    "opencv-python",
-    "pycocotools",
-    "numba",
-    "python-rapidjson",
-]
-notebooks = [
-    "matplotlib",
-    "jupyter",
-    "notebook",
-    "ipywidgets",
-    "ipycanvas",
-    "ipympl",
-    "pycocotools",
-    "decord",
-    "opencv-python",
-    "einops",
-    "scikit-image",
-    "scikit-learn",
-]
-train = [
-    "hydra-core",
-    "submitit",
-    "tensorboard",
-    "zstandard",
-    "scipy",
-    "torchmetrics",
-    "fvcore",
-    "fairscale",
-    "scikit-image",
-    "scikit-learn",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/facebookresearch/sam3"
-"Bug Tracker" = "https://github.com/facebookresearch/sam3/issues"
-
-[tool.setuptools.packages.find]
-include = ["sam3*"]
-exclude = ["build*", "scripts*", "examples*"]
-
-[tool.setuptools.package-data]
-sam3 = ["assets/*.txt.gz"]
-
-[tool.setuptools.dynamic]
-version = {attr = "sam3.__version__"}
+"Homepage" = "https://github.com/shenmi175/sam3"
 
 [tool.black]
 line-length = 88

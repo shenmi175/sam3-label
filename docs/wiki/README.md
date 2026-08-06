@@ -9,6 +9,7 @@
 - [项目恢复和已有输出导入](project-recovery.md)
 - [web-auto 设置面板](web-auto-settings.md)
 - [Sapiens2 服务](sapiens2-service.md)
+- [external/sam3 子模块（pin / 升级流程）](sam3-submodule.md)
 
 ## 推荐部署模型
 

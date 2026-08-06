@@ -1,5 +1,4 @@
 import copy
-import sys
 import threading
 import time
 from contextlib import nullcontext
@@ -72,30 +71,37 @@ class Sam3InferenceEngine:
                 "Place sam3.pt at this path or set SAM3_API_LOAD_FROM_HF=1."
             )
 
-        project_root_str = str(self.settings.project_root)
-        if project_root_str not in sys.path:
-            sys.path.insert(0, project_root_str)
+        from app.sam3_compat import SAM3_PIN_SHA
+
+        logger.info(
+            "sam3 image model load: ckpt_generation=%s ckpt_path=%s exists=%s sam3_pin_sha=%s",
+            self.settings.expected_ckpt_generation,
+            checkpoint,
+            checkpoint.exists(),
+            SAM3_PIN_SHA,
+        )
 
         self._enter_official_cuda_precision_context()
 
+        from app.sam3_compat import Sam3CompatError, load_image_surface
+
         try:
-            from sam3.model.sam3_image_processor import Sam3Processor
-            from sam3.model_builder import build_sam3_image_model
-            from sam3.eval.postprocessors import PostProcessImage
-            from sam3.model.data_misc import (
-                BatchedDatapoint,
-                BatchedFindTarget,
-                BatchedInferenceMetadata,
-                FindStage,
-                convert_my_tensors,
-            )
-            from sam3.model.utils.misc import copy_data_to_device
-        except Exception as exc:  # noqa: BLE001
+            surface = load_image_surface()
+        except Sam3CompatError as exc:
             raise RuntimeError(
                 "Failed to import SAM3 runtime dependencies. "
                 "Please install torch/torchvision/timm/huggingface_hub/iopath/einops/etc. "
-                f"Original error: {type(exc).__name__}: {exc}"
+                f"Original error: {exc}"
             ) from exc
+        Sam3Processor = surface["Sam3Processor"]
+        build_sam3_image_model = surface["build_sam3_image_model"]
+        PostProcessImage = surface["PostProcessImage"]
+        BatchedDatapoint = surface["BatchedDatapoint"]
+        BatchedFindTarget = surface["BatchedFindTarget"]
+        BatchedInferenceMetadata = surface["BatchedInferenceMetadata"]
+        FindStage = surface["FindStage"]
+        convert_my_tensors = surface["convert_my_tensors"]
+        copy_data_to_device = surface["copy_data_to_device"]
 
         checkpoint_path = str(checkpoint) if checkpoint.exists() else None
         self._model = build_sam3_image_model(
@@ -828,10 +834,6 @@ class Sam3VideoSessionEngine:
                 "Place sam3.pt at this path or set SAM3_API_LOAD_FROM_HF=1."
             )
 
-        project_root_str = str(self.settings.project_root)
-        if project_root_str not in sys.path:
-            sys.path.insert(0, project_root_str)
-
         logger.warning(
             "video runtime adapter config: conv_input_dtype_cast=%s, disable_bf16_context=%s, force_fp32_inputs=%s, request_bf16_autocast=%s, temporal_disambiguation=%s",
             bool(getattr(self.settings, "video_force_backbone_fpn_fp32", False)),
@@ -851,12 +853,14 @@ class Sam3VideoSessionEngine:
             bf16_ok,
         )
 
+        from app.sam3_compat import Sam3CompatError, load_video_surface
+
         try:
-            from sam3.model.sam3_video_predictor import Sam3VideoPredictor
-        except Exception as exc:  # noqa: BLE001
+            Sam3VideoPredictor = load_video_surface()["Sam3VideoPredictor"]
+        except Sam3CompatError as exc:
             raise RuntimeError(
                 "Failed to import SAM3 video runtime dependencies. "
-                f"Original error: {type(exc).__name__}: {exc}"
+                f"Original error: {exc}"
             ) from exc
 
         ckpt_path = str(checkpoint) if checkpoint.exists() else None

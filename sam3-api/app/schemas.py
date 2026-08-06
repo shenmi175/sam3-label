@@ -53,6 +53,8 @@ class HealthOut(BaseModel):
     device: str
     checkpoint_path: str
     gpu: Optional[dict[str, Any]] = None
+    sam3_pin_sha: Optional[str] = None
+    expected_ckpt_generation: Optional[str] = None
 
 
 class VideoSessionStartIn(BaseModel):

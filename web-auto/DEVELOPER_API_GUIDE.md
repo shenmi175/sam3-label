@@ -42,8 +42,8 @@
 
 ```json
 {
-  "cache_dir": "J:/project_code/sam3/web-auto/data",
-  "default_dir": "J:/project_code/sam3/web-auto"
+  "cache_dir": "/srv/sam3-auto-label/web-auto/data",
+  "default_dir": "/srv/sam3-auto-label/web-auto"
 }
 ```
 

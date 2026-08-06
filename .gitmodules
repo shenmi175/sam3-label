@@ -1,3 +1,6 @@
 [submodule "external/sapiens2"]
 	path = external/sapiens2
 	url = https://github.com/facebookresearch/sapiens2.git
+[submodule "external/sam3"]
+	path = external/sam3
+	url = https://github.com/facebookresearch/sam3.git
