@@ -608,7 +608,6 @@ export const ProjectsPage = {
     this._discoveryCandidates = [];
     this.renderDiscoveryCandidates();
     modal.style.display = 'flex';
-    this.scanExistingProjects();
   },
 
   closeRestoreModal() {

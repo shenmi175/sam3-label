@@ -1014,12 +1014,9 @@ class InferenceService:
                         converted = _filter_visual_detections(converted, points=[], boxes=group_boxes)
                         if not converted:
                             continue
-                        merged = _merge_visual_annotations(
-                            merged,
-                            new_annotations=converted,
-                            points=[],
-                            boxes=group_boxes,
-                        )
+                        # Keep the original LA boxes: they stay as independent
+                        # annotations alongside the new SAM3 mask annotations.
+                        merged.extend(converted)
                         new_total += len(converted)
                         class_additions[class_name] = int(class_additions.get(class_name, 0) or 0) + len(converted)
                     self.storage.save_annotations(payload.project_id, image_id, merged)

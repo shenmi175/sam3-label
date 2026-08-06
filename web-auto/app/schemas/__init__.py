@@ -1,7 +1,7 @@
 from app.schemas.annotations import AnnotationMigrationIn, AppendAnnIn, SaveAnnIn, UIStateIn
 from app.schemas.auth import AuthLoginIn, AuthPasswordChangeIn, AuthSetupIn
 from app.schemas.config import CacheDirUpdateIn, GlobalConfigUpdateIn
-from app.schemas.exports import ExportIn
+from app.schemas.exports import ExportIn, ExportPreviewIn
 from app.schemas.filters import SmartFilterIn
 from app.schemas.inference import (
     HealthApiIn,
@@ -24,6 +24,7 @@ __all__ = [
     'AuthSetupIn',
     'CacheDirUpdateIn',
     'ExportIn',
+    'ExportPreviewIn',
     'GlobalConfigUpdateIn',
     'HealthApiIn',
     'ImportExistingProjectIn',

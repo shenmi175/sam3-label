@@ -276,9 +276,21 @@ class Storage:
 
     def _replace_project_images_db(self, project_id: str, project_type: str, images: list[dict[str, Any]]) -> None:
         self._project_images.replace(project_id, project_type, images)
+        self._invalidate_annotation_layout_cache(project_id)
 
     def _insert_project_images_db(self, project_id: str, project_type: str, images: list[dict[str, Any]], *, start_index: int) -> None:
         self._project_images.insert(project_id, project_type, images, start_index=start_index)
+        self._invalidate_annotation_layout_cache(project_id)
+
+    def _invalidate_annotation_layout_cache(self, project_id: str) -> None:
+        pid = str(project_id or '')
+        if not pid:
+            return
+        self._annotation_layout_cache = {
+            key: value
+            for key, value in self._annotation_layout_cache.items()
+            if key[0] != pid
+        }
 
     def _update_project_image_abs_path_db(self, project_id: str, image_id: str, abs_path: str) -> None:
         self._project_images.update_abs_path(project_id, image_id, abs_path)

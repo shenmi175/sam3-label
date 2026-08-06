@@ -375,7 +375,7 @@
 批量模式由 `mode` 字段决定：
 
 - `mode="text"`（默认）：按 `classes` 做全图文本批推
-- `mode="la_boxes"`：读取已保存标注中 `source_model="locate-anything"` 的框，按类别分组作为 box prompt 送入 sam3-api 得到分割结果，并替换匹配上的 LA 框；没有 LA 框的图片计入 `skipped`
+- `mode="la_boxes"`：读取已保存标注中 `source_model="locate-anything"` 的框，按类别分组作为 box prompt 送入 sam3-api 得到分割结果，新的分割标注追加保存，原有 LA 框保留不删除；没有 LA 框的图片计入 `skipped`
   - 仅支持 `model_backend="sam3"`
   - 启动前会检查 sam3-api 可达且 locate-anything-api 未占用显存，否则返回 409 与 `code="SAM3_NOT_READY"`
 
@@ -470,9 +470,102 @@
   "format": "coco",
   "include_bbox": true,
   "include_mask": false,
-  "output_dir": "D:/export"
+  "output_dir": "D:/export",
+  "source_models": ["sam3", "manual"],
+  "classes": [],
+  "val_ratio": 0.0,
+  "write_data_yaml": true
 }
 ```
+
+参数：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `project_id` | 必填 | 项目 id |
+| `format` | 必填 | `coco` / `yolo` / `json` |
+| `include_bbox` | `true` | 导出检测框。YOLO 下 `include_bbox` 且不含 mask 走 det 模式 |
+| `include_mask` | `false` | 导出多边形。YOLO 下走 seg 模式（与 det 互斥，seg 优先） |
+| `output_dir` | `null` | 留空时写入项目 `exports` 目录（旧行为是写进图片目录，已修正） |
+| `source_models` | `["sam3", "manual"]` | 按标注来源筛选，可选 `sam3` / `locate-anything` / `manual` |
+| `classes` | `[]` | 类别白名单，空表示使用项目类别表全部类别 |
+| `val_ratio` | `0.0` | 仅 YOLO，`0~0.9`，划分验证集比例 |
+| `write_data_yaml` | `true` | 仅 YOLO，是否写 `data.yaml` |
+
+`source_models` 默认排除 `locate-anything`：LA 标注只有 bbox、没有轮廓，而 LA 框→分割生成的 SAM3 掩码标注与之一一对应，同时导出会让每个实例重复出现一次。
+
+返回：
+
+```json
+{
+  "ok": true,
+  "output": "/path/to/exports/coco_20260731_120000",
+  "classes": ["bed", "chair"],
+  "stats": {
+    "images_total": 40,
+    "images_written": 38,
+    "images_missing": 2,
+    "annotations_total": 520,
+    "annotations_written": 480,
+    "skipped_source": 20,
+    "skipped_class": 4,
+    "skipped_no_polygon": 16,
+    "skipped_no_bbox": 0,
+    "by_source": { "sam3": 500, "manual": 20 },
+    "by_class": { "bed": 300, "chair": 200 }
+  }
+}
+```
+
+`by_source` / `by_class` 统计的是通过来源+类别筛选后的标注数；`skipped_*` 分别是被来源、类别、无轮廓、无有效框跳过的数量。
+
+筛选后一条标注都不剩（但项目本身有标注）时返回 400：
+
+```json
+{
+  "code": "EXPORT_EMPTY",
+  "message": "...",
+  "by_source": { "locate-anything": 7951 },
+  "by_class": { "bed": 7951 },
+  "selected_sources": ["sam3", "manual"]
+}
+```
+
+格式行为：
+
+- 类别 id 只来自项目类别表（或 `classes` 白名单）的固定顺序，表外类别跳过并计入 `skipped_class`，同一项目多次导出 id 稳定。
+- COCO：`include_mask=true` 时没有轮廓的标注会被跳过并计入 `skipped_no_polygon`，不再写出非法的 `segmentation: []`；merged 模式的多轮廓写成同一标注的多个子多边形。
+- YOLO-seg：YOLO 格式没有多部件实例表示，merged 模式的每个轮廓会拆成独立一行（class id 相同）。掩码像素不丢，但实例行数会多于标注数。
+- YOLO 产物：`classes.txt`、`labels/`、`train.txt`、`val.txt`（`val_ratio > 0` 时）、`data.yaml`（`write_data_yaml=true` 时）。
+- train/val 划分由 `image_id` 的 sha1 决定，同一项目多次导出结果完全一致。
+- **不复制也不软链图片**，`train.txt` / `val.txt` / `data.yaml` 直接引用原图绝对路径。
+- 图片文件缺失时跳过该图并计入 `images_missing`，不会让整个导出失败。
+
+### `POST /api/export/preview`
+
+只统计、不写文件，供导出面板打开时填充来源/类别条数：
+
+```json
+{ "project_id": "prj_xxx" }
+```
+
+返回：
+
+```json
+{
+  "ok": true,
+  "project_id": "prj_xxx",
+  "images_total": 120,
+  "images_with_annotations": 118,
+  "annotations_total": 54410,
+  "classes": ["bed", "chair"],
+  "by_source": { "sam3": 46458, "locate-anything": 7951, "manual": 1 },
+  "by_class": { "bed": 30000, "chair": 24410 },
+  "no_polygon_by_source": { "locate-anything": 7951, "sam3": 47 }
+}
+```
+
+`no_polygon_by_source` 表示各来源下没有轮廓的标注数，用来提示用户勾选该来源后 mask 导出会跳过多少条。
 
 ## 10. UI 状态
 
