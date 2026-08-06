@@ -269,5 +269,9 @@
   "export_stats": "Wrote {{anns}} annotations / {{images}} images; skipped: source {{source}}, class {{cls}}, no contour {{poly}}, no box {{bbox}}, missing image {{missing}}",
   "export_empty_title": "No annotations match the current filters",
   "export_no_polygon_hint": "{{count}} without contours",
-  "export_preview_failed": "Failed to load counts; export still works"
+  "export_preview_failed": "Failed to load counts; export still works",
+  "confirm_delete_project": "Are you sure you want to delete this project? Data goes away, files stay.",
+  "failed_refresh_projects": "Failed to refresh projects: {{error}}",
+  "failed_load_projects": "Failed to load projects: {{error}}",
+  "theme_switched": "Switched to {{mode}} mode"
 }

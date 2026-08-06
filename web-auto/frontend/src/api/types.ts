@@ -16,6 +16,15 @@ export interface Annotation {
   source?: string;
   score?: number;
   status?: string;
+  /** display color override (any CSS color) */
+  color?: string;
+  /** fallback display label */
+  label?: string;
+  /** legacy bbox aliases accepted by the viewer */
+  box?: number[];
+  bbox_xyxy?: number[];
+  /** legacy polygon points: flat [x,y,x,y,...] or paired [[x,y],...] */
+  points?: number[] | [number, number][];
   [key: string]: unknown;
 }
 
@@ -34,6 +43,11 @@ export interface PreviewInfo {
   thumbnail_url?: string;
   width?: number;
   height?: number;
+  /** full-resolution source dimensions (fallback chain used by the viewer) */
+  source_width?: number;
+  source_height?: number;
+  preview_width?: number;
+  preview_height?: number;
   [key: string]: unknown;
 }
 
@@ -61,7 +75,9 @@ export interface ImageBundle {
 
 export interface Prompt {
   type: 'box' | 'point';
-  label: 0 | 1;
+  /** Flat coordinate payload used by the viewer: point=[x,y], box=[x1,y1,x2,y2,label?] */
+  data: number[];
+  label?: 0 | 1;
   bbox?: [number, number, number, number];
   point?: [number, number];
 }

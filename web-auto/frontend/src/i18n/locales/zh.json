@@ -269,5 +269,9 @@
   "export_stats": "写出 {{anns}} 条标注 / {{images}} 张图；跳过：来源 {{source}}、类别 {{cls}}、无轮廓 {{poly}}、无框 {{bbox}}、缺图 {{missing}}",
   "export_empty_title": "当前筛选下没有可导出标注",
   "export_no_polygon_hint": "无轮廓 {{count}} 条",
-  "export_preview_failed": "统计加载失败，仍可直接导出"
+  "export_preview_failed": "统计加载失败，仍可直接导出",
+  "confirm_delete_project": "确定要删除该项目吗？项目数据会被移除，但文件会保留。",
+  "failed_refresh_projects": "刷新项目失败：{{error}}",
+  "failed_load_projects": "加载项目失败：{{error}}",
+  "theme_switched": "已切换到 {{mode}} 模式"
 }
