@@ -54,6 +54,22 @@ git submodule update --init --recursive
 
 详见 [DOCKER.md](DOCKER.md) 与 [docs/wiki/docker-deployment.md](docs/wiki/docker-deployment.md)。
 
+## 模型管理
+
+模型权重与 API 的对应关系统一由 `model_registry` 模块描述（各模型的 API 服务、
+端口、权重目录、下载方式）：
+
+```bash
+./scripts/models.sh list                    # 所有模型及权重状态
+./scripts/models.sh status [model_id]       # 权重文件明细
+./scripts/models.sh download <model_id>     # 下载 HF 模型（--mirror 走镜像）
+```
+
+权重目录默认 `sam3_checkpoints/`、`sapiens_checkpoints/`、`locate_checkpoints/`，
+可用 `.env` 中的 `SAM3_CHECKPOINT_DIR` / `SAPIENS_CHECKPOINT_ROOT` /
+`LOCATE_CHECKPOINT_DIR` 覆盖。SAM3 与 Sapiens2 权重需按各自许可手动获取
+（命令会打印指引）；LocateAnything 支持自动下载。
+
 ## 开发
 
 - 平台测试：`pytest tests/`（pytest 配置在根 `pyproject.toml`）
