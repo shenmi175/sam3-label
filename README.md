@@ -69,5 +69,5 @@ git submodule update --init --recursive
 ## 许可证
 
 平台代码见各服务声明；`external/sam3` 与 SAM3 checkpoint 受 SAM License 约束，
-全文见 [LICENSE](LICENSE) 与 [LICENSES/SAM-LICENSE](LICENSES/SAM-LICENSE)。
+全文见 [external/sam3/LICENSE](external/sam3/LICENSE)（子模块内）。
 第三方组件清单：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

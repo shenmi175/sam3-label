@@ -47,7 +47,7 @@ jobs:
       - name: Check license files
         run: |
           set -euo pipefail
-          for f in LICENSE LICENSES/SAM-LICENSE THIRD_PARTY_NOTICES.md; do
+          for f in external/sam3/LICENSE THIRD_PARTY_NOTICES.md; do
             test -f "$f" || { echo "missing required file: $f"; exit 1; }
           done
           echo "license files present"

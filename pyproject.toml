@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Auto-labeling platform: web-auto annotation UI, sam3-api / sapiens-api / locate-anything-api / ops-api inference services, deployment tooling"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Platform code proprietary; vendored sam3 governed by the SAM License (see LICENSE and LICENSES/SAM-LICENSE)" }
+license = { text = "Platform code proprietary; vendored sam3 governed by the SAM License (see external/sam3/LICENSE)" }
 authors = [
     {name = "shenmi175"}
 ]

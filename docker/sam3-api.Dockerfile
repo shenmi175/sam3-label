@@ -21,7 +21,6 @@ RUN apt-get update \
 # source tree. Run `scripts/check_submodules.sh` before building to make sure the
 # submodule is checked out.
 COPY external/sam3 /app/external/sam3
-COPY LICENSES/SAM-LICENSE /app/licenses/SAM-LICENSE
 COPY sam3-api/requirements.txt /tmp/sam3-api-requirements.txt
 RUN python -m venv --system-site-packages "$VIRTUAL_ENV" \
     && "$VIRTUAL_ENV/bin/python" -m pip install --upgrade pip setuptools wheel \
@@ -49,7 +48,7 @@ print("sam3 module file:", sam3.__file__)
 assert "/app/external/sam3" not in str(sam3.__file__), (
     "sam3 must resolve from site-packages, not the vendored source tree"
 )
-assert os.path.isfile("/app/licenses/SAM-LICENSE"), "SAM license file missing from image"
+assert os.path.isfile("/app/external/sam3/LICENSE"), "SAM license file missing from image"
 print("sam3-api runtime imports ok")
 EOF
 

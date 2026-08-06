@@ -35,7 +35,7 @@ pip 安装**；PYTHONPATH 不指向 sam3 源码目录。构建期硬校验：
 
 - `importlib.metadata.version('sam3')` 可解析
 - `sam3.__file__` 必须落在 site-packages，不在源码目录
-- `/app/licenses/SAM-LICENSE` 存在
+- `/app/external/sam3/LICENSE` 存在
 
 `sam3-api` 代码仅通过 `sam3-api/app/sam3_compat.py` 引用 sam3 内部符号
 （Sam3Processor、build_sam3_image_model、PostProcessImage、data_misc 一组、

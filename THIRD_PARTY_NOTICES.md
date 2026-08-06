@@ -8,7 +8,7 @@ components. Their licenses and acquisition sources are listed below.
 ### external/sam3 — SAM3 (Segment Anything Model 3)
 
 - Upstream: https://github.com/facebookresearch/sam3
-- License: SAM License (Meta). Full text: `LICENSE` and `LICENSES/SAM-LICENSE`.
+- License: SAM License (Meta). Full text: `external/sam3/LICENSE` in the checked-out submodule.
 - Pinned submodule SHA: recorded in the gitlink; see `docs/wiki/sam3-submodule.md`
   for the current pin and the upgrade procedure.
 - Used by: `sam3-api` (installed into the service image at build time).
