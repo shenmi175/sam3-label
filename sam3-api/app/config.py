@@ -25,6 +25,7 @@ class Settings:
     video_enable_tracker_bf16_autocast: bool
     video_force_tracker_state_fp32: bool
     video_apply_temporal_disambiguation: bool
+    expected_ckpt_generation: str
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
@@ -104,4 +105,5 @@ def get_settings() -> Settings:
         video_force_tracker_state_fp32=_env_bool("SAM3_API_VIDEO_FORCE_TRACKER_STATE_FP32", False),
         # For interactive labeling stability, default to False to reduce aggressive suppression.
         video_apply_temporal_disambiguation=_env_bool("SAM3_API_VIDEO_APPLY_TEMPORAL_DISAMBIGUATION", False),
+        expected_ckpt_generation=os.getenv("SAM3_API_EXPECTED_CKPT_GENERATION", "v1").strip() or "v1",
     )

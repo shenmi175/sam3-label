@@ -933,16 +933,33 @@ docker_has_nvidia_runtime() {
   '
 }
 
-ensure_sapiens_submodule() {
-  if [[ ! -d "$ROOT_DIR/.git" ]]; then
+ensure_external_submodules() {
+  local need=(external/sam3/pyproject.toml external/sapiens2/pyproject.toml)
+  local missing=()
+  local f
+  for f in "${need[@]}"; do
+    [[ -f "$ROOT_DIR/$f" ]] || missing+=("$f")
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
     return 0
   fi
-  if [[ -f "$ROOT_DIR/external/sapiens2/pyproject.toml" ]]; then
-    return 0
-  fi
+
   require_command git
-  info "Initializing Sapiens2 submodule"
-  (cd "$ROOT_DIR" && git submodule update --init --recursive external/sapiens2)
+  if git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    info "Initializing external submodules (external/sam3, external/sapiens2)"
+    (cd "$ROOT_DIR" && git submodule update --init --recursive external/sam3 external/sapiens2) \
+      || die "git submodule update failed. Check network access and SSH keys, then rerun."
+  else
+    die "external/sam3 or external/sapiens2 content is missing and this is not a Git working tree (source tarball?). Clone with 'git clone --recursive' or run 'git submodule update --init --recursive' before packaging."
+  fi
+
+  missing=()
+  for f in "${need[@]}"; do
+    [[ -f "$ROOT_DIR/$f" ]] || missing+=("$f")
+  done
+  if [[ ${#missing[@]} -ne 0 ]]; then
+    die "Submodule initialization did not provide: ${missing[*]}. Run 'git submodule update --init --recursive' manually and retry."
+  fi
 }
 
 gpu_preflight() {
@@ -1352,7 +1369,7 @@ cmd_install() {
     FORCE_CONFIG_PROMPT=1
   fi
   ensure_env "$PROFILE_OVERRIDE"
-  sapiens_enabled && ensure_sapiens_submodule
+  ensure_external_submodules
   if [[ -z "$MIRROR_URL" && is_interactive ]]; then
     if prompt_yes_no "Configure a Docker Hub registry mirror now" "n"; then
       MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
@@ -1384,7 +1401,7 @@ cmd_update() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown update option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
-  sapiens_enabled && ensure_sapiens_submodule
+  ensure_external_submodules
   if using_proxy_mode; then
     validate_domain_dns
   fi
@@ -1392,14 +1409,16 @@ cmd_update() {
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
 
-  if [[ "$SKIP_GIT" -eq 0 && -d "$ROOT_DIR/.git" ]]; then
+  if [[ "$SKIP_GIT" -eq 0 ]] && git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     info "Pulling latest git changes"
     (cd "$ROOT_DIR" && git pull --ff-only)
+    (cd "$ROOT_DIR" && git submodule update --init --recursive external/sam3 external/sapiens2) \
+      || warn "Submodule sync after git pull failed; rerun './deploy.sh update' after fixing."
     # Newer revisions can add required Compose variables. Re-run env repair
     # after pulling so an update from an older script cannot stop the stack
     # before the newly required defaults are generated.
     ensure_env "$PROFILE_OVERRIDE"
-    sapiens_enabled && ensure_sapiens_submodule
+    ensure_external_submodules
   fi
 
   if [[ "$SKIP_PULL" -eq 0 ]]; then
@@ -1442,7 +1461,7 @@ cmd_start() {
   parse_common_options "$@"
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
-  sapiens_enabled && ensure_sapiens_submodule
+  ensure_external_submodules
   if using_proxy_mode; then
     validate_domain_dns
   fi
@@ -1980,7 +1999,7 @@ cmd_sapiens() {
       else
         set_env_var SAPIENS_DEVICE "cpu"
       fi
-      ensure_sapiens_submodule
+      ensure_external_submodules
       select_docker
       [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
       [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight

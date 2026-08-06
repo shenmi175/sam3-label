@@ -1,0 +1,53 @@
+name: Platform check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  platform-check:
+    runs-on: ubuntu-latest
+    env:
+      # Dummy values so `docker compose config` can validate the stack without secrets.
+      OPS_API_TOKEN: ci-dummy-token
+      SAM3_API_TOKEN: ci-dummy-token
+      SAPIENS_API_TOKEN: ci-dummy-token
+      WEB_AUTO_ADMIN_PASSWORD: ci-dummy-password
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest numpy pillow
+
+      - name: Verify submodule pins
+        run: bash scripts/check_submodules.sh
+
+      - name: Run platform tests
+        run: python -m pytest tests/ -q
+
+      - name: Compose config (default profile)
+        run: docker compose config >/dev/null
+
+      - name: Compose config (sapiens + locate profiles)
+        run: docker compose --profile sapiens --profile locate config >/dev/null
+
+      - name: Check documentation links
+        run: bash scripts/check_doc_links.sh
+
+      - name: Check license files
+        run: |
+          set -euo pipefail
+          for f in LICENSE LICENSES/SAM-LICENSE THIRD_PARTY_NOTICES.md; do
+            test -f "$f" || { echo "missing required file: $f"; exit 1; }
+          done
+          echo "license files present"

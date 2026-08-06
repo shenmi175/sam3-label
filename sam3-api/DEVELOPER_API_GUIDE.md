@@ -1,7 +1,7 @@
 # sam3-api Developer Guide
 
 更新时间: 2026-03-19
-位置: `J:\project_code\sam3\sam3-api`
+位置: `<repo>/sam3-api`
 
 ## 1. 总览
 
@@ -133,7 +133,7 @@ curl http://127.0.0.1:8001/health
 
 ```json
 {
-  "resource_path": "J:/videos/demo.mp4",
+  "resource_path": "/data/videos/demo.mp4",
   "session_id": "optional-session-id",
   "threshold": 0.5,
   "imgsz": 640
@@ -152,7 +152,7 @@ curl http://127.0.0.1:8001/health
 ```json
 {
   "session_id": "6c2f4f6a...",
-  "resource_path": "J:\\videos\\demo.mp4",
+  "resource_path": "/data/videos/demo.mp4",
   "num_frames": 812,
   "width": 1920,
   "height": 1080,
@@ -348,7 +348,7 @@ import requests
 resp = requests.post(
     "http://127.0.0.1:8001/v1/video/session/start",
     json={
-        "resource_path": r"J:\videos\demo.mp4",
+        "resource_path": "/data/videos/demo.mp4",
         "threshold": 0.45,
         "imgsz": 640,
     },
@@ -512,7 +512,7 @@ mcp_servers:
     transport: stdio
     command: python
     args:
-      - J:/project_code/sam3/sam3-api/run_mcp.py
+      - /srv/sam3-auto-label/sam3-api/run_mcp.py
       - --transport
       - stdio
     env:

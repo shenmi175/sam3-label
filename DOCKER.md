@@ -2,6 +2,20 @@
 
 默认方案是不做反代，直接用 `IP:端口` 登录 `web-auto`。`sam3-api` 仍然只在 Docker 内部网络暴露，不映射到宿主机端口。
 
+## 构建前置：子模块必须检出
+
+`sam3-api` 镜像从 `external/sam3`（固定 SHA 的 git 子模块）安装 SAM3 包，
+`sapiens-api` 依赖 `external/sapiens2`。构建前先确认子模块已检出且 SHA 正确：
+
+```bash
+git submodule update --init --recursive
+./scripts/check_submodules.sh
+```
+
+`deploy.sh` 会在 install / update / start 时自动初始化子模块；非 Git 源码包
+（tarball）缺少子模块内容时会明确报错退出。详见
+[docs/wiki/sam3-submodule.md](docs/wiki/sam3-submodule.md)。
+
 ## 默认访问方式
 
 ```text
