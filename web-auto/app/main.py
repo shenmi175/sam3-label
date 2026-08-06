@@ -511,7 +511,7 @@ app.include_router(
 def create_app() -> FastAPI:
     return app
 
-frontend_dir = BASE_DIR / 'frontend'
+frontend_dir = BASE_DIR / 'frontend' / 'dist'
 if frontend_dir.exists():
     @app.middleware('http')
     async def no_cache_static(request: Request, call_next):
