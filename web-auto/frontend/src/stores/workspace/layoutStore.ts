@@ -16,8 +16,6 @@ interface LayoutState {
   workspaceMode: WorkspaceMode;
   routeWorkspaceMode: WorkspaceMode;
   reviewContinuousMode: boolean;
-  /** Session-only visibility of the right-column smart filter panel. */
-  smartFilterOpen: boolean;
 
   setWorkspaceMode: (mode: WorkspaceMode) => void;
   setRouteWorkspaceMode: (mode: WorkspaceMode) => void;
@@ -28,7 +26,6 @@ interface LayoutState {
   toggleUnlabeledNavigation: () => void;
   setUnlabeledNavigation: (enabled: boolean) => void;
   toggleReviewContinuousMode: () => void;
-  toggleSmartFilter: () => void;
   applyRestoredState: (state: Partial<Pick<LayoutState,
     'leftPanelHidden' | 'rightPanelHidden' | 'classesSectionCollapsed' |
     'annotationsSectionCollapsed' | 'unlabeledNavigationEnabled' |
@@ -45,7 +42,6 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   workspaceMode: 'auto',
   routeWorkspaceMode: 'auto',
   reviewContinuousMode: true,
-  smartFilterOpen: false,
 
   setWorkspaceMode: (mode) => set({ workspaceMode: mode === 'review' ? 'review' : 'auto' }),
   setRouteWorkspaceMode: (mode) => set({ routeWorkspaceMode: mode === 'review' ? 'review' : 'auto' }),
@@ -56,7 +52,6 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   toggleUnlabeledNavigation: () => set((s) => ({ unlabeledNavigationEnabled: !s.unlabeledNavigationEnabled })),
   setUnlabeledNavigation: (enabled) => set({ unlabeledNavigationEnabled: Boolean(enabled) }),
   toggleReviewContinuousMode: () => set((s) => ({ reviewContinuousMode: !s.reviewContinuousMode })),
-  toggleSmartFilter: () => set((s) => ({ smartFilterOpen: !s.smartFilterOpen })),
 
   applyRestoredState: (state) =>
     set({
@@ -79,6 +74,5 @@ export const useLayoutStore = create<LayoutState>((set) => ({
       workspaceMode: 'auto',
       routeWorkspaceMode: 'auto',
       reviewContinuousMode: true,
-      smartFilterOpen: false,
     }),
 }));

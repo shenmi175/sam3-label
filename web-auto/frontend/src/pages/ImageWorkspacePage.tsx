@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
@@ -60,7 +60,7 @@ import { AutoAnnotatePanel } from '../components/workspace/AutoAnnotatePanel';
 import { TaskProgressBar } from '../components/workspace/TaskProgressBar';
 import { GpuStatusWidget } from '../components/workspace/GpuStatusWidget';
 import { PreviewResultsPanel } from '../components/workspace/PreviewResultsPanel';
-import { SmartFilterPanel } from '../components/workspace/SmartFilterPanel';
+import { DataCleaningDialog } from '../components/data-cleaning/DataCleaningDialog';
 import { BatchConfigModal } from '../components/workspace/BatchConfigModal';
 import { BatchResultModal } from '../components/workspace/BatchResultModal';
 import { BackendErrorModal } from '../components/workspace/BackendErrorModal';
@@ -135,7 +135,9 @@ export function ImageWorkspacePage() {
   const classesSectionCollapsed = useLayoutStore((s) => s.classesSectionCollapsed);
   const annotationsSectionCollapsed = useLayoutStore((s) => s.annotationsSectionCollapsed);
   const unlabeledNavigationEnabled = useLayoutStore((s) => s.unlabeledNavigationEnabled);
-  const smartFilterOpen = useLayoutStore((s) => s.smartFilterOpen);
+
+  // Data-cleaning dialog open state (toolbar entry point).
+  const [dataCleaningOpen, setDataCleaningOpen] = useState(false);
 
   // Backend health indicator — legacy startHealthCheck (10 s /api/health).
   const backendHealth = useBackendHealth();
@@ -516,10 +518,10 @@ export function ImageWorkspacePage() {
       </Box>
 
       {/* 2. Top operation bar (mode switch / review flow / dashboard+export) */}
-      <WorkspaceToolbar projectId={projectId} />
+      <WorkspaceToolbar projectId={projectId} onOpenDataCleaning={() => setDataCleaningOpen(true)} />
 
-      {/* 2b. Auto-annotate (inference) panel on its own wrapping row so its
-             grouped controls are never clipped on narrow windows. */}
+      {/* 2b. Auto-annotate (inference) panel — compact single row: the
+             inference-settings summary button plus the execution actions. */}
       {workspaceMode === 'auto' && (
         <Box
           sx={{
@@ -527,7 +529,7 @@ export function ImageWorkspacePage() {
             display: 'flex',
             alignItems: 'center',
             px: 3,
-            py: 1.25,
+            py: 0.75,
             zIndex: 89,
             borderBottom: '1px solid',
             borderColor: 'divider',
@@ -971,25 +973,6 @@ export function ImageWorkspacePage() {
                   {!previewSectionCollapsed && <PreviewResultsPanel />}
                 </Box>
               )}
-
-              {/* Smart filter workbench (toolbar-toggled, right-column slot) */}
-              {smartFilterOpen && (
-                <Box
-                  sx={{
-                    borderTop: '1px solid',
-                    borderColor: 'divider',
-                    flexShrink: 0,
-                    maxHeight: '55%',
-                    overflowY: 'auto',
-                    minHeight: 0,
-                  }}
-                >
-                  <SmartFilterPanel
-                    projectId={projectId}
-                    onClose={() => useLayoutStore.getState().toggleSmartFilter()}
-                  />
-                </Box>
-              )}
             </Box>
           </Box>
         )}
@@ -999,6 +982,7 @@ export function ImageWorkspacePage() {
       <BatchConfigModal />
       <BatchResultModal />
       <BackendErrorModal />
+      <DataCleaningDialog open={dataCleaningOpen} onClose={() => setDataCleaningOpen(false)} />
     </Box>
   );
 }

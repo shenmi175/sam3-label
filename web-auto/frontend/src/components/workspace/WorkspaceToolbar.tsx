@@ -12,6 +12,8 @@ import { DataDashboardPanel } from './DataDashboardPanel';
 
 interface WorkspaceToolbarProps {
   projectId: string;
+  /** Opens the data-cleaning dialog; the open state lives in ImageWorkspacePage. */
+  onOpenDataCleaning: () => void;
 }
 
 /**
@@ -19,21 +21,19 @@ interface WorkspaceToolbarProps {
  *   - auto/review mode switch (guarded route navigation, legacy
  *     navigateWorkspaceRoute: commit pending polygon → flush dirty → hash nav)
  *   - review mode: ReviewToolbar (accept/reject/recategorize/save-next flow)
- *   - right side: data dashboard / smart filter / export entry points
- *     (dashboard + export open dialogs, smart filter toggles the right-column
- *     panel).
+ *   - right side: data dashboard / data cleaning / export entry points
+ *     (all three open dialogs; the data-cleaning dialog open state is owned
+ *     by ImageWorkspacePage and triggered through onOpenDataCleaning).
  *
  * The legacy AutoAnnotatePanel is NOT rendered here: it lives on its own
- * wrapping row below this toolbar (see ImageWorkspacePage) so its ~1500px of
- * controls can wrap on narrow windows instead of being clipped by a fixed
- * 64px row.
+ * single-line row below this toolbar (see ImageWorkspacePage) as a compact
+ * inference-settings summary button plus the execution actions.
  */
-export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
+export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToolbarProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const workspaceMode = useLayoutStore((s) => s.workspaceMode);
   const routeWorkspaceMode = useLayoutStore((s) => s.routeWorkspaceMode);
-  const smartFilterOpen = useLayoutStore((s) => s.smartFilterOpen);
   const [exportOpen, setExportOpen] = useState(false);
   const [dashboardOpen, setDashboardOpen] = useState(false);
 
@@ -110,12 +110,12 @@ export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
 
       <Box sx={{ flex: 1 }} />
 
-      {/* Data dashboard / smart filter / export entry points */}
+      {/* Data dashboard / data cleaning / export entry points */}
       <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
         <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setDashboardOpen(true)}>
           {t('data_dashboard')}
         </Button>
-        <Button size="small" variant={smartFilterOpen ? 'contained' : 'outlined'} sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => useLayoutStore.getState().toggleSmartFilter()}>
+        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={onOpenDataCleaning}>
           {t('smart_filter')}
         </Button>
         <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setExportOpen(true)}>
