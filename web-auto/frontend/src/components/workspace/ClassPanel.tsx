@@ -113,7 +113,17 @@ export function ClassPanel({ collapsed }: { collapsed: boolean }) {
           );
         })}
         {classes.length === 0 ? (
-          <Typography sx={{ textAlign: 'center', py: 2, color: 'text.secondary', fontSize: 12 }}>--</Typography>
+          <Box sx={{ textAlign: 'center', py: 2 }}>
+            <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>{t('no_classes')}</Typography>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setAddOpen(true)}
+              sx={{ mt: 0.5, fontSize: 12, fontWeight: 700 }}
+            >
+              {t('create_class')}
+            </Button>
+          </Box>
         ) : null}
       </Box>
       <Button

@@ -5,6 +5,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  CircularProgress,
   FormControlLabel,
   IconButton,
   LinearProgress,
@@ -12,6 +13,23 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import DarkModeIcon from '@mui/icons-material/DarkMode';
+import LightModeIcon from '@mui/icons-material/LightMode';
+import NearMeIcon from '@mui/icons-material/NearMe';
+import CropSquareIcon from '@mui/icons-material/CropSquare';
+import PolylineIcon from '@mui/icons-material/Polyline';
+import UndoIcon from '@mui/icons-material/Undo';
+import RedoIcon from '@mui/icons-material/Redo';
+import DeleteIcon from '@mui/icons-material/Delete';
+import AddBoxIcon from '@mui/icons-material/AddBox';
+import IndeterminateCheckBoxIcon from '@mui/icons-material/IndeterminateCheckBox';
+import ClearIcon from '@mui/icons-material/Clear';
+import ZoomOutMapIcon from '@mui/icons-material/ZoomOutMap';
+import ImageIcon from '@mui/icons-material/Image';
 import { useTranslation } from 'react-i18next';
 import { ImageViewer, type ImageViewerHandle } from '../components/viewer/ImageViewer';
 import type { ManualAnnotationDraft } from '../components/viewer/viewer-core';
@@ -19,6 +37,7 @@ import type { Annotation } from '../api/types';
 import { migrateSources as migrateSourcesApi } from '../api/classes';
 import { clearBundleCache } from '../api/bundleCache';
 import { toast } from '../utils/notify';
+import { useSettingsStore } from '../stores/settingsStore';
 import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
 import { useAnnotationStore, selectCanUndo, selectCanRedo } from '../stores/workspace/annotationStore';
@@ -38,6 +57,7 @@ import { FilterBar } from '../components/workspace/FilterBar';
 import { ClassPanel } from '../components/workspace/ClassPanel';
 import { AnnotationList } from '../components/workspace/AnnotationList';
 import { WorkspaceToolbar } from '../components/workspace/WorkspaceToolbar';
+import { AutoAnnotatePanel } from '../components/workspace/AutoAnnotatePanel';
 import { TaskProgressBar } from '../components/workspace/TaskProgressBar';
 import { GpuStatusWidget } from '../components/workspace/GpuStatusWidget';
 import { PreviewResultsPanel } from '../components/workspace/PreviewResultsPanel';
@@ -68,6 +88,12 @@ export function ImageWorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const theme = useTheme();
+  const themeMode = useSettingsStore((s) => s.themeMode);
+  const setSetting = useSettingsStore((s) => s.set);
+
+  /** Canvas / center-column background, aligned with the viewer core. */
+  const canvasBg = theme.palette.mode === 'dark' ? '#1b1e26' : '#eaeff2';
 
   // Route-derived workspace mode (legacy routeWorkspaceMode).
   const routeMode = location.pathname.endsWith('/review') ? 'review' : 'auto';
@@ -401,7 +427,8 @@ export function ImageWorkspacePage() {
     fontSize: 11,
     fontWeight: 800,
     bgcolor: active ? 'action.selected' : 'transparent',
-    boxShadow: active ? 'inset 2px 2px 5px rgba(0,0,0,0.1)' : 'none',
+    border: '1px solid',
+    borderColor: active ? 'primary.main' : 'transparent',
     color: active ? 'primary.main' : 'text.primary',
   });
 
@@ -454,6 +481,53 @@ export function ImageWorkspacePage() {
         <GpuStatusWidget active />
         <Box sx={{ flex: 1 }} />
 
+        {/* Panel visibility toggles — always available fallback when panels
+            are collapsed (restored ui_state or edge buttons out of reach). */}
+        <Tooltip title={t('left_panel_toggle')}>
+          <IconButton
+            size="small"
+            onClick={() => useLayoutStore.getState().toggleLeftPanel()}
+            aria-label={t('left_panel_toggle')}
+            aria-pressed={!leftPanelHidden}
+            sx={{
+              width: 32,
+              height: 32,
+              color: leftPanelHidden ? 'text.secondary' : 'primary.main',
+              bgcolor: leftPanelHidden ? 'transparent' : 'action.selected',
+            }}
+          >
+            <ChevronLeftIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={t('right_panel_toggle')}>
+          <IconButton
+            size="small"
+            onClick={() => useLayoutStore.getState().toggleRightPanel()}
+            aria-label={t('right_panel_toggle')}
+            aria-pressed={!rightPanelHidden}
+            sx={{
+              width: 32,
+              height: 32,
+              color: rightPanelHidden ? 'text.secondary' : 'primary.main',
+              bgcolor: rightPanelHidden ? 'transparent' : 'action.selected',
+            }}
+          >
+            <ChevronRightIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+
+        {/* Theme toggle (legacy btn-toggle-theme) */}
+        <Tooltip title={t('toggle_theme')}>
+          <IconButton
+            size="small"
+            onClick={() => setSetting('themeMode', themeMode === 'dark' ? 'light' : 'dark')}
+            aria-label={t('toggle_theme')}
+            sx={{ width: 32, height: 32, color: 'text.secondary' }}
+          >
+            {themeMode === 'dark' ? <LightModeIcon fontSize="small" /> : <DarkModeIcon fontSize="small" />}
+          </IconButton>
+        </Tooltip>
+
         {/* Backend health indicator (legacy startHealthCheck, 10 s polling) */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
           <Box
@@ -490,8 +564,28 @@ export function ImageWorkspacePage() {
         />
       </Box>
 
-      {/* 2. Top operation bar (mode switch + auto-annotate panel / phase-9 slots) */}
+      {/* 2. Top operation bar (mode switch / review flow / dashboard+export) */}
       <WorkspaceToolbar projectId={projectId} />
+
+      {/* 2b. Auto-annotate (inference) panel on its own wrapping row so its
+             grouped controls are never clipped on narrow windows. */}
+      {workspaceMode === 'auto' && (
+        <Box
+          sx={{
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            px: 3,
+            py: 1.25,
+            zIndex: 89,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+          }}
+        >
+          <AutoAnnotatePanel />
+        </Box>
+      )}
 
       {/* 3. Task progress bar (shadow row) */}
       <TaskProgressBar />
@@ -571,7 +665,7 @@ export function ImageWorkspacePage() {
         )}
 
         {/* Center column: canvas + floating tools */}
-        <Box sx={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
+        <Box sx={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0, bgcolor: canvasBg }}>
           <Box sx={{ flex: 1, position: 'relative' }} onMouseDownCapture={onViewerMouseDownCapture}>
             <ImageViewer
               ref={viewerRef}
@@ -600,9 +694,18 @@ export function ImageWorkspacePage() {
                   transform: 'translate(-50%, -50%)',
                   textAlign: 'center',
                   pointerEvents: 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 1.5,
                 }}
               >
-                <Typography sx={{ fontSize: 18, fontWeight: 600, color: 'text.secondary' }}>
+                {selectedImageId ? (
+                  <CircularProgress size={32} sx={{ color: 'text.secondary' }} />
+                ) : (
+                  <ImageIcon sx={{ fontSize: 56, color: 'text.disabled' }} />
+                )}
+                <Typography sx={{ fontSize: 16, fontWeight: 600, color: 'text.secondary' }}>
                   {selectedImageId ? t('loading_image_annotations') : t('select_image_prompt')}
                 </Typography>
               </Box>
@@ -630,37 +733,37 @@ export function ImageWorkspacePage() {
               </Typography>
               <Tooltip title={t('tool_pointer_title')}>
                 <Button size="small" onClick={() => setToolMode('none')} sx={floatingToolSx(promptMode === 'none')}>
-                  {t('tool_edit')}
+                  <NearMeIcon fontSize="small" />
                 </Button>
               </Tooltip>
               <Tooltip title={t('tool_manual_box_title')}>
                 <Button size="small" onClick={() => setToolMode('manual-box')} sx={floatingToolSx(promptMode === 'manual-box')}>
-                  {'\u25A1'}
+                  <CropSquareIcon fontSize="small" />
                 </Button>
               </Tooltip>
               <Tooltip title={t('tool_manual_polygon_title')}>
                 <Button size="small" onClick={() => setToolMode('manual-polygon')} sx={floatingToolSx(promptMode === 'manual-polygon')}>
-                  {t('tool_poly')}
+                  <PolylineIcon fontSize="small" />
                 </Button>
               </Tooltip>
               <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
               <Tooltip title={t('tool_undo_title')}>
                 <span>
                   <Button size="small" disabled={!canUndo} onClick={() => useAnnotationStore.getState().undo()} sx={floatingToolSx(false)}>
-                    {'\u21B6'}
+                    <UndoIcon fontSize="small" />
                   </Button>
                 </span>
               </Tooltip>
               <Tooltip title={t('tool_redo_title')}>
                 <span>
                   <Button size="small" disabled={!canRedo} onClick={() => useAnnotationStore.getState().redo()} sx={floatingToolSx(false)}>
-                    {'\u21B7'}
+                    <RedoIcon fontSize="small" />
                   </Button>
                 </span>
               </Tooltip>
               <Tooltip title={t('tool_delete_ann_title')}>
                 <Button size="small" onClick={handleDeleteFocusedAnnotation} sx={{ ...floatingToolSx(false), color: '#ef4444', opacity: focusedAnnotationId ? 1 : 0.45 }}>
-                  {'\u00D7'}
+                  <DeleteIcon fontSize="small" />
                 </Button>
               </Tooltip>
               {/* SAM box-exemplar tools are auto-mode only (legacy .ws-auto-only) */}
@@ -674,8 +777,9 @@ export function ImageWorkspacePage() {
                     <Button
                       size="small"
                       onClick={() => useViewerStore.getState().setBoxPromptLabel(1)}
-                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 1), color: '#16a34a', width: 'auto', px: 1.25 }}
+                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 1), color: '#16a34a', width: 'auto', px: 1.25, gap: 0.5 }}
                     >
+                      <AddBoxIcon fontSize="small" />
                       {t('tool_box_positive')}
                     </Button>
                   </Tooltip>
@@ -683,14 +787,15 @@ export function ImageWorkspacePage() {
                     <Button
                       size="small"
                       onClick={() => useViewerStore.getState().setBoxPromptLabel(0)}
-                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 0), color: '#dc2626', width: 'auto', px: 1.25 }}
+                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 0), color: '#dc2626', width: 'auto', px: 1.25, gap: 0.5 }}
                     >
+                      <IndeterminateCheckBoxIcon fontSize="small" />
                       {t('tool_box_negative')}
                     </Button>
                   </Tooltip>
                   <Tooltip title={t('tool_clear_prompts_title')}>
                     <Button size="small" onClick={handleClearPrompts} sx={floatingToolSx(false)}>
-                      {t('clear')}
+                      <ClearIcon fontSize="small" />
                     </Button>
                   </Tooltip>
                 </Box>
@@ -698,7 +803,7 @@ export function ImageWorkspacePage() {
               <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
               <Tooltip title={t('tool_fit_title')}>
                 <Button size="small" onClick={handleFitToScreen} sx={floatingToolSx(false)}>
-                  F
+                  <ZoomOutMapIcon fontSize="small" />
                 </Button>
               </Tooltip>
             </Paper>
@@ -708,20 +813,50 @@ export function ImageWorkspacePage() {
               <IconButton
                 size="small"
                 onClick={() => useLayoutStore.getState().toggleLeftPanel()}
-                sx={{ position: 'absolute', top: '50%', left: 14, transform: 'translateY(-50%)', width: 34, height: 64, borderRadius: '17px', zIndex: 95, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
+                sx={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: 14,
+                  transform: 'translateY(-50%)',
+                  width: 34,
+                  height: 64,
+                  borderRadius: '17px',
+                  zIndex: 95,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: (th) =>
+                    `${th.palette.mode === 'dark' ? 'rgba(26,29,38,0.72)' : 'rgba(255,255,255,0.72)'}`,
+                  backdropFilter: 'blur(4px)',
+                  color: 'text.primary',
+                }}
                 aria-label={t('collapse_expand')}
               >
-                {leftPanelHidden ? '>' : '<'}
+                {leftPanelHidden ? <ChevronRightIcon /> : <ChevronLeftIcon />}
               </IconButton>
             </Tooltip>
             <Tooltip title={t('collapse_expand')}>
               <IconButton
                 size="small"
                 onClick={() => useLayoutStore.getState().toggleRightPanel()}
-                sx={{ position: 'absolute', top: '50%', right: 14, transform: 'translateY(-50%)', width: 34, height: 64, borderRadius: '17px', zIndex: 95, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
+                sx={{
+                  position: 'absolute',
+                  top: '50%',
+                  right: 14,
+                  transform: 'translateY(-50%)',
+                  width: 34,
+                  height: 64,
+                  borderRadius: '17px',
+                  zIndex: 95,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: (th) =>
+                    `${th.palette.mode === 'dark' ? 'rgba(26,29,38,0.72)' : 'rgba(255,255,255,0.72)'}`,
+                  backdropFilter: 'blur(4px)',
+                  color: 'text.primary',
+                }}
                 aria-label={t('collapse_expand')}
               >
-                {rightPanelHidden ? '<' : '>'}
+                {rightPanelHidden ? <ChevronLeftIcon /> : <ChevronRightIcon />}
               </IconButton>
             </Tooltip>
 
@@ -829,10 +964,10 @@ export function ImageWorkspacePage() {
                   size="small"
                   title={t('collapse_expand')}
                   onClick={() => useLayoutStore.getState().toggleClassesSection()}
-                  sx={{ width: 28, height: 28, fontSize: 13 }}
+                  sx={{ width: 28, height: 28 }}
                   aria-label={t('collapse_expand')}
                 >
-                  {classesSectionCollapsed ? '+' : '\u2212'}
+                  {classesSectionCollapsed ? <ChevronRightIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                 </IconButton>
               </Box>
               <ClassPanel collapsed={classesSectionCollapsed} />
@@ -858,10 +993,10 @@ export function ImageWorkspacePage() {
                     size="small"
                     title={t('collapse_expand')}
                     onClick={() => useLayoutStore.getState().toggleAnnotationsSection()}
-                    sx={{ width: 28, height: 28, fontSize: 13 }}
+                    sx={{ width: 28, height: 28 }}
                     aria-label={t('collapse_expand')}
                   >
-                    {annotationsSectionCollapsed ? '+' : '\u2212'}
+                    {annotationsSectionCollapsed ? <ChevronRightIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                   </IconButton>
                 </Box>
               </Box>
@@ -870,15 +1005,23 @@ export function ImageWorkspacePage() {
               {/* SAM example-preview results (auto mode only) */}
               {!isReviewMode && (
                 <Box sx={{ p: 1.5, borderTop: '1px solid', borderColor: 'divider', flexShrink: 0 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', mb: 0.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
+                        {t('preview_results')}
+                      </Typography>
+                      <Typography sx={{ fontSize: 10, color: 'text.secondary', lineHeight: 1.5 }}>
+                        {t('preview_results_desc')}
+                      </Typography>
+                    </Box>
                     <IconButton
                       size="small"
                       title={t('collapse_expand')}
                       onClick={() => useViewerStore.getState().togglePreviewSection()}
-                      sx={{ width: 24, height: 24, fontSize: 12 }}
+                      sx={{ width: 24, height: 24, flexShrink: 0 }}
                       aria-label={t('collapse_expand')}
                     >
-                      {previewSectionCollapsed ? '+' : '\u2212'}
+                      {previewSectionCollapsed ? <ChevronRightIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                     </IconButton>
                   </Box>
                   {!previewSectionCollapsed && <PreviewResultsPanel />}

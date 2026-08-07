@@ -95,141 +95,174 @@ export function AutoAnnotatePanel() {
     px: 0.5,
     height: 32,
     borderRadius: '10px',
-    boxShadow: 'inset 2px 2px 5px rgba(0,0,0,0.06), inset -2px -2px 5px rgba(255,255,255,0.6)',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'background.paper',
   } as const;
 
+  const groupCardSx = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 1,
+    flexWrap: 'wrap',
+    px: 1.5,
+    py: 1,
+    borderRadius: 2,
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'background.default',
+  } as const;
+
+  const groupCaption = (label: string) => (
+    <Typography
+      sx={{
+        fontSize: 10,
+        fontWeight: 800,
+        textTransform: 'uppercase',
+        letterSpacing: 0.8,
+        color: 'text.secondary',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </Typography>
+  );
+
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
-      {/* Backend URLs + test */}
-      {!isLocate ? (
-        <TextField
+    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap', minWidth: 0 }}>
+      {/* Group 1: backend URL + connection test + backend select */}
+      <Box sx={groupCardSx}>
+        {groupCaption(t('group_backend'))}
+        {!isLocate ? (
+          <TextField
+            size="small"
+            value={sam3ApiUrl}
+            onChange={(e) => setSetting('sam3ApiUrl', e.target.value)}
+            label={t('sam3_api')}
+            inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
+            sx={{ width: 190 }}
+          />
+        ) : null}
+        <Button
           size="small"
-          value={sam3ApiUrl}
-          onChange={(e) => setSetting('sam3ApiUrl', e.target.value)}
-          label={t('sam3_api')}
-          inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
-          sx={{ width: 190 }}
-        />
-      ) : null}
-      <Button
-        size="small"
-        variant="outlined"
-        disabled={testing}
-        onClick={() => void handleTest()}
-        sx={{ height: 32, fontSize: 11, whiteSpace: 'nowrap' }}
-      >
-        {t('test_api')}
-      </Button>
-      <TextField
-        select
-        size="small"
-        value={defaultBackend || 'sam3'}
-        onChange={(e) => handleBackendChange(e.target.value)}
-        inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
-        sx={{ width: 150 }}
-      >
-        <MenuItem value="sam3" sx={{ fontSize: 12 }}>{t('sam3_backend')}</MenuItem>
-        <MenuItem value="locate-anything" sx={{ fontSize: 12 }}>{t('locate_backend')}</MenuItem>
-      </TextField>
-      {isLocate ? (
+          variant="outlined"
+          disabled={testing}
+          onClick={() => void handleTest()}
+          sx={{ height: 32, fontSize: 11, whiteSpace: 'nowrap' }}
+        >
+          {t('test_api')}
+        </Button>
         <TextField
+          select
           size="small"
-          value={locateApiUrl}
-          onChange={(e) => setSetting('locateApiUrl', e.target.value)}
-          placeholder={t('locate_api_url')}
+          value={defaultBackend || 'sam3'}
+          onChange={(e) => handleBackendChange(e.target.value)}
           inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
-          sx={{ width: 190 }}
-        />
-      ) : null}
-
-      <Box sx={{ width: 1, height: 24, bgcolor: 'divider' }} />
-
-      {/* Threshold stepper */}
-      <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
-        {t('threshold')}
-      </Typography>
-      <Box sx={stepperSx}>
-        <IconButton size="small" onClick={() => adjustThreshold(-0.05)} sx={{ width: 24, height: 24 }} aria-label="threshold -">
-          −
-        </IconButton>
-        <Typography sx={{ minWidth: 42, textAlign: 'center', fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
-          {Number(threshold).toFixed(2)}
-        </Typography>
-        <IconButton size="small" onClick={() => adjustThreshold(0.05)} sx={{ width: 24, height: 24 }} aria-label="threshold +">
-          +
-        </IconButton>
+          sx={{ width: 150 }}
+        >
+          <MenuItem value="sam3" sx={{ fontSize: 12 }}>{t('sam3_backend')}</MenuItem>
+          <MenuItem value="locate-anything" sx={{ fontSize: 12 }}>{t('locate_backend')}</MenuItem>
+        </TextField>
+        {isLocate ? (
+          <TextField
+            size="small"
+            value={locateApiUrl}
+            onChange={(e) => setSetting('locateApiUrl', e.target.value)}
+            placeholder={t('locate_api_url')}
+            inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
+            sx={{ width: 190 }}
+          />
+        ) : null}
       </Box>
 
-      {/* Batch size stepper */}
-      <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
-        {t('batch_size')}
-      </Typography>
-      <Box sx={stepperSx}>
-        <IconButton size="small" onClick={() => adjustBatchSize(-1)} sx={{ width: 24, height: 24 }} aria-label="batch -">
-          −
-        </IconButton>
-        <Typography sx={{ minWidth: 32, textAlign: 'center', fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
-          {batchSize}
+      {/* Group 2: inference parameters (threshold / batch size / contour mode) */}
+      <Box sx={groupCardSx}>
+        {groupCaption(t('group_params'))}
+        <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+          {t('threshold')}
         </Typography>
-        <IconButton size="small" onClick={() => adjustBatchSize(1)} sx={{ width: 24, height: 24 }} aria-label="batch +">
-          +
-        </IconButton>
+        <Box sx={stepperSx}>
+          <IconButton size="small" onClick={() => adjustThreshold(-0.05)} sx={{ width: 24, height: 24 }} aria-label="threshold -">
+            −
+          </IconButton>
+          <Typography sx={{ minWidth: 42, textAlign: 'center', fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {Number(threshold).toFixed(2)}
+          </Typography>
+          <IconButton size="small" onClick={() => adjustThreshold(0.05)} sx={{ width: 24, height: 24 }} aria-label="threshold +">
+            +
+          </IconButton>
+        </Box>
+
+        <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+          {t('batch_size')}
+        </Typography>
+        <Box sx={stepperSx}>
+          <IconButton size="small" onClick={() => adjustBatchSize(-1)} sx={{ width: 24, height: 24 }} aria-label="batch -">
+            −
+          </IconButton>
+          <Typography sx={{ minWidth: 32, textAlign: 'center', fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {batchSize}
+          </Typography>
+          <IconButton size="small" onClick={() => adjustBatchSize(1)} sx={{ width: 24, height: 24 }} aria-label="batch +">
+            +
+          </IconButton>
+        </Box>
+
+        <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+          {t('contour_mode')}
+        </Typography>
+        <TextField
+          select
+          size="small"
+          value={contourMode || 'split'}
+          disabled={isLocate}
+          onChange={(e) => setSetting('contourMode', e.target.value as 'split' | 'merged')}
+          inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
+          sx={{ width: 150, opacity: isLocate ? 0.45 : 1 }}
+        >
+          <MenuItem value="split" sx={{ fontSize: 12 }}>{t('contour_split')}</MenuItem>
+          <MenuItem value="merged" sx={{ fontSize: 12 }}>{t('contour_merged')}</MenuItem>
+        </TextField>
       </Box>
 
-      {/* Contour mode */}
-      <Typography sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
-        {t('contour_mode')}
-      </Typography>
-      <TextField
-        select
-        size="small"
-        value={contourMode || 'split'}
-        disabled={isLocate}
-        onChange={(e) => setSetting('contourMode', e.target.value as 'split' | 'merged')}
-        inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
-        sx={{ width: 150, opacity: isLocate ? 0.45 : 1 }}
-      >
-        <MenuItem value="split" sx={{ fontSize: 12 }}>{t('contour_split')}</MenuItem>
-        <MenuItem value="merged" sx={{ fontSize: 12 }}>{t('contour_merged')}</MenuItem>
-      </TextField>
-
-      <Box sx={{ width: 1, height: 24, bgcolor: 'divider' }} />
-
-      {/* Action buttons */}
-      <Button
-        size="small"
-        variant="contained"
-        disabled={inferring}
-        onClick={() => void handleInfer()}
-        sx={{ height: 32, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}
-      >
-        {inferring ? t('inferring') : t('infer_current')}
-      </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        onClick={() => void startBatchTask()}
-        sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
-      >
-        {t('batch_infer')}
-      </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        onClick={() => void startLaBoxesBatchTask()}
-        sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
-      >
-        {t('la_boxes_batch')}
-      </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        disabled={isLocate || findingSimilar}
-        onClick={() => void handleExample()}
-        sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', opacity: isLocate ? 0.45 : 1 }}
-      >
-        {findingSimilar ? t('finding_similar') : t('example_segment')}
-      </Button>
+      {/* Group 3: execution actions */}
+      <Box sx={groupCardSx}>
+        {groupCaption(t('group_actions'))}
+        <Button
+          size="small"
+          variant="contained"
+          disabled={inferring}
+          onClick={() => void handleInfer()}
+          sx={{ height: 32, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}
+        >
+          {inferring ? t('inferring') : t('infer_current')}
+        </Button>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => void startBatchTask()}
+          sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
+        >
+          {t('batch_infer')}
+        </Button>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => void startLaBoxesBatchTask()}
+          sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
+        >
+          {t('la_boxes_batch')}
+        </Button>
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={isLocate || findingSimilar}
+          onClick={() => void handleExample()}
+          sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', opacity: isLocate ? 0.45 : 1 }}
+        >
+          {findingSimilar ? t('finding_similar') : t('example_segment')}
+        </Button>
+      </Box>
     </Box>
   );
 }

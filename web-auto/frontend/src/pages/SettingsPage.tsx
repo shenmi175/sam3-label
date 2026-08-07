@@ -3,15 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { getGlobalConfig, type GlobalConfig } from '../api/config';
-import { logout } from '../api/system';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useToast } from '../components/common/ToastProvider';
 import { BasicTab } from '../components/settings/BasicTab';
 import { PathsTab } from '../components/settings/PathsTab';
 import { RuntimeTab } from '../components/settings/RuntimeTab';
-import { AccountTab } from '../components/settings/AccountTab';
 
-type SettingsTabValue = 'basic' | 'paths' | 'runtime' | 'account';
+type SettingsTabValue = 'basic' | 'paths' | 'runtime';
 
 function stripTrailingSlashes(value: unknown): string {
   return String(value ?? '').replace(/\/+$/, '');
@@ -24,7 +22,7 @@ export function SettingsPage() {
 
   const [activeTab, setActiveTab] = useState<SettingsTabValue>('basic');
   const [config, setConfig] = useState<GlobalConfig>({});
-  const [statusLine, setStatusLine] = useState('web-auto');
+  const [statusLine, setStatusLine] = useState('');
 
   const loadConfig = useCallback(async () => {
     let cfg: GlobalConfig = {};
@@ -66,15 +64,6 @@ export function SettingsPage() {
     loadConfig();
   }, [loadConfig]);
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-    } catch {
-      // ignore, redirect anyway
-    }
-    window.location.href = '/login';
-  };
-
   return (
     <Box sx={{ height: '100vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
       <Box
@@ -105,9 +94,6 @@ export function SettingsPage() {
           <Button variant="outlined" onClick={() => navigate('/')}>
             {t('back_to_projects')}
           </Button>
-          <Button variant="outlined" onClick={handleLogout}>
-            {t('logout')}
-          </Button>
         </Box>
       </Box>
 
@@ -134,7 +120,6 @@ export function SettingsPage() {
             <Tab value="basic" label={t('settings_basic')} />
             <Tab value="paths" label={t('settings_paths')} />
             <Tab value="runtime" label={t('settings_runtime')} />
-            <Tab value="account" label={t('settings_account')} />
           </Tabs>
         </Paper>
 
@@ -146,7 +131,6 @@ export function SettingsPage() {
           {activeTab === 'runtime' && (
             <RuntimeTab config={config} onReload={loadConfig} onStatusChange={setStatusLine} />
           )}
-          {activeTab === 'account' && <AccountTab />}
         </Paper>
       </Box>
     </Box>

@@ -43,18 +43,6 @@ export async function request<T = unknown>(
     } catch {
       // non-JSON error body
     }
-    if (response.status === 401 || errorCode === 'login_required') {
-      window.location.href = '/login';
-      throw new Error('Login required');
-    }
-    if (response.status === 403 && errorCode === 'setup_required') {
-      window.location.href = '/setup';
-      throw new Error('Setup required');
-    }
-    if (response.status === 503 && errorCode === 'admin_not_configured') {
-      window.location.href = '/login';
-      throw new Error('Admin credentials are not configured');
-    }
     const err = new Error(`API Error ${response.status}: ${errorMsg}`) as ApiError;
     err.code = errorCode;
     err.detail = errorDetail;
@@ -112,14 +100,15 @@ export function uploadDatasetFile({
         return;
       }
       const errorCode = data && data.code ? String(data.code) : '';
-      if (xhr.status === 401 || errorCode === 'login_required') {
-        window.location.href = '/login';
-        reject(new Error('Login required'));
-        return;
-      }
       const detailRaw = data && data.detail ? data.detail : xhr.statusText;
       const detail = typeof detailRaw === 'string' ? detailRaw : JSON.stringify(detailRaw);
-      reject(new Error(`API Error ${xhr.status}: ${detail}`));
+      const uploadErr = new Error(`API Error ${xhr.status}: ${detail}`) as Error & {
+        code?: string;
+        detail?: unknown;
+      };
+      uploadErr.code = errorCode;
+      uploadErr.detail = data && data.detail ? data.detail : data;
+      reject(uploadErr);
     };
     xhr.onerror = () => reject(new Error('network error during upload'));
     xhr.onabort = () => reject(new Error('upload canceled'));

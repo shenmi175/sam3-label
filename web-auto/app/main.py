@@ -134,7 +134,7 @@ PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
 AUTH_FILE = DATA_DIR / 'auth.json'
 SESSION_COOKIE_NAME = os.getenv('WEB_AUTO_SESSION_COOKIE_NAME', 'web_auto_session').strip() or 'web_auto_session'
 SESSION_TTL_SECONDS = parse_positive_int_env('WEB_AUTO_SESSION_TTL_SECONDS', 12 * 60 * 60)
-AUTH_ENABLED = os.getenv('WEB_AUTO_AUTH_ENABLED', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+AUTH_ENABLED = os.getenv('WEB_AUTO_AUTH_ENABLED', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
 
 
 AUTH_STORE = AuthStore(

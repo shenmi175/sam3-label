@@ -51,7 +51,7 @@ export function GpuStatusWidget({ active }: { active: boolean }) {
       >
         <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: dotColor, flexShrink: 0 }} />
         <Typography sx={{ fontSize: 10, fontWeight: 800, color: 'text.secondary', width: 28 }}>GPU</Typography>
-        <Box sx={{ height: 6, flex: 1, minWidth: 48, bgcolor: 'rgba(0,0,0,0.08)', borderRadius: 999, overflow: 'hidden' }}>
+        <Box sx={{ height: 6, flex: 1, minWidth: 48, bgcolor: 'divider', borderRadius: 999, overflow: 'hidden' }}>
           <Box
             sx={{
               width: gpu.gpuUtilization === null ? '0%' : `${gpu.gpuUtilization.toFixed(0)}%`,
@@ -65,7 +65,7 @@ export function GpuStatusWidget({ active }: { active: boolean }) {
           {gpu.gpuUtilization === null ? '--' : `${gpu.gpuUtilization.toFixed(0)}%`}
         </Typography>
         <Typography sx={{ fontSize: 10, fontWeight: 800, color: 'text.secondary', width: 32 }}>{t('gpu_memory')}</Typography>
-        <Box sx={{ height: 6, flex: 1, minWidth: 48, bgcolor: 'rgba(0,0,0,0.08)', borderRadius: 999, overflow: 'hidden' }}>
+        <Box sx={{ height: 6, flex: 1, minWidth: 48, bgcolor: 'divider', borderRadius: 999, overflow: 'hidden' }}>
           <Box sx={{ width: `${gpu.memoryPct.toFixed(0)}%`, height: '100%', bgcolor: '#3b82f6', transition: 'width 0.3s ease' }} />
         </Box>
         <Typography sx={{ width: 78, textAlign: 'right', fontSize: 10, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>

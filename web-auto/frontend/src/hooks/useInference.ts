@@ -279,6 +279,12 @@ export function useInference() {
       store.setActiveJobId(null);
       store.setIsPolling(false);
       store.setTaskBar(true, t('task_cancelled'));
+      // Auto-hide the task bar after 3 s, same as the done/error branch in
+      // useJobPolling.
+      setTimeout(() => {
+        const s = useInferenceStore.getState();
+        if (!s.activeJobId) s.setTaskBar(false, '');
+      }, 3000);
       toast(t('task_cancelled'), 'info');
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), 'error');

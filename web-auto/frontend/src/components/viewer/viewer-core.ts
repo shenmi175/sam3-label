@@ -203,7 +203,7 @@ export class ImageViewerCore {
       position: 'absolute',
       inset: '0',
       overflow: 'hidden',
-      background: 'var(--canvas-bg)',
+      background: '#eaeff2',
     });
     Object.assign(this.osdElement.style, {
       position: 'absolute',
@@ -221,7 +221,7 @@ export class ImageViewerCore {
       display: 'none',
       zIndex: '10',
       pointerEvents: 'none',
-      background: 'var(--canvas-bg)',
+      background: '#eaeff2',
     });
     Object.assign(this.staticCanvas.style, {
       position: 'absolute',
@@ -478,6 +478,12 @@ export class ImageViewerCore {
     this.options = { ...this.options, ...nextOptions };
     this.requestStaticRedraw(true);
     this.requestDraw();
+  }
+
+  /** Update the canvas background (root + preview placeholder), e.g. per theme. */
+  setBackground(color: string): void {
+    this.root.style.background = color;
+    this.previewImage.style.background = color;
   }
 
   setPromptMode(mode: PromptMode): void {

@@ -19,24 +19,6 @@ export function restartWebAuto() {
   return post<{ ok: boolean; message: string }>('/system/restart');
 }
 
-/** GET /api/auth/status */
-export function getAuthStatus() {
-  return get<Record<string, unknown>>('/auth/status');
-}
-
-/** POST /api/auth/logout */
-export function logout() {
-  return post<Record<string, unknown>>('/auth/logout');
-}
-
-/** POST /api/auth/password */
-export function changePassword(currentPassword: string, newPassword: string) {
-  return post<Record<string, unknown>>('/auth/password', {
-    current_password: currentPassword,
-    new_password: newPassword,
-  });
-}
-
 export interface ServiceOperation {
   status?: string;
   phase?: string;

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { CSSProperties } from 'react';
+import { useTheme } from '@mui/material/styles';
 import type { Annotation, PreviewInfo, Prompt, TileInfo } from '../../api/types';
 import { ImageViewerCore } from './viewer-core';
 import type {
@@ -85,6 +86,14 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const coreRef = useRef<ImageViewerCore | null>(null);
+  const theme = useTheme();
+
+  // Theme-aware canvas background (legacy css/index.css --canvas-bg: light
+  // #eaeff2 / dark #1b1e26). Applied whenever the palette mode changes.
+  const canvasBackground = theme.palette.mode === 'dark' ? '#1b1e26' : '#eaeff2';
+  useEffect(() => {
+    coreRef.current?.setBackground(canvasBackground);
+  }, [canvasBackground]);
 
   // Latest callback props, kept in a ref so the core's listeners never need rebinding.
   const callbacksRef = useRef<CallbackBundle>({

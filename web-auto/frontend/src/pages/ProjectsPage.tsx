@@ -28,7 +28,6 @@ import {
   getSapiensCheckpointDownload,
   getSapiensStatus,
   getServicesStatus,
-  logout,
   type SapiensDownloadJob,
   type SapiensStatusResponse,
   type ServicesStatusResponse,
@@ -268,15 +267,6 @@ export function ProjectsPage() {
     showToast(t('theme_switched', { mode: next }));
   };
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-    } catch {
-      // ignore, redirect anyway
-    }
-    window.location.href = '/login';
-  };
-
   const openProject = (id: string, projectType = 'image') => {
     const type = String(projectType || 'image');
     navigate(type === 'pose' ? `/project/pose/${id}` : `/project/image/${id}`);
@@ -357,9 +347,6 @@ export function ProjectsPage() {
           </IconButton>
           <Button variant="outlined" onClick={() => navigate('/settings')}>
             {t('global_settings')}
-          </Button>
-          <Button variant="outlined" onClick={handleLogout}>
-            {t('logout')}
           </Button>
         </Box>
       </Box>

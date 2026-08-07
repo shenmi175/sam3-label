@@ -6,7 +6,6 @@ import { useLayoutStore, type WorkspaceMode } from '../../stores/workspace/layou
 import { useViewerStore } from '../../stores/workspace/viewerStore';
 import { useAnnotationStore } from '../../stores/workspace/annotationStore';
 import { toast } from '../../utils/notify';
-import { AutoAnnotatePanel } from './AutoAnnotatePanel';
 import { ReviewToolbar } from './ReviewToolbar';
 import { ExportPanel } from './ExportPanel';
 import { DataDashboardPanel } from './DataDashboardPanel';
@@ -16,14 +15,18 @@ interface WorkspaceToolbarProps {
 }
 
 /**
- * Workspace toolbar — 1:1 port of the legacy workspace-toolbar.js:
+ * Workspace toolbar core row — 1:1 port of the legacy workspace-toolbar.js:
  *   - auto/review mode switch (guarded route navigation, legacy
  *     navigateWorkspaceRoute: commit pending polygon → flush dirty → hash nav)
- *   - auto mode: AutoAnnotatePanel
  *   - review mode: ReviewToolbar (accept/reject/recategorize/save-next flow)
  *   - right side: data dashboard / smart filter / export entry points
  *     (dashboard + export open dialogs, smart filter toggles the right-column
  *     panel).
+ *
+ * The legacy AutoAnnotatePanel is NOT rendered here: it lives on its own
+ * wrapping row below this toolbar (see ImageWorkspacePage) so its ~1500px of
+ * controls can wrap on narrow windows instead of being clipped by a fixed
+ * 64px row.
  */
 export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
   const { t } = useTranslation();
@@ -79,7 +82,9 @@ export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
           p: 0.4,
           borderRadius: '12px',
           flexShrink: 0,
-          boxShadow: 'inset 2px 2px 5px rgba(0,0,0,0.06), inset -2px -2px 5px rgba(255,255,255,0.6)',
+          border: '1px solid',
+          borderColor: 'divider',
+          bgcolor: 'background.default',
         }}
       >
         <Button
@@ -100,8 +105,8 @@ export function WorkspaceToolbar({ projectId }: WorkspaceToolbarProps) {
         </Button>
       </Box>
 
-      {/* Mode-specific panels */}
-      {workspaceMode === 'auto' ? <AutoAnnotatePanel /> : <ReviewToolbar />}
+      {/* Review-mode flow controls (auto-mode inference panel is a separate row) */}
+      {workspaceMode === 'review' && <ReviewToolbar />}
 
       <Box sx={{ flex: 1 }} />
 

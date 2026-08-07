@@ -171,8 +171,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   getSelectedClassesForInference: () => {
     const { classes, inferenceCheckedClasses } = get();
-    const checked = classes.filter((c) => inferenceCheckedClasses.has(c));
-    return checked.length ? checked : classes;
+    // Legacy parity: only explicitly checked classes are returned; callers
+    // (batch inference) error out on an empty selection instead of silently
+    // inferring every class.
+    return classes.filter((c) => inferenceCheckedClasses.has(c));
   },
 
   setImages: (images, total) => set({ images, totalImages: total }),
