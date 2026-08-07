@@ -36,11 +36,3 @@ export function getAnnotationDashboard(projectId: string) {
 export function rebuildAnnotationIndex(projectId: string) {
   return post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/annotation_index/rebuild`);
 }
-
-/** POST /api/projects/{pid}/annotations/migrate — dry_run=true returns the plan only. */
-export function migrateAnnotationLayout(projectId: string, dryRun = true) {
-  return post<{ moved?: number; conflicts?: number; failed?: number; [key: string]: unknown }>(
-    `/projects/${encodeURIComponent(projectId)}/annotations/migrate`,
-    { dry_run: Boolean(dryRun) },
-  );
-}

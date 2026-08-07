@@ -34,7 +34,6 @@ import { useTranslation } from 'react-i18next';
 import { ImageViewer, type ImageViewerHandle } from '../components/viewer/ImageViewer';
 import type { ManualAnnotationDraft } from '../components/viewer/viewer-core';
 import type { Annotation } from '../api/types';
-import { migrateSources as migrateSourcesApi } from '../api/classes';
 import { clearBundleCache } from '../api/bundleCache';
 import { toast } from '../utils/notify';
 import { useSettingsStore } from '../stores/settingsStore';
@@ -141,8 +140,9 @@ export function ImageWorkspacePage() {
   // Backend health indicator — legacy startHealthCheck (10 s /api/health).
   const backendHealth = useBackendHealth();
 
-  // Effective mode: review-only UI is a phase-9 slot; auto-only UI is
-  // conditionally rendered through this flag (legacy .ws-auto-only elements).
+  // Effective mode: review-only UI (ReviewToolbar) renders in WorkspaceToolbar;
+  // auto-only UI is conditionally rendered through this flag (legacy
+  // .ws-auto-only elements).
   const isReviewMode = workspaceMode === 'review';
 
   // Legacy single-select source filter applied to the viewer + list.
@@ -368,20 +368,6 @@ export function ImageWorkspacePage() {
     [],
   );
 
-  const handleMigrateSources = useCallback(async () => {
-    if (!projectId) return;
-    if (!window.confirm(t('migrate_sources_confirm'))) return;
-    try {
-      const res = await migrateSourcesApi(projectId);
-      toast(t('migrate_done', { total: Number(res?.migrated || 0) }), 'success');
-      await useProjectStore.getState().loadProjectInfo();
-      if (useImageStore.getState().selectedImageId) {
-        void useImageStore.getState().reloadSelectedImage();
-      }
-    } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), 'error');
-    }
-  }, [projectId, t]);
 
   // ─── Derived display strings ────────────────────────────────────────────────
 
@@ -481,41 +467,6 @@ export function ImageWorkspacePage() {
         <GpuStatusWidget active />
         <Box sx={{ flex: 1 }} />
 
-        {/* Panel visibility toggles — always available fallback when panels
-            are collapsed (restored ui_state or edge buttons out of reach). */}
-        <Tooltip title={t('left_panel_toggle')}>
-          <IconButton
-            size="small"
-            onClick={() => useLayoutStore.getState().toggleLeftPanel()}
-            aria-label={t('left_panel_toggle')}
-            aria-pressed={!leftPanelHidden}
-            sx={{
-              width: 32,
-              height: 32,
-              color: leftPanelHidden ? 'text.secondary' : 'primary.main',
-              bgcolor: leftPanelHidden ? 'transparent' : 'action.selected',
-            }}
-          >
-            <ChevronLeftIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title={t('right_panel_toggle')}>
-          <IconButton
-            size="small"
-            onClick={() => useLayoutStore.getState().toggleRightPanel()}
-            aria-label={t('right_panel_toggle')}
-            aria-pressed={!rightPanelHidden}
-            sx={{
-              width: 32,
-              height: 32,
-              color: rightPanelHidden ? 'text.secondary' : 'primary.main',
-              bgcolor: rightPanelHidden ? 'transparent' : 'action.selected',
-            }}
-          >
-            <ChevronRightIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-
         {/* Theme toggle (legacy btn-toggle-theme) */}
         <Tooltip title={t('toggle_theme')}>
           <IconButton
@@ -554,7 +505,7 @@ export function ImageWorkspacePage() {
           </Typography>
         </Box>
 
-        {/* Mode indicator (review-specific UI is a phase-9 slot) */}
+        {/* Mode indicator (auto/review switch lives in WorkspaceToolbar) */}
         <Chip
           size="small"
           label={isReviewMode ? t('workspace_mode_review') : t('workspace_mode_auto')}
@@ -732,39 +683,39 @@ export function ImageWorkspacePage() {
                 {t('toolbar_annotate')}
               </Typography>
               <Tooltip title={t('tool_pointer_title')}>
-                <Button size="small" onClick={() => setToolMode('none')} sx={floatingToolSx(promptMode === 'none')}>
+                <IconButton size="small" onClick={() => setToolMode('none')} aria-label={t('tool_pointer_title')} aria-pressed={promptMode === 'none'} sx={floatingToolSx(promptMode === 'none')}>
                   <NearMeIcon fontSize="small" />
-                </Button>
+                </IconButton>
               </Tooltip>
               <Tooltip title={t('tool_manual_box_title')}>
-                <Button size="small" onClick={() => setToolMode('manual-box')} sx={floatingToolSx(promptMode === 'manual-box')}>
+                <IconButton size="small" onClick={() => setToolMode('manual-box')} aria-label={t('tool_manual_box_title')} aria-pressed={promptMode === 'manual-box'} sx={floatingToolSx(promptMode === 'manual-box')}>
                   <CropSquareIcon fontSize="small" />
-                </Button>
+                </IconButton>
               </Tooltip>
               <Tooltip title={t('tool_manual_polygon_title')}>
-                <Button size="small" onClick={() => setToolMode('manual-polygon')} sx={floatingToolSx(promptMode === 'manual-polygon')}>
+                <IconButton size="small" onClick={() => setToolMode('manual-polygon')} aria-label={t('tool_manual_polygon_title')} aria-pressed={promptMode === 'manual-polygon'} sx={floatingToolSx(promptMode === 'manual-polygon')}>
                   <PolylineIcon fontSize="small" />
-                </Button>
+                </IconButton>
               </Tooltip>
               <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
               <Tooltip title={t('tool_undo_title')}>
                 <span>
-                  <Button size="small" disabled={!canUndo} onClick={() => useAnnotationStore.getState().undo()} sx={floatingToolSx(false)}>
+                  <IconButton size="small" disabled={!canUndo} onClick={() => useAnnotationStore.getState().undo()} aria-label={t('tool_undo_title')} sx={floatingToolSx(false)}>
                     <UndoIcon fontSize="small" />
-                  </Button>
+                  </IconButton>
                 </span>
               </Tooltip>
               <Tooltip title={t('tool_redo_title')}>
                 <span>
-                  <Button size="small" disabled={!canRedo} onClick={() => useAnnotationStore.getState().redo()} sx={floatingToolSx(false)}>
+                  <IconButton size="small" disabled={!canRedo} onClick={() => useAnnotationStore.getState().redo()} aria-label={t('tool_redo_title')} sx={floatingToolSx(false)}>
                     <RedoIcon fontSize="small" />
-                  </Button>
+                  </IconButton>
                 </span>
               </Tooltip>
               <Tooltip title={t('tool_delete_ann_title')}>
-                <Button size="small" onClick={handleDeleteFocusedAnnotation} sx={{ ...floatingToolSx(false), color: '#ef4444', opacity: focusedAnnotationId ? 1 : 0.45 }}>
+                <IconButton size="small" onClick={handleDeleteFocusedAnnotation} aria-label={t('tool_delete_ann_title')} sx={{ ...floatingToolSx(false), color: '#ef4444', opacity: focusedAnnotationId ? 1 : 0.45 }}>
                   <DeleteIcon fontSize="small" />
-                </Button>
+                </IconButton>
               </Tooltip>
               {/* SAM box-exemplar tools are auto-mode only (legacy .ws-auto-only) */}
               {!isReviewMode && (
@@ -777,6 +728,7 @@ export function ImageWorkspacePage() {
                     <Button
                       size="small"
                       onClick={() => useViewerStore.getState().setBoxPromptLabel(1)}
+                      aria-pressed={promptMode === 'box' && boxPromptLabel === 1}
                       sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 1), color: '#16a34a', width: 'auto', px: 1.25, gap: 0.5 }}
                     >
                       <AddBoxIcon fontSize="small" />
@@ -787,6 +739,7 @@ export function ImageWorkspacePage() {
                     <Button
                       size="small"
                       onClick={() => useViewerStore.getState().setBoxPromptLabel(0)}
+                      aria-pressed={promptMode === 'box' && boxPromptLabel === 0}
                       sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 0), color: '#dc2626', width: 'auto', px: 1.25, gap: 0.5 }}
                     >
                       <IndeterminateCheckBoxIcon fontSize="small" />
@@ -794,17 +747,17 @@ export function ImageWorkspacePage() {
                     </Button>
                   </Tooltip>
                   <Tooltip title={t('tool_clear_prompts_title')}>
-                    <Button size="small" onClick={handleClearPrompts} sx={floatingToolSx(false)}>
+                    <IconButton size="small" onClick={handleClearPrompts} aria-label={t('tool_clear_prompts_title')} sx={floatingToolSx(false)}>
                       <ClearIcon fontSize="small" />
-                    </Button>
+                    </IconButton>
                   </Tooltip>
                 </Box>
               )}
               <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
               <Tooltip title={t('tool_fit_title')}>
-                <Button size="small" onClick={handleFitToScreen} sx={floatingToolSx(false)}>
+                <IconButton size="small" onClick={handleFitToScreen} aria-label={t('tool_fit_title')} sx={floatingToolSx(false)}>
                   <ZoomOutMapIcon fontSize="small" />
-                </Button>
+                </IconButton>
               </Tooltip>
             </Paper>
 
@@ -980,15 +933,6 @@ export function ImageWorkspacePage() {
                   {t('annotation_list')}
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center' }}>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    title={t('migrate_sources')}
-                    onClick={() => void handleMigrateSources()}
-                    sx={{ height: 26, fontSize: 10, fontWeight: 600 }}
-                  >
-                    {t('migrate_sources')}
-                  </Button>
                   <IconButton
                     size="small"
                     title={t('collapse_expand')}

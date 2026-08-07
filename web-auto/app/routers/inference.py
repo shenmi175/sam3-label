@@ -34,6 +34,13 @@ def create_inference_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def _to_upstream_error(exc: Exception, fallback: str) -> HTTPException:
+        # Surface upstream failures (e.g. sam3-api returning 500 because the
+        # GPU driver disappeared) as 502 with the original message in detail,
+        # so frontends can display the real cause instead of a bare 500.
+        detail = str(exc).strip() or fallback
+        return HTTPException(status_code=502, detail=detail)
+
     @router.post('/api/infer')
     def infer_single(payload: InferIn) -> dict[str, Any]:
         project = get_project_or_404(payload.project_id, include_images=False)
@@ -42,22 +49,27 @@ def create_inference_router(
         image = get_image_or_404(project, payload.image_id)
         lease_id = acquire_interactive_gpu()
         try:
-            out = infer_single_impl(
-                project=project,
-                image=image,
-                mode=payload.mode,
-                classes=payload.classes,
-                active_class=payload.active_class,
-                points=payload.points,
-                boxes=payload.boxes,
-                threshold=payload.threshold,
-                api_base_url=payload.api_base_url,
-                save_result=True,
-                model_backend=payload.model_backend,
-                locate_api_base_url=payload.locate_api_base_url,
-                score_default=payload.score_default,
-                contour_mode=payload.contour_mode,
-            )
+            try:
+                out = infer_single_impl(
+                    project=project,
+                    image=image,
+                    mode=payload.mode,
+                    classes=payload.classes,
+                    active_class=payload.active_class,
+                    points=payload.points,
+                    boxes=payload.boxes,
+                    threshold=payload.threshold,
+                    api_base_url=payload.api_base_url,
+                    save_result=True,
+                    model_backend=payload.model_backend,
+                    locate_api_base_url=payload.locate_api_base_url,
+                    score_default=payload.score_default,
+                    contour_mode=payload.contour_mode,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _to_upstream_error(exc, 'interactive inference failed') from exc
         finally:
             release_interactive_gpu(lease_id)
         return {
@@ -79,22 +91,27 @@ def create_inference_router(
         image = get_image_or_404(project, payload.image_id)
         lease_id = acquire_interactive_gpu()
         try:
-            out = infer_single_impl(
-                project=project,
-                image=image,
-                mode=payload.mode,
-                classes=payload.classes,
-                active_class=payload.active_class,
-                points=payload.points,
-                boxes=payload.boxes,
-                threshold=payload.threshold,
-                api_base_url=payload.api_base_url,
-                save_result=False,
-                model_backend=payload.model_backend,
-                locate_api_base_url=payload.locate_api_base_url,
-                score_default=payload.score_default,
-                contour_mode=payload.contour_mode,
-            )
+            try:
+                out = infer_single_impl(
+                    project=project,
+                    image=image,
+                    mode=payload.mode,
+                    classes=payload.classes,
+                    active_class=payload.active_class,
+                    points=payload.points,
+                    boxes=payload.boxes,
+                    threshold=payload.threshold,
+                    api_base_url=payload.api_base_url,
+                    save_result=False,
+                    model_backend=payload.model_backend,
+                    locate_api_base_url=payload.locate_api_base_url,
+                    score_default=payload.score_default,
+                    contour_mode=payload.contour_mode,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _to_upstream_error(exc, 'preview inference failed') from exc
         finally:
             release_interactive_gpu(lease_id)
         return {
@@ -116,15 +133,20 @@ def create_inference_router(
         image = get_image_or_404(project, payload.image_id)
         lease_id = acquire_interactive_gpu()
         try:
-            out = infer_example_preview_impl(
-                project=project,
-                image=image,
-                active_class=payload.active_class,
-                boxes=payload.boxes,
-                threshold=payload.threshold,
-                api_base_url=payload.api_base_url,
-                model_backend=getattr(payload, 'model_backend', 'sam3'),
-            )
+            try:
+                out = infer_example_preview_impl(
+                    project=project,
+                    image=image,
+                    active_class=payload.active_class,
+                    boxes=payload.boxes,
+                    threshold=payload.threshold,
+                    api_base_url=payload.api_base_url,
+                    model_backend=getattr(payload, 'model_backend', 'sam3'),
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _to_upstream_error(exc, 'example preview inference failed') from exc
         finally:
             release_interactive_gpu(lease_id)
         return {
@@ -140,22 +162,32 @@ def create_inference_router(
 
     @router.post('/api/infer/batch')
     def infer_batch(payload: InferBatchIn) -> dict[str, Any]:
-        return run_infer_batch(payload)
+        try:
+            return run_infer_batch(payload)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _to_upstream_error(exc, 'batch inference failed') from exc
 
     @router.post('/api/infer/jobs/start_batch')
     def start_infer_batch_job(payload: InferBatchIn) -> dict[str, Any]:
-        precheck_infer_batch(payload)
-        job = spawn_infer_job(
-            project_id=payload.project_id,
-            job_type='text_batch',
-            payload_dict=payload.model_dump(),
-            worker=lambda data, progress_cb, should_stop, resume_state: run_infer_batch(
-                InferBatchIn(**data),
-                progress_cb=progress_cb,
-                should_stop=should_stop,
-                resume_state=resume_state,
-            ),
-        )
+        try:
+            precheck_infer_batch(payload)
+            job = spawn_infer_job(
+                project_id=payload.project_id,
+                job_type='text_batch',
+                payload_dict=payload.model_dump(),
+                worker=lambda data, progress_cb, should_stop, resume_state: run_infer_batch(
+                    InferBatchIn(**data),
+                    progress_cb=progress_cb,
+                    should_stop=should_stop,
+                    resume_state=resume_state,
+                ),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _to_upstream_error(exc, 'failed to start batch inference job') from exc
         return {'job': job}
 
     @router.get('/api/infer/jobs/active')
@@ -195,7 +227,12 @@ def create_inference_router(
 
     @router.post('/api/infer/jobs/resume')
     def resume_infer_job_endpoint(payload: InferJobResumeIn) -> dict[str, Any]:
-        return resume_infer_job(payload)
+        try:
+            return resume_infer_job(payload)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _to_upstream_error(exc, 'failed to resume inference job') from exc
 
     @router.post('/api/infer/jobs/cancel')
     def cancel_infer_job_endpoint(payload: InferJobControlIn) -> dict[str, Any]:

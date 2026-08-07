@@ -36,12 +36,11 @@ function Bar({ label, value, maxValue, sub = '' }: { label: string; value: numbe
 /**
  * Data dashboard dialog — 1:1 port of the legacy data-dashboard-panel.js +
  * DataDashboardController render: summary cards, class instance distribution
- * (top 30), per-image density buckets, migrate-layout and rebuild-index
- * actions.
+ * (top 30), per-image density buckets and the rebuild-index action.
  */
 export function DataDashboardPanel({ projectId, open, onClose }: DataDashboardPanelProps) {
   const { t } = useTranslation();
-  const { stats, loading, error, migrating, rebuilding, migrate, rebuild } = useDataDashboard(projectId, open);
+  const { stats, loading, error, rebuilding, rebuild } = useDataDashboard(projectId, open);
 
   const classes: DashboardClassRow[] = Array.isArray(stats?.classes) ? (stats?.classes as DashboardClassRow[]) : [];
   const density: DashboardDensityRow[] = Array.isArray(stats?.annotation_density)
@@ -135,15 +134,6 @@ export function DataDashboardPanel({ projectId, open, onClose }: DataDashboardPa
             </Box>
 
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.25 }}>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={migrating}
-                onClick={() => void migrate()}
-                sx={{ fontWeight: 700, fontSize: 12 }}
-              >
-                {migrating ? t('migrating_annotation_layout') : t('migrate_annotation_layout')}
-              </Button>
               <Button
                 size="small"
                 variant="outlined"

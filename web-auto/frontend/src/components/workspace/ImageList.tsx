@@ -3,56 +3,19 @@ import { Box, Button, IconButton, TextField, Typography } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../../stores/workspace/projectStore';
 import { useImageStore } from '../../stores/workspace/imageStore';
-import { getImageThumbnailUrl } from '../../api/images';
 
 interface ImageListProps {
   onDeleteImage: (imageId: string) => void;
   onPageChange: (page: number) => void;
 }
 
-/** Per-row thumbnail with a graceful placeholder when the image 404s. */
-function ImageThumb({ projectId, imageId }: { projectId: string; imageId: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed || !projectId || !imageId) {
-    return (
-      <Box
-        component="span"
-        sx={{
-          width: 36,
-          height: 36,
-          borderRadius: 1.5,
-          bgcolor: 'action.disabledBackground',
-          flexShrink: 0,
-        }}
-      />
-    );
-  }
-  return (
-    <Box
-      component="img"
-      src={getImageThumbnailUrl(projectId, imageId)}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      sx={{
-        width: 36,
-        height: 36,
-        borderRadius: 1.5,
-        objectFit: 'cover',
-        flexShrink: 0,
-        bgcolor: 'action.disabledBackground',
-      }}
-    />
-  );
-}
-
 /**
- * Image list with thumbnails, labeled-state dots and pagination — 1:1 port of
- * the legacy image-list.js rows + prev/page-jump/next footer.
+ * Image list with labeled-state dots and pagination — 1:1 port of the legacy
+ * image-list.js rows (filename + status dot + delete button) plus the
+ * prev/page-jump/next footer.
  */
 export function ImageList({ onDeleteImage, onPageChange }: ImageListProps) {
   const { t } = useTranslation();
-  const projectId = useProjectStore((s) => s.projectId);
   const images = useProjectStore((s) => s.images);
   const totalImages = useProjectStore((s) => s.totalImages);
   const offset = useProjectStore((s) => s.offset);
@@ -87,18 +50,6 @@ export function ImageList({ onDeleteImage, onPageChange }: ImageListProps) {
 
   return (
     <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Status-dot legend */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 2, pb: 0.75, fontSize: 10, color: 'text.secondary' }}>
-        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#10b981' }} />
-          {t('labeled')}
-        </Box>
-        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: 'action.disabled' }} />
-          {t('unlabeled')}
-        </Box>
-      </Box>
-
       <Box ref={listRef} sx={{ flex: 1, overflowY: 'auto', px: 1.5, py: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {images.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 5 }}>
@@ -138,7 +89,6 @@ export function ImageList({ onDeleteImage, onPageChange }: ImageListProps) {
                   '&:hover': { bgcolor: selected ? 'action.selected' : 'action.hover' },
                 }}
               >
-                <ImageThumb projectId={projectId} imageId={String(img.id)} />
                 <Box
                   component="span"
                   sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: labeled ? '#10b981' : 'action.disabled', flexShrink: 0 }}

@@ -13,10 +13,3 @@ export function deleteClass(projectId: string, className: string) {
     `/projects/${encodeURIComponent(projectId)}/classes/${encodeURIComponent(className)}`,
   );
 }
-
-/** POST /api/projects/{pid}/migrate-sources — tag legacy annotations with their source model. */
-export function migrateSources(projectId: string) {
-  return post<{ total?: number; migrated?: number; [key: string]: unknown }>(
-    `/projects/${encodeURIComponent(projectId)}/migrate-sources`,
-  );
-}

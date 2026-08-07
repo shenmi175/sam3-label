@@ -43,7 +43,6 @@ interface ProjectStore {
   deleteClass: (className: string) => Promise<boolean>;
   /** Add any missing classes to the project (legacy ensureAnnotationClasses). */
   ensureClasses: (classNames: string[]) => Promise<void>;
-  migrateSources: () => Promise<void>;
   setSelectedClass: (className: string) => void;
   toggleInferenceClass: (className: string, checked: boolean) => void;
   setAllInferenceClasses: (checked: boolean) => void;
@@ -144,15 +143,6 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     await get().addClass(missing.join('\n'));
   },
 
-  migrateSources: async () => {
-    const { projectId } = get();
-    if (!projectId) return;
-    try {
-      await classesApi.migrateSources(projectId);
-    } catch (err) {
-      console.warn('migrate sources failed', err);
-    }
-  },
 
   setSelectedClass: (className) => set({ selectedClass: className }),
 

@@ -119,11 +119,6 @@ export function getImageFileUrl(projectId: string, imageId: string) {
   return `/api/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(imageId)}/file`;
 }
 
-/** Small preview thumbnail URL (lazy-loaded by the image list). */
-export function getImageThumbnailUrl(projectId: string, imageId: string) {
-  return `/api/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(imageId)}/preview/thumbnail.jpg`;
-}
-
 /** POST /api/projects/{id}/images/refresh */
 export function refreshImages(projectId: string) {
   return post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/images/refresh`);

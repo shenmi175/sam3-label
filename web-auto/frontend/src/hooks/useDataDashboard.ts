@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   getAnnotationDashboard,
-  migrateAnnotationLayout,
   rebuildAnnotationIndex,
 } from '../api/annotations';
 import { useProjectStore } from '../stores/workspace/projectStore';
@@ -33,9 +32,8 @@ export interface DashboardStats {
 
 /**
  * Data dashboard data hook — port of the legacy DataDashboardController data
- * flow: fetch /annotation_dashboard on open, migrate-annotation-layout
- * (dry-run confirm → execute) and rebuild-index actions with the legacy
- * toasts, then refresh project info + image list.
+ * flow: fetch /annotation_dashboard on open and the rebuild-index action with
+ * the legacy toasts, then refresh project info + image list.
  */
 export function useDataDashboard(projectId: string, open: boolean) {
   const { t } = useTranslation();
@@ -43,7 +41,6 @@ export function useDataDashboard(projectId: string, open: boolean) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [migrating, setMigrating] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
 
   const reload = useCallback(async () => {
@@ -63,35 +60,6 @@ export function useDataDashboard(projectId: string, open: boolean) {
   useEffect(() => {
     if (open) void reload();
   }, [open, reload]);
-
-  const migrate = useCallback(async () => {
-    if (!projectId || migrating) return;
-    try {
-      setMigrating(true);
-      const preview = await migrateAnnotationLayout(projectId, true);
-      const planned = Number(preview?.moved || 0);
-      const conflicts = Number(preview?.conflicts || 0);
-      if (planned <= 0 && conflicts <= 0) {
-        toast(t('dashboard_migrate_uptodate'), 'success');
-        return;
-      }
-      if (!window.confirm(t('dashboard_migrate_confirm', { planned, conflicts }))) return;
-      const result = await migrateAnnotationLayout(projectId, false);
-      toast(
-        t('dashboard_migrate_done', {
-          moved: Number(result?.moved || 0),
-          conflicts: Number(result?.conflicts || 0),
-          failed: Number(result?.failed || 0),
-        }),
-        result?.failed ? 'error' : 'success',
-      );
-      await reload();
-    } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), 'error');
-    } finally {
-      setMigrating(false);
-    }
-  }, [projectId, migrating, reload, t]);
 
   const rebuild = useCallback(async () => {
     if (!projectId || rebuilding) return;
@@ -116,5 +84,5 @@ export function useDataDashboard(projectId: string, open: boolean) {
     }
   }, [projectId, rebuilding, reload, loadImages, t]);
 
-  return { stats, loading, error, migrating, rebuilding, reload, migrate, rebuild };
+  return { stats, loading, error, rebuilding, reload, rebuild };
 }
