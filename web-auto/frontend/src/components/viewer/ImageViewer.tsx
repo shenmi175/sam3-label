@@ -34,7 +34,6 @@ export interface ImageViewerProps {
   tileInfo?: TileInfo | null;
   previewInfo?: PreviewInfo | null;
   annotations?: Annotation[];
-  previews?: Annotation[];
   prompts?: Prompt[];
   promptMode?: PromptMode;
   boxPromptLabel?: 0 | 1;
@@ -68,7 +67,6 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
     tileInfo,
     previewInfo,
     annotations,
-    previews,
     prompts,
     promptMode,
     boxPromptLabel,
@@ -142,10 +140,6 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
   useEffect(() => {
     coreRef.current?.setAnnotations(annotations ?? []);
   }, [annotations]);
-
-  useEffect(() => {
-    coreRef.current?.setPreviews(previews ?? []);
-  }, [previews]);
 
   useEffect(() => {
     coreRef.current?.setPrompts(prompts ?? []);

@@ -6,7 +6,6 @@ from app.schemas.filters import SmartFilterIn
 from app.schemas.inference import (
     HealthApiIn,
     InferBatchIn,
-    InferExamplePreviewIn,
     InferIn,
     InferJobControlIn,
     InferJobResumeIn,
@@ -30,7 +29,6 @@ __all__ = [
     'ImportExistingProjectIn',
     'ImportImagesIn',
     'InferBatchIn',
-    'InferExamplePreviewIn',
     'InferIn',
     'InferJobControlIn',
     'InferJobResumeIn',

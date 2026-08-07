@@ -49,7 +49,6 @@ import { useImageNavigation } from '../hooks/useImageNavigation';
 import { useKeyboardCommands } from '../hooks/useKeyboardCommands';
 import { useUiStateSync, restoreUiState } from '../hooks/useUiStateSync';
 import { useJobPolling, stopJobPolling } from '../hooks/useJobPolling';
-import { usePreviewInference } from '../hooks/usePreviewInference';
 import { useBackendHealth } from '../hooks/useBackendHealth';
 import { ImageList } from '../components/workspace/ImageList';
 import { FilterBar } from '../components/workspace/FilterBar';
@@ -59,7 +58,6 @@ import { WorkspaceToolbar } from '../components/workspace/WorkspaceToolbar';
 import { AutoAnnotatePanel } from '../components/workspace/AutoAnnotatePanel';
 import { TaskProgressBar } from '../components/workspace/TaskProgressBar';
 import { GpuStatusWidget } from '../components/workspace/GpuStatusWidget';
-import { PreviewResultsPanel } from '../components/workspace/PreviewResultsPanel';
 import { DataCleaningDialog } from '../components/data-cleaning/DataCleaningDialog';
 import { BatchConfigModal } from '../components/workspace/BatchConfigModal';
 import { BatchResultModal } from '../components/workspace/BatchResultModal';
@@ -124,10 +122,8 @@ export function ImageWorkspacePage() {
   const promptMode = useViewerStore((s) => s.promptMode);
   const boxPromptLabel = useViewerStore((s) => s.boxPromptLabel);
   const currentPrompts = useViewerStore((s) => s.currentPrompts);
-  const previews = useViewerStore((s) => s.previews);
   const focusedAnnotationId = useViewerStore((s) => s.focusedAnnotationId);
   const showMasks = useViewerStore((s) => s.showMasks);
-  const previewSectionCollapsed = useViewerStore((s) => s.previewSectionCollapsed);
 
   const workspaceMode = useLayoutStore((s) => s.workspaceMode);
   const leftPanelHidden = useLayoutStore((s) => s.leftPanelHidden);
@@ -157,7 +153,6 @@ export function ImageWorkspacePage() {
 
   const { loadImages, goToPage, toggleUnlabeledNavigation, deleteProjectImage } =
     useImageNavigation();
-  const { keepAll } = usePreviewInference();
 
   // Debounced ui_state sync + unmount flush (legacy scheduleProjectUIStateSave).
   useUiStateSync(projectId);
@@ -357,7 +352,7 @@ export function ImageWorkspacePage() {
   }, [t]);
 
   const handleClearPrompts = useCallback(() => {
-    useViewerStore.getState().clearPromptsAndPreviews();
+    useViewerStore.getState().clearPrompts();
     toast(t('prompts_cleared'));
   }, [t]);
 
@@ -625,7 +620,6 @@ export function ImageWorkspacePage() {
               tileInfo={tileInfo}
               previewInfo={previewInfo}
               annotations={visibleAnnotations}
-              previews={previews}
               prompts={currentPrompts}
               promptMode={promptMode}
               boxPromptLabel={boxPromptLabel}
@@ -814,28 +808,6 @@ export function ImageWorkspacePage() {
                 {rightPanelHidden ? <ChevronLeftIcon /> : <ChevronRightIcon />}
               </IconButton>
             </Tooltip>
-
-            {/* Submit-all previews action bar (auto mode only) */}
-            {!isReviewMode && previews.length > 0 && (
-              <Button
-                variant="contained"
-                onClick={() => void keepAll()}
-                sx={{
-                  position: 'absolute',
-                  bottom: 60,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex: 100,
-                  borderRadius: '30px',
-                  px: 4,
-                  py: 1.5,
-                  fontSize: 16,
-                  fontWeight: 800,
-                }}
-              >
-                {t('submit_all')}
-              </Button>
-            )}
           </Box>
 
           {/* Display toggles & status strip */}
@@ -884,7 +856,7 @@ export function ImageWorkspacePage() {
           </Box>
         </Box>
 
-        {/* Right column: classes + annotations + preview panels */}
+        {/* Right column: classes + annotations */}
         {!rightPanelHidden && (
           <Box
             sx={{
@@ -947,32 +919,6 @@ export function ImageWorkspacePage() {
                 </Box>
               </Box>
               <AnnotationList collapsed={annotationsSectionCollapsed} />
-
-              {/* SAM example-preview results (auto mode only) */}
-              {!isReviewMode && (
-                <Box sx={{ p: 1.5, borderTop: '1px solid', borderColor: 'divider', flexShrink: 0 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
-                        {t('preview_results')}
-                      </Typography>
-                      <Typography sx={{ fontSize: 10, color: 'text.secondary', lineHeight: 1.5 }}>
-                        {t('preview_results_desc')}
-                      </Typography>
-                    </Box>
-                    <IconButton
-                      size="small"
-                      title={t('collapse_expand')}
-                      onClick={() => useViewerStore.getState().togglePreviewSection()}
-                      sx={{ width: 24, height: 24, flexShrink: 0 }}
-                      aria-label={t('collapse_expand')}
-                    >
-                      {previewSectionCollapsed ? <ChevronRightIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-                    </IconButton>
-                  </Box>
-                  {!previewSectionCollapsed && <PreviewResultsPanel />}
-                </Box>
-              )}
             </Box>
           </Box>
         )}

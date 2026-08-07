@@ -476,7 +476,6 @@ app.include_router(
         get_project_or_404=_get_project_or_404,
         get_image_or_404=_get_image_or_404,
         infer_single_impl=INFERENCE_SERVICE.infer_single,
-        infer_example_preview_impl=INFERENCE_SERVICE.infer_example_preview,
         run_infer_batch=INFERENCE_SERVICE.run_infer_batch,
         precheck_infer_batch=INFERENCE_SERVICE.precheck_infer_batch,
         spawn_infer_job=INFER_JOBS.spawn_job,

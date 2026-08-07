@@ -49,15 +49,6 @@ class InferBatchIn(BaseModel):
     contour_mode: ContourMode = 'split'
 
 
-class InferExamplePreviewIn(BaseModel):
-    project_id: str
-    image_id: str
-    active_class: str = ''
-    boxes: list[list[float | int]] = Field(default_factory=list)
-    threshold: float = 0.5
-    api_base_url: str = DEFAULT_API_BASE_URL
-
-
 class HealthApiIn(BaseModel):
     api_base_url: str = DEFAULT_API_BASE_URL
 

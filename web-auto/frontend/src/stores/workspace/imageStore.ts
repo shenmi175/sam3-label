@@ -69,7 +69,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       selectedImageId: imageId,
       isLoading: true,
     });
-    viewer.clearPromptsAndPreviews();
+    viewer.clearPrompts();
 
     const projectId = useProjectStore.getState().projectId;
 
@@ -106,7 +106,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
   commitImageBundle: (bundle) => {
     useAnnotationStore.getState().resetForImage(bundle.id, bundle.annotations || []);
     const viewer = useViewerStore.getState();
-    viewer.clearPromptsAndPreviews();
+    viewer.clearPrompts();
     set({
       selectedImageId: bundle.id,
       selectedImagePath: bundle.relPath || '',
@@ -125,7 +125,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
     get().abortController?.abort();
     const controller = new AbortController();
     set({ imageLoadSeq: seq, abortController: controller, isLoading: true });
-    useViewerStore.getState().clearPromptsAndPreviews();
+    useViewerStore.getState().clearPrompts();
 
     try {
       const bundle = await loadImageBundle(projectId, selectedImageId, {
@@ -157,7 +157,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       abortController: null,
     });
     useAnnotationStore.getState().resetEmptySelection();
-    useViewerStore.getState().clearPromptsAndPreviews();
+    useViewerStore.getState().clearPrompts();
   },
 
   reset: () => {

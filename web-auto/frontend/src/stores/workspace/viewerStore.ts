@@ -5,7 +5,7 @@ import type { PromptMode } from '../../components/viewer/ImageViewer';
 export type SourceFilter = 'sam3' | 'locate-anything' | 'manual';
 
 /**
- * Viewer-side semantic state (replaces the prompt/preview/focus fields of the
+ * Viewer-side semantic state (replaces the prompt/focus fields of the
  * legacy God Object). The heavy per-frame canvas state stays inside
  * viewer-core; this store only holds declarative inputs.
  */
@@ -13,9 +13,7 @@ interface ViewerState {
   promptMode: PromptMode;
   boxPromptLabel: 0 | 1;
   currentPrompts: Prompt[];
-  previews: Annotation[];
   focusedAnnotationId: string | null;
-  previewSectionCollapsed: boolean;
   showMasks: boolean;
   /**
    * Guard registered by the workspace page: commits a pending manual polygon
@@ -27,11 +25,8 @@ interface ViewerState {
   setPromptMode: (mode: PromptMode | 'pointer' | 'pan', workspaceMode?: 'auto' | 'review') => void;
   setBoxPromptLabel: (label: number) => void;
   addPrompt: (type: 'point' | 'box', data: number[]) => void;
-  clearPromptsAndPreviews: () => void;
-  setPreviews: (previews: Annotation[]) => void;
-  removePreview: (id: string) => void;
+  clearPrompts: () => void;
   setFocusedAnnotation: (id: string | null) => void;
-  togglePreviewSection: () => void;
   setShowMasks: (show: boolean) => void;
   registerCommitPolygonGuard: (guard: (() => boolean) | null) => void;
   commitPendingManualPolygon: () => boolean;
@@ -42,9 +37,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   promptMode: 'none',
   boxPromptLabel: 1,
   currentPrompts: [],
-  previews: [],
   focusedAnnotationId: null,
-  previewSectionCollapsed: false,
   showMasks: true,
   commitPolygonGuard: null,
 
@@ -74,15 +67,9 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
     }));
   },
 
-  clearPromptsAndPreviews: () => set({ currentPrompts: [], previews: [] }),
-
-  setPreviews: (previews) => set({ previews }),
-
-  removePreview: (id) => set((state) => ({ previews: state.previews.filter((p) => String(p.id) !== String(id)) })),
+  clearPrompts: () => set({ currentPrompts: [] }),
 
   setFocusedAnnotation: (id) => set({ focusedAnnotationId: id || null }),
-
-  togglePreviewSection: () => set((state) => ({ previewSectionCollapsed: !state.previewSectionCollapsed })),
 
   setShowMasks: (show) => set({ showMasks: Boolean(show) }),
 
@@ -98,9 +85,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       promptMode: 'none',
       boxPromptLabel: 1,
       currentPrompts: [],
-      previews: [],
       focusedAnnotationId: null,
-      previewSectionCollapsed: false,
       showMasks: true,
       commitPolygonGuard: null,
     }),

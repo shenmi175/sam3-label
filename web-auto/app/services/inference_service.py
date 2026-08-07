@@ -239,20 +239,6 @@ class InferenceService:
 
         raise HTTPException(status_code=400, detail=f'unsupported paused infer job type: {job_type}')
 
-    def _prepare_example_prompt_boxes(
-        self,
-        *,
-        image: dict[str, Any],
-        boxes: list[list[float | int]],
-    ) -> list[list[float]]:
-        del image
-        norm_boxes = self._normalize_prompt_boxes(boxes)
-        if not norm_boxes:
-            raise HTTPException(status_code=400, detail='example preview requires boxes')
-        if not _has_positive_visual_prompt([], norm_boxes):
-            raise HTTPException(status_code=400, detail='example boxes require at least one positive prompt')
-        return norm_boxes
-
     def infer_single(
         self,
         *,
@@ -265,7 +251,6 @@ class InferenceService:
         boxes: list[list[float | int]],
         threshold: float,
         api_base_url: str,
-        save_result: bool = True,
         model_backend: str = 'sam3',
         locate_api_base_url: str = '',
         score_default: float = 0.5,
@@ -390,85 +375,29 @@ class InferenceService:
         storage = self.storage
         project_id = str(project.get('id'))
         image_id = str(image.get('id'))
-        if save_result:
-            old = storage.load_annotations(project_id, image_id)
-            if infer_mode == 'text':
-                merged = _replace_by_classes(
-                    old_annotations=old,
-                    impacted_classes=impacted_classes,
-                    new_annotations=converted,
-                    source_model='locate-anything' if is_locate else 'sam3',
-                )
-            else:
-                merged = _merge_visual_annotations(
-                    old,
-                    new_annotations=converted,
-                    points=infer_points,
-                    boxes=infer_boxes,
-                )
-            storage.save_annotations(project_id, image_id, merged)
-            merged = storage.load_annotations(project_id, image_id)
+        old = storage.load_annotations(project_id, image_id)
+        if infer_mode == 'text':
+            merged = _replace_by_classes(
+                old_annotations=old,
+                impacted_classes=impacted_classes,
+                new_annotations=converted,
+                source_model='locate-anything' if is_locate else 'sam3',
+            )
         else:
-            merged = storage.load_annotations(project_id, image_id)
+            merged = _merge_visual_annotations(
+                old,
+                new_annotations=converted,
+                points=infer_points,
+                boxes=infer_boxes,
+            )
+        storage.save_annotations(project_id, image_id, merged)
+        merged = storage.load_annotations(project_id, image_id)
 
         return {
             'result': result,
             'detections': converted,
             'saved_annotations': merged,
             'impacted_classes': impacted_classes,
-        }
-
-    def infer_example_preview(
-        self,
-        *,
-        project: dict[str, Any],
-        image: dict[str, Any],
-        active_class: str,
-        boxes: list[list[float | int]],
-        threshold: float,
-        api_base_url: str,
-        model_backend: str = 'sam3',
-    ) -> dict[str, Any]:
-        if str(model_backend or 'sam3').strip().lower() == 'locate-anything':
-            raise HTTPException(
-                status_code=400,
-                detail='example preview (box prompt) is not supported by the locate-anything backend',
-            )
-        active = str(active_class or '').strip()
-        if not active:
-            raise HTTPException(status_code=400, detail='active_class is required for example preview')
-        prompt_boxes = self._prepare_example_prompt_boxes(
-            image=image,
-            boxes=boxes,
-        )
-
-        try:
-            result = self._sam3.infer(
-                api_base_url=api_base_url,
-                image_path=str(image.get('abs_path') or ''),
-                mode='boxes',
-                prompt='',
-                boxes=prompt_boxes,
-                threshold=float(threshold),
-                include_mask_png=True,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f'remote visual inference failed: {exc}') from exc
-
-        detections = result.get('detections', [])
-        detections = detections if isinstance(detections, list) else []
-        converted = _convert_detections(
-            detections=detections,
-            classes=[active],
-            forced_class=active,
-            source_model='sam3',
-        )
-        merged = self.storage.load_annotations(str(project.get('id')), str(image.get('id')))
-        return {
-            'result': result,
-            'detections': converted,
-            'saved_annotations': merged,
-            'impacted_classes': [active],
         }
 
     def _select_text_batch_target_images(
@@ -1086,29 +1015,3 @@ class InferenceService:
             'selection': selection_meta,
             'message': summary,
         }
-
-    def _normalize_prompt_boxes(self, raw: Any) -> list[list[float]]:
-        boxes: list[list[float]] = []
-        if not isinstance(raw, list):
-            return boxes
-        for item in raw:
-            if not isinstance(item, list) or len(item) < 4:
-                continue
-            try:
-                x1, y1, x2, y2 = [float(item[i]) for i in range(4)]
-            except (TypeError, ValueError):
-                continue
-            label = 1.0
-            if len(item) >= 5:
-                try:
-                    label = float(item[4])
-                except (TypeError, ValueError):
-                    label = 1.0
-            if x2 < x1:
-                x1, x2 = x2, x1
-            if y2 < y1:
-                y1, y2 = y2, y1
-            if x2 <= x1 or y2 <= y1:
-                continue
-            boxes.append([x1, y1, x2, y2, label])
-        return boxes

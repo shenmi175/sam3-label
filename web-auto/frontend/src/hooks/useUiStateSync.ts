@@ -34,7 +34,6 @@ function collectUiState(): Record<string, unknown> {
     rightPanelHidden: layout.rightPanelHidden,
     classesSectionCollapsed: layout.classesSectionCollapsed,
     annotationsSectionCollapsed: layout.annotationsSectionCollapsed,
-    previewSectionCollapsed: viewer.previewSectionCollapsed,
     annotationAutosaveEnabled: annotation.autosaveEnabled,
     workspaceMode: layout.workspaceMode,
     reviewContinuousMode: layout.reviewContinuousMode,
@@ -72,7 +71,6 @@ export async function restoreUiState(projectId: string): Promise<RestoredUiState
       reviewContinuousMode: state.reviewContinuousMode !== false,
     });
 
-    useViewerStore.setState({ previewSectionCollapsed: Boolean(state.previewSectionCollapsed) });
     if (typeof state.annotationAutosaveEnabled === 'boolean') {
       useAnnotationStore.getState().setAutosaveEnabled(state.annotationAutosaveEnabled);
     }

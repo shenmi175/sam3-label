@@ -2,7 +2,6 @@ import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   infer,
-  inferExample,
   startBatchInfer,
   stopInferJob,
   resumeInferJob,
@@ -11,7 +10,6 @@ import {
   type InferJob,
 } from '../api/inference';
 import * as bundleCache from '../api/bundleCache';
-import type { Annotation } from '../api/types';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
@@ -50,7 +48,7 @@ function backendPayload(): BackendPayload {
 
 /**
  * Inference orchestration — 1:1 port of the legacy InferenceController's
- * request side (runSingle / example preview / batch start / stop / resume /
+ * request side (runSingle / box-prompt infer / batch start / stop / resume /
  * cancel / retry). Polling lives in useJobPolling; modal state lives in
  * inferenceStore.
  */
@@ -292,11 +290,12 @@ export function useInference() {
   }, [t]);
 
   /**
-   * SAM box-exemplar "find similar" preview (legacy runExamplePreview). The
-   * resulting dashed previews live in viewerStore; adoption happens in
-   * PreviewResultsPanel via usePreviewInference.adoptPreviews.
+   * SAM box-prompt inference (replaces the legacy example-preview flow). The
+   * positive/negative prompt boxes drawn on the current image are sent to the
+   * existing POST /api/infer endpoint with mode='boxes'; the backend saves the
+   * result directly (save_result=true), so no preview/adoption step remains.
    */
-  const runExamplePreview = useCallback(async () => {
+  const runBoxPromptInference = useCallback(async () => {
     const image = useImageStore.getState();
     const projectId = useProjectStore.getState().projectId;
     const settings = useSettingsStore.getState();
@@ -309,10 +308,11 @@ export function useInference() {
       toast(t('locate_backend_text_only'), 'error');
       return;
     }
+    // Prompt boxes carry [x1, y1, x2, y2, label] (label 0 = negative).
     const boxes = viewer.currentPrompts.filter((p) => p.type === 'box').map((p) => p.data);
     if (boxes.length === 0) {
       viewer.setBoxPromptLabel(1);
-      toast(t('box_exemplar_mode_hint'), 'info');
+      toast(t('box_exemplar_required'), 'info');
       return;
     }
     const selectedClass = useProjectStore.getState().selectedClass;
@@ -320,33 +320,31 @@ export function useInference() {
       toast(t('select_class_first'), 'error');
       return;
     }
+    const annotation = useAnnotationStore.getState();
+    if (annotation.dirty) {
+      await annotation.flushSave('before-infer');
+      if (useAnnotationStore.getState().dirty) {
+        toast(t('anns_not_saved_infer'), 'error');
+        return;
+      }
+    }
     try {
-      const res = await inferExample({
+      const res = await infer({
         project_id: projectId,
         image_id: image.selectedImageId,
+        mode: 'boxes',
         active_class: selectedClass,
         boxes,
         threshold: settings.threshold,
         api_base_url: settings.sam3ApiUrl,
+        ...backendPayload(),
       });
-      const detections = res?.detections || [];
-      const previews: Annotation[] = detections.map((d) => {
-        const rawBbox = Array.isArray(d.bbox) ? d.bbox : null;
-        const bbox: [number, number, number, number] | undefined =
-          rawBbox && rawBbox.length >= 4
-            ? [Number(rawBbox[0] || 0), Number(rawBbox[1] || 0), Number(rawBbox[2] || 0), Number(rawBbox[3] || 0)]
-            : undefined;
-        return {
-          ...d,
-          bbox,
-          polygon: d.polygon as Annotation['polygon'],
-          polygons: d.polygons as Annotation['polygons'],
-          id: `preview_${Math.random().toString(36).slice(2, 11)}`,
-          class_name: selectedClass,
-        };
-      });
-      useViewerStore.getState().setPreviews(previews);
-      toast(t('found_matches', { count: previews.length }), 'info');
+      // Result is already saved server-side: clear the prompts and refresh.
+      useViewerStore.getState().clearPrompts();
+      bundleCache.invalidateBundle(projectId, image.selectedImageId);
+      await useImageStore.getState().reloadSelectedImage();
+      await useProjectStore.getState().loadProjectInfo();
+      toast(t('box_infer_saved', { count: Number(res?.num_detections ?? 0) }), 'success');
     } catch (err) {
       if (handleBackendError(err)) return;
       toast(err instanceof Error ? err.message : String(err), 'error');
@@ -355,7 +353,7 @@ export function useInference() {
 
   return {
     runSingle,
-    runExamplePreview,
+    runBoxPromptInference,
     startBatchTask,
     startLaBoxesBatchTask,
     retryBatch,

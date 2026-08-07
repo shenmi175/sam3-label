@@ -23,7 +23,7 @@ export function AutoAnnotatePanel() {
   const threshold = useSettingsStore((s) => s.threshold);
   const batchSize = useSettingsStore((s) => s.batchSize);
 
-  const { runSingle, startBatchTask, startLaBoxesBatchTask, runExamplePreview } = useInference();
+  const { runSingle, startBatchTask, startLaBoxesBatchTask, runBoxPromptInference } = useInference();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inferring, setInferring] = useState(false);
@@ -47,7 +47,7 @@ export function AutoAnnotatePanel() {
   const handleExample = async () => {
     setFindingSimilar(true);
     try {
-      await runExamplePreview();
+      await runBoxPromptInference();
     } finally {
       setFindingSimilar(false);
     }

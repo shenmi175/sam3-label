@@ -34,15 +34,6 @@ export interface InferBatchPayload extends BackendPayload {
   api_base_url?: string;
 }
 
-export interface InferExamplePreviewPayload {
-  project_id: string;
-  image_id: string;
-  active_class?: string;
-  boxes?: number[][];
-  threshold?: number;
-  api_base_url?: string;
-}
-
 export interface InferDetection {
   bbox?: number[];
   polygon?: unknown;
@@ -80,19 +71,9 @@ export interface InferJob extends JobState {
   result?: Record<string, unknown>;
 }
 
-/** POST /api/infer — single image text inference (saves result server-side). */
+/** POST /api/infer — single image inference (saves result server-side). */
 export function infer(payload: InferSinglePayload) {
   return post<InferResponse>('/infer', payload);
-}
-
-/** POST /api/infer/preview — single image inference without saving. */
-export function inferPreview(payload: InferSinglePayload) {
-  return post<InferResponse>('/infer/preview', payload);
-}
-
-/** POST /api/infer/example_preview — SAM box-exemplar "find similar" preview. */
-export function inferExample(payload: InferExamplePreviewPayload) {
-  return post<InferResponse>('/infer/example_preview', payload);
 }
 
 /** POST /api/infer/jobs/start_batch — spawn a batch job, returns { job }. */

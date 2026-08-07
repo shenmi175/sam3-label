@@ -89,7 +89,7 @@ interface StaticRenderState {
  *   root (absolute, overflow hidden)
  *     - OSD div        z-index 5   (DZI tile rendering + viewport math only, gestures disabled)
  *     - preview img    z-index 10  (object-fit: contain placeholder while tiles load)
- *     - static canvas  z-index 15  (all annotations/previews/prompts, margin buffer,
+ *     - static canvas  z-index 15  (all annotations/prompts, margin buffer,
  *                                  CSS translate3d+scale follows the viewport, 90ms debounced redraw)
  *     - overlay canvas z-index 20  (rAF full redraw: focus handles, box draft, polygon draft, prompts)
  */
@@ -110,7 +110,6 @@ export class ImageViewerCore {
   previewInfo: PreviewInfo | null = null;
   private isTileOpen = false;
   private annotations: Annotation[] = [];
-  private previews: Annotation[] = [];
   private prompts: Prompt[] = [];
   private focusedAnnotationId: string | null = null;
   private promptMode: CorePromptMode = 'none';
@@ -425,7 +424,6 @@ export class ImageViewerCore {
     this.tileInfo = null;
     this.previewInfo = null;
     this.annotations = [];
-    this.previews = [];
     this.prompts = [];
     this.focusedAnnotationId = null;
     this.isTileOpen = false;
@@ -446,13 +444,6 @@ export class ImageViewerCore {
 
   setAnnotations(anns: Annotation[] | null | undefined): void {
     this.annotations = anns || [];
-    this.annotationGeometryCache = new WeakMap();
-    this.requestStaticRedraw(true);
-    this.requestDraw();
-  }
-
-  setPreviews(previews: Annotation[] | null | undefined): void {
-    this.previews = previews || [];
     this.annotationGeometryCache = new WeakMap();
     this.requestStaticRedraw(true);
     this.requestDraw();
@@ -547,10 +538,7 @@ export class ImageViewerCore {
     if (!this.image || !this.isTileOpen || !this.viewer?.viewport) return;
 
     for (const ann of this.annotations || []) {
-      if (this.annotationVisible(ann)) this.drawAnnotation(ann, false);
-    }
-    for (const pre of this.previews || []) {
-      if (this.annotationVisible(pre)) this.drawAnnotation(pre, true);
+      if (this.annotationVisible(ann)) this.drawAnnotation(ann);
     }
     for (const p of this.prompts) this.drawPrompt(p);
     this.drawFocusedHandles();
@@ -612,10 +600,7 @@ export class ImageViewerCore {
       staticCtx.clearRect(0, 0, canvasWidth, canvasHeight);
       for (const ann of this.annotations || []) {
         if (this.staticExcludeAnnotationId && String(ann?.id || '') === String(this.staticExcludeAnnotationId)) continue;
-        if (this.annotationVisible(ann)) this.drawAnnotation(ann, false);
-      }
-      for (const pre of this.previews || []) {
-        if (this.annotationVisible(pre)) this.drawAnnotation(pre, true);
+        if (this.annotationVisible(ann)) this.drawAnnotation(ann);
       }
       for (const p of this.prompts) this.drawPrompt(p);
     } finally {
@@ -1325,10 +1310,10 @@ export class ImageViewerCore {
     return screen;
   }
 
-  private drawAnnotation(ann: Annotation, isPreview = false): void {
+  private drawAnnotation(ann: Annotation): void {
     const ctx = this.ctx;
     if (!ctx) return;
-    const color = isPreview ? 'rgba(66, 153, 225, 0.9)' : (ann.color || this.getColorForClass(ann.class_name));
+    const color = ann.color || this.getColorForClass(ann.class_name);
     const geom = this.getAnnotationGeometry(ann);
     const points = geom.polygon;
     const paths = (geom.polygons && geom.polygons.length > 0)
@@ -1337,14 +1322,11 @@ export class ImageViewerCore {
     if (this.options.showMasks && paths.length > 0) {
       for (const path of paths) {
         this.drawPath(path, true);
-        const alpha = isPreview ? 0.45 : 0.3;
-        ctx.fillStyle = this.colorWithAlpha(color, alpha);
+        ctx.fillStyle = this.colorWithAlpha(color, 0.3);
         ctx.fill();
-        ctx.strokeStyle = isPreview ? 'rgba(255, 255, 255, 0.8)' : color;
-        if (isPreview) ctx.setLineDash([4, 4]);
-        ctx.lineWidth = isPreview ? 2 : 1.5;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
-        ctx.setLineDash([]);
       }
     }
 
@@ -1352,21 +1334,17 @@ export class ImageViewerCore {
     if (bbox) {
       const p1 = this.imageToScreen([bbox[0], bbox[1]]);
       const p2 = this.imageToScreen([bbox[2], bbox[3]]);
-      ctx.strokeStyle = isPreview ? 'rgba(66, 153, 225, 1)' : color;
-      if (isPreview) ctx.setLineDash([2, 2]);
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
-      ctx.setLineDash([]);
     }
 
-    if (!isPreview) {
-      const labelPoint = bbox ? [bbox[0], bbox[1]] : (points.length > 0 ? points[0] : null);
-      if (labelPoint && this.imageScale() > 0.08) {
-        const pos = this.imageToScreen(labelPoint);
-        ctx.fillStyle = color;
-        ctx.font = '600 12px Inter, sans-serif';
-        ctx.fillText(ann.class_name || ann.label || 'Object', pos[0], pos[1] - 4);
-      }
+    const labelPoint = bbox ? [bbox[0], bbox[1]] : (points.length > 0 ? points[0] : null);
+    if (labelPoint && this.imageScale() > 0.08) {
+      const pos = this.imageToScreen(labelPoint);
+      ctx.fillStyle = color;
+      ctx.font = '600 12px Inter, sans-serif';
+      ctx.fillText(ann.class_name || ann.label || 'Object', pos[0], pos[1] - 4);
     }
   }
 

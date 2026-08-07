@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import (
     InferBatchIn,
-    InferExamplePreviewIn,
     InferIn,
     InferJobControlIn,
     InferJobResumeIn,
@@ -18,7 +17,6 @@ def create_inference_router(
     get_project_or_404: Callable[..., dict[str, Any]],
     get_image_or_404: Callable[[dict[str, Any], str], dict[str, Any]],
     infer_single_impl: Callable[..., dict[str, Any]],
-    infer_example_preview_impl: Callable[..., dict[str, Any]],
     run_infer_batch: Callable[..., dict[str, Any]],
     precheck_infer_batch: Callable[[InferBatchIn], None],
     spawn_infer_job: Callable[..., dict[str, Any]],
@@ -60,7 +58,6 @@ def create_inference_router(
                     boxes=payload.boxes,
                     threshold=payload.threshold,
                     api_base_url=payload.api_base_url,
-                    save_result=True,
                     model_backend=payload.model_backend,
                     locate_api_base_url=payload.locate_api_base_url,
                     score_default=payload.score_default,
@@ -76,83 +73,6 @@ def create_inference_router(
             'project_id': payload.project_id,
             'image_id': payload.image_id,
             'mode': payload.mode,
-            'num_detections': len(out['detections']),
-            'detections': out['detections'],
-            'saved_annotations': out['saved_annotations'],
-            'impacted_classes': out['impacted_classes'],
-            'raw': out['result'],
-        }
-
-    @router.post('/api/infer/preview')
-    def infer_preview(payload: InferIn) -> dict[str, Any]:
-        project = get_project_or_404(payload.project_id, include_images=False)
-        if project.get('project_type') != 'image':
-            raise HTTPException(status_code=400, detail='only image project is supported')
-        image = get_image_or_404(project, payload.image_id)
-        lease_id = acquire_interactive_gpu()
-        try:
-            try:
-                out = infer_single_impl(
-                    project=project,
-                    image=image,
-                    mode=payload.mode,
-                    classes=payload.classes,
-                    active_class=payload.active_class,
-                    points=payload.points,
-                    boxes=payload.boxes,
-                    threshold=payload.threshold,
-                    api_base_url=payload.api_base_url,
-                    save_result=False,
-                    model_backend=payload.model_backend,
-                    locate_api_base_url=payload.locate_api_base_url,
-                    score_default=payload.score_default,
-                    contour_mode=payload.contour_mode,
-                )
-            except HTTPException:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise _to_upstream_error(exc, 'preview inference failed') from exc
-        finally:
-            release_interactive_gpu(lease_id)
-        return {
-            'project_id': payload.project_id,
-            'image_id': payload.image_id,
-            'mode': payload.mode,
-            'num_detections': len(out['detections']),
-            'detections': out['detections'],
-            'saved_annotations': out['saved_annotations'],
-            'impacted_classes': out['impacted_classes'],
-            'raw': out['result'],
-        }
-
-    @router.post('/api/infer/example_preview')
-    def infer_example_preview(payload: InferExamplePreviewIn) -> dict[str, Any]:
-        project = get_project_or_404(payload.project_id, include_images=False)
-        if project.get('project_type') != 'image':
-            raise HTTPException(status_code=400, detail='only image project is supported')
-        image = get_image_or_404(project, payload.image_id)
-        lease_id = acquire_interactive_gpu()
-        try:
-            try:
-                out = infer_example_preview_impl(
-                    project=project,
-                    image=image,
-                    active_class=payload.active_class,
-                    boxes=payload.boxes,
-                    threshold=payload.threshold,
-                    api_base_url=payload.api_base_url,
-                    model_backend=getattr(payload, 'model_backend', 'sam3'),
-                )
-            except HTTPException:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise _to_upstream_error(exc, 'example preview inference failed') from exc
-        finally:
-            release_interactive_gpu(lease_id)
-        return {
-            'project_id': payload.project_id,
-            'image_id': payload.image_id,
-            'mode': 'example_preview',
             'num_detections': len(out['detections']),
             'detections': out['detections'],
             'saved_annotations': out['saved_annotations'],
