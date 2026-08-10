@@ -1678,7 +1678,7 @@ rewrite_allowed_roots() {
 recreate_web_auto_after_mount_change() {
   compose_env_defaults
   select_docker
-  local services=(web-auto)
+  local services=(web-auto task-worker)
   if sapiens_enabled; then
     services+=(sapiens-api)
   fi

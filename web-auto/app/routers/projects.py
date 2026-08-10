@@ -66,6 +66,11 @@ def create_projects_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f'path not accessible from the service ({exc}); mount it first via ./deploy.sh data-root add',
+            ) from exc
 
     @router.get('/api/projects/{project_id}')
     def get_project(project_id: str, include_images: bool = Query(default=True)) -> dict[str, Any]:
@@ -107,6 +112,11 @@ def create_projects_router(
             return {'project': project}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f'path not accessible from the service ({exc}); mount it first via ./deploy.sh data-root add',
+            ) from exc
 
     @router.delete('/api/projects/{project_id}')
     def delete_project(project_id: str) -> dict[str, Any]:
