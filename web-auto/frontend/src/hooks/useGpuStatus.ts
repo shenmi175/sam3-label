@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getSam3Status } from '../api/system';
+import { getLocateStatus, getSam3Status } from '../api/system';
 import { useSettingsStore } from '../stores/settingsStore';
 
 const GPU_POLL_INTERVAL_MS = 1000;
@@ -85,6 +85,34 @@ function summarize(status: unknown): GpuStatusSummary {
   };
 }
 
+function summarizeLocateStatus(status: unknown): GpuStatusSummary {
+  const resp = status as { result?: { gpu?: Record<string, unknown> } };
+  const gpu = (resp?.result?.gpu || {}) as Record<string, unknown>;
+  const usedMb = Number(gpu.used_mb || 0);
+  const totalMb = Number(gpu.total_mb || 0);
+  if (!Number.isFinite(usedMb) || !Number.isFinite(totalMb) || totalMb <= 0) {
+    return { ...UNAVAILABLE, statusMessage: 'locate-anything-api GPU status unavailable' };
+  }
+  return {
+    available: true,
+    stale: false,
+    ageSeconds: 0,
+    gpuUtilization: null,
+    memoryUsedMb: usedMb,
+    memoryTotalMb: totalMb,
+    memoryPct: Math.max(0, Math.min(100, (usedMb / totalMb) * 100)),
+    gpus: [
+      {
+        index: Number(gpu.device_index ?? 0),
+        name: String(gpu.name ?? ''),
+        utilizationText: '--',
+        memoryText: `${formatGpuMemory(usedMb)}/${formatGpuMemory(totalMb)}`,
+      },
+    ],
+    statusMessage: '',
+  };
+}
+
 /**
  * GPU status polling — 1:1 port of the legacy GpuStatusController: poll
  * /api/sam3/status every second; after 3 consecutive failures mark the GPU
@@ -99,20 +127,37 @@ export function useGpuStatus(active: boolean): GpuStatusSummary {
     let cancelled = false;
 
     const poll = async () => {
+      let summary: GpuStatusSummary | null = null;
       try {
         const status = await getSam3Status(useSettingsStore.getState().sam3ApiUrl);
         if (cancelled) return;
-        failuresRef.current = 0;
-        setSummary(summarize(status));
-      } catch (err) {
-        if (cancelled) return;
-        failuresRef.current += 1;
-        const message = String((err as Error)?.message || err || 'GPU status unavailable');
-        if (failuresRef.current >= GPU_FAILURE_THRESHOLD) {
-          setSummary({ ...UNAVAILABLE, statusMessage: message });
-        } else {
-          setSummary((prev) => ({ ...prev, stale: true, statusMessage: message }));
+        const sam3Summary = summarize(status);
+        if (sam3Summary.available) summary = sam3Summary;
+      } catch {
+        // sam3-api offline: fall back to locate-anything-api GPU stats
+      }
+      if (!summary) {
+        try {
+          const status = await getLocateStatus();
+          if (cancelled) return;
+          const locateSummary = summarizeLocateStatus(status);
+          if (locateSummary.available) summary = locateSummary;
+        } catch {
+          // both sources unavailable
         }
+      }
+      if (cancelled) return;
+      if (summary) {
+        failuresRef.current = 0;
+        setSummary(summary);
+        return;
+      }
+      failuresRef.current += 1;
+      const message = 'GPU status unavailable';
+      if (failuresRef.current >= GPU_FAILURE_THRESHOLD) {
+        setSummary({ ...UNAVAILABLE, statusMessage: message });
+      } else {
+        setSummary((prev) => ({ ...prev, stale: true, statusMessage: message }));
       }
     };
 
