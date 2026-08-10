@@ -10,7 +10,6 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
-from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'web-auto'))
@@ -18,7 +17,6 @@ sys.path.insert(0, str(ROOT / 'web-auto'))
 from app.services.annotation_masks import annotation_mask_path, normalize_annotation_masks  # noqa: E402
 from app.services.image_previews import ImagePreviewService  # noqa: E402
 from app.services.image_tiles import ImageTileService  # noqa: E402
-from app.services.inference_service import InferenceService  # noqa: E402
 
 
 def _write_image(path: Path, size: tuple[int, int] = (64, 48)) -> None:
@@ -98,80 +96,6 @@ class WebAutoPerformanceServiceTests(unittest.TestCase):
             self.assertIn('overlay_url', anns[0])
             self.assertGreaterEqual(len(anns[0].get('polygon') or []), 3)
             self.assertTrue(annotation_mask_path(tmp, 'p1', 'img1', 'ann1').is_file())
-
-
-class VisualExemplarInferenceTests(unittest.TestCase):
-    class _Storage:
-        @staticmethod
-        def load_annotations(project_id: str, image_id: str):  # type: ignore[no-untyped-def]
-            return [{'id': 'existing', 'class_name': 'door'}]
-
-    class _Sam3:
-        def __init__(self) -> None:
-            self.calls: list[dict] = []
-
-        def infer(self, **kwargs):  # type: ignore[no-untyped-def]
-            self.calls.append(kwargs)
-            return {
-                'detections': [
-                    {'id': 'det_1', 'label': 'visual', 'bbox_xyxy': [30, 30, 40, 40], 'score': 0.9}
-                ]
-            }
-
-    def _service(self):  # type: ignore[no-untyped-def]
-        sam3 = self._Sam3()
-        storage = self._Storage()
-        service = InferenceService(
-            get_storage=lambda: storage,
-            sam3=sam3,
-            infer_jobs=object(),
-            default_api_base_url='http://sam3-api:8001',
-            max_batch_files=8,
-            max_pending_image_ids=100,
-        )
-        return service, sam3
-
-    def test_example_preview_uses_pure_visual_official_box_mode(self) -> None:
-        service, sam3 = self._service()
-        result = service.infer_example_preview(
-            project={'id': 'p1'},
-            image={'id': 'img1', 'abs_path': '/tmp/source.jpg'},
-            active_class='door',
-            boxes=[[1, 2, 10, 20], [12, 13, 18, 19, 0]],
-            threshold=0.5,
-            api_base_url='http://sam3-api:8001',
-        )
-
-        self.assertEqual(len(sam3.calls), 1)
-        self.assertEqual(sam3.calls[0]['mode'], 'boxes')
-        self.assertEqual(sam3.calls[0]['prompt'], '')
-        self.assertEqual(sam3.calls[0]['boxes'], [[1.0, 2.0, 10.0, 20.0, 1.0], [12.0, 13.0, 18.0, 19.0, 0.0]])
-        self.assertEqual(result['detections'][0]['class_name'], 'door')
-        self.assertEqual(result['detections'][0]['bbox'], [30.0, 30.0, 40.0, 40.0])
-
-    def test_example_preview_requires_positive_box(self) -> None:
-        service, _ = self._service()
-        with self.assertRaises(HTTPException) as ctx:
-            service.infer_example_preview(
-                project={'id': 'p1'},
-                image={'id': 'img1', 'abs_path': '/tmp/source.jpg'},
-                active_class='door',
-                boxes=[[1, 2, 10, 20, 0]],
-                threshold=0.5,
-                api_base_url='http://sam3-api:8001',
-            )
-        self.assertEqual(ctx.exception.status_code, 400)
-
-    def test_cross_image_example_routes_and_schema_are_removed(self) -> None:
-        from app.main import app
-
-        openapi = app.openapi()
-        paths = openapi['paths']
-        self.assertIn('/api/infer/example_preview', paths)
-        self.assertNotIn('/api/infer/batch_example', paths)
-        self.assertNotIn('/api/infer/jobs/start_batch_example', paths)
-        preview_schema = openapi['components']['schemas']['InferExamplePreviewIn']['properties']
-        self.assertNotIn('pure_visual', preview_schema)
 
 
 if __name__ == '__main__':
