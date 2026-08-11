@@ -112,6 +112,7 @@ services:
       LOCATE_API_TOKEN: ${LOCATE_API_TOKEN:-}
       LOCATE_ATTN_BACKEND: ${LOCATE_ATTN_BACKEND:-la_flash}
       LOCATE_WARMUP_ON_START: ${LOCATE_WARMUP_ON_START:-false}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       HF_ENDPOINT: ${HF_ENDPOINT:-}
       HF_HOME: /cache/huggingface
       TORCH_HOME: /cache/torch

@@ -8,7 +8,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LOCATE_CHECKPOINT_PATH=/models/LocateAnything-3B \
     HF_HOME=/cache/huggingface \
     TORCH_HOME=/cache/torch \
-    HF_ENDPOINT=
+    HF_ENDPOINT= \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

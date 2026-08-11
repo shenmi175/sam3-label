@@ -6,9 +6,12 @@ import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
 
 const JOB_POLL_INTERVAL_MS = 1000;
+const JOB_POLL_ERROR_INTERVAL_MS = 3000;
 const TASK_BAR_HIDE_DELAY_MS = 3000;
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+const TERMINAL_STATUSES = new Set(['done', 'error', 'cancelled']);
 
 /**
  * Job status polling loop — 1:1 port of the legacy `pollTaskStatus` state
@@ -16,9 +19,12 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
  *   - done/error/cancelled → hide bar after 3 s, show the batch result modal
  *     for finished text_batch jobs (dedup via batchResultShownForJobId),
  *     clear the whole bundle cache on done, refresh project info and reload
- *     the selected image.
+ *     the selected image. If the project still has another active job (e.g.
+ *     a queued job unblocked after a cancellation), hand polling over to it.
  *   - pausing/paused states are surfaced through inferenceStore.job for the
  *     task bar's Stop/Resume/Cancel buttons.
+ *   - transient fetch errors retry on a slower interval instead of killing
+ *     the loop, which used to freeze the task bar at a stale message.
  */
 export function startJobPolling(): void {
   const store = useInferenceStore.getState();
@@ -46,11 +52,7 @@ export function startJobPolling(): void {
       current.setJob(job);
       current.setTaskBar(true, job.message || `${Math.round(pct)}%`);
 
-      if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
-        setTimeout(() => {
-          const s = useInferenceStore.getState();
-          if (!s.activeJobId) s.setTaskBar(false, '');
-        }, TASK_BAR_HIDE_DELAY_MS);
+      if (TERMINAL_STATUSES.has(job.status)) {
         if (job.job_type === 'text_batch' && job.status === 'done') {
           if (current.batchResultShownForJobId !== job.job_id) {
             current.showBatchResult(job);
@@ -58,23 +60,48 @@ export function startJobPolling(): void {
         }
         if (job.status === 'done') {
           clearBundleCache();
+          await useProjectStore.getState().loadProjectInfo();
+          if (useImageStore.getState().selectedImageId) {
+            await useImageStore.getState().reloadSelectedImage();
+          }
         }
+        const nextJob = await fetchActiveJob();
+        if (nextJob) {
+          current.setActiveJobId(nextJob.job_id);
+          current.setJob(nextJob);
+          current.setTaskBar(true, nextJob.message || '');
+          pollTimer = setTimeout(poll, JOB_POLL_INTERVAL_MS);
+          return;
+        }
+        setTimeout(() => {
+          const s = useInferenceStore.getState();
+          if (!s.activeJobId) s.setTaskBar(false, '');
+        }, TASK_BAR_HIDE_DELAY_MS);
         current.setActiveJobId(null);
         current.setIsPolling(false);
-        await useProjectStore.getState().loadProjectInfo();
-        if (useImageStore.getState().selectedImageId) {
-          await useImageStore.getState().reloadSelectedImage();
-        }
         return;
       }
       pollTimer = setTimeout(poll, JOB_POLL_INTERVAL_MS);
     } catch (err) {
       console.error('Poll error', err);
-      useInferenceStore.getState().setIsPolling(false);
+      pollTimer = setTimeout(poll, JOB_POLL_ERROR_INTERVAL_MS);
     }
   };
 
   void poll();
+}
+
+/** Returns the project's active job if one is still running/queued. */
+async function fetchActiveJob() {
+  const projectId = useProjectStore.getState().projectId;
+  if (!projectId) return null;
+  try {
+    const res = await getInferActiveJob(projectId);
+    const job = res?.job || null;
+    return job && !TERMINAL_STATUSES.has(job.status) ? job : null;
+  } catch {
+    return null;
+  }
 }
 
 export function stopJobPolling(): void {

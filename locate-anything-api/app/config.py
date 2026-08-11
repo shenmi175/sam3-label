@@ -52,6 +52,11 @@ class Settings:
     warmup_on_start: bool = field(default_factory=lambda: _env_bool("LOCATE_WARMUP_ON_START", False))
     api_token: str = field(default_factory=lambda: os.getenv("LOCATE_API_TOKEN", ""))
 
+    # VRAM hygiene: gc+empty_cache when device usage reaches this percent.
+    clear_cache_threshold: int = field(default_factory=lambda: _env_int("LOCATE_CLEAR_CACHE_THRESHOLD", 80))
+    # Rebuild attention classes every N inferences to drop unbounded plan caches (0 disables).
+    attn_cache_reset_every: int = field(default_factory=lambda: _env_int("LOCATE_ATTN_CACHE_RESET_EVERY", 64))
+
     cors_origins: list[str] = field(
         default_factory=lambda: [
             s.strip()

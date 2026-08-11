@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import re
@@ -39,15 +40,42 @@ def gpu_status_snapshot() -> dict[str, Any] | None:
             return None
         idx = torch.cuda.current_device()
         free, total = torch.cuda.mem_get_info(idx)
-        return {
+        snapshot = {
             "device_index": int(idx),
             "name": torch.cuda.get_device_name(idx),
             "total_mb": round(total / 1024 / 1024, 1),
             "free_mb": round(free / 1024 / 1024, 1),
             "used_mb": round((total - free) / 1024 / 1024, 1),
         }
+        try:
+            snapshot["allocated_mb"] = round(torch.cuda.memory_allocated(idx) / 1024 / 1024, 1)
+            snapshot["reserved_mb"] = round(torch.cuda.memory_reserved(idx) / 1024 / 1024, 1)
+        except Exception:  # noqa: BLE001
+            pass
+        return snapshot
     except Exception:
         return None
+
+
+def _cuda_allocated_mb() -> float | None:
+    try:
+        import torch  # type: ignore
+
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.memory_allocated(torch.cuda.current_device()) / 1024 / 1024
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cuda_empty_cache() -> None:
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class LocateAnythingEngine:
@@ -76,15 +104,20 @@ class LocateAnythingEngine:
     def unload(self) -> None:
         if self._worker is None:
             return
+        worker, self._worker = self._worker, None
+        allocated_before = _cuda_allocated_mb()
         try:
-            import torch  # type: ignore
-
-            del self._worker
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-        self._worker = None
+            worker.unload()
+        except Exception:  # noqa: BLE001
+            logger.exception("locate runtime module unload failed; continuing cleanup")
+        del worker
+        gc.collect()
+        _cuda_empty_cache()
+        freed_mb = (allocated_before - _cuda_allocated_mb()) if allocated_before is not None else None
+        if freed_mb is not None:
+            logger.info("locate-anything unloaded; freed ~%.0f MiB of allocated VRAM", freed_mb)
+        else:
+            logger.info("locate-anything unloaded")
 
     def _ensure_loaded(self) -> Any:
         if self._worker is not None:
@@ -124,7 +157,14 @@ class LocateAnythingEngine:
             raise ValueError("prompt must contain at least one category")
 
         started = time.perf_counter()
-        raw = worker.detect(image.pil, categories)
+        try:
+            raw = worker.detect(image.pil, categories)
+        except Exception as exc:
+            logger.exception("locate inference failed")
+            # Traceback frames hold KV/vit tensors; drop refs before re-raising.
+            gc.collect()
+            _cuda_empty_cache()
+            raise RuntimeError(f"locate inference failed: {exc}") from None
         answer = raw.get("answer", "") if isinstance(raw, dict) else str(raw)
 
         parsed = _parse_answer(answer, width=image.width, height=image.height)
@@ -134,7 +174,7 @@ class LocateAnythingEngine:
             max_detections=max_detections,
         )
 
-        self._release_cuda_cache_periodically()
+        self._maintain_cuda_cache()
 
         return {
             "model": "locate-anything-3b",
@@ -147,15 +187,57 @@ class LocateAnythingEngine:
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
         }
 
-    def _release_cuda_cache_periodically(self) -> None:
+    def _maintain_cuda_cache(self) -> None:
         self._infer_count += 1
-        if self._infer_count % 64:
+        self._reset_attention_plan_cache_if_due()
+        self._empty_cache_if_under_pressure()
+
+    def _empty_cache_if_under_pressure(self) -> None:
+        """gc+empty_cache only when device usage reaches the threshold.
+
+        Mirrors external/sam3 Sam3BasePredictor._should_empty_cache: a
+        per-request full-stream sync would stall throughput, so the caching
+        allocator reuses free blocks until the device is actually under pressure.
+        """
+        threshold = int(getattr(self.settings, "clear_cache_threshold", 80))
+        if threshold <= 0:
             return
         try:
             import torch  # type: ignore
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if not torch.cuda.is_available():
+                return
+            free, total = torch.cuda.mem_get_info(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001
+            return
+        if total <= 0:
+            return
+        used_pct = (total - free) / total * 100.0
+        if used_pct < threshold:
+            return
+        logger.info("device VRAM usage %.1f%% >= %d%%; clearing CUDA cache", used_pct, threshold)
+        gc.collect()
+        _cuda_empty_cache()
+
+    def _reset_attention_plan_cache_if_due(self) -> None:
+        """Drop the unbounded causal_plan_cache closures in hybrid_runtime.
+
+        Nulling the cached attention classes forces _set_llm_mode to rebuild
+        them on the next inference, discarding the per-shape plan caches
+        (CUDA tensors keyed by kv_seq_len) they close over.
+        """
+        every = int(getattr(self.settings, "attn_cache_reset_every", 0))
+        if every <= 0 or self._infer_count % every:
+            return
+        try:
+            import sys
+
+            runtime = sys.modules.get("batch_utils.hybrid_runtime")
+            if runtime is None:
+                return
+            for attr in ("_LaFlashCls", "_MagiCls"):
+                if hasattr(runtime, attr):
+                    setattr(runtime, attr, None)
         except Exception:  # noqa: BLE001
             pass
 

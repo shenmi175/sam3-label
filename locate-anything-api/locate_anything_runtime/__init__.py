@@ -15,6 +15,24 @@ from typing import Any
 _PROMPT_TEMPLATE = "Locate all the instances that matches the following description: "
 
 
+def unload_runtime_modules() -> None:
+    """Drop ``batch_utils`` (and submodules) from ``sys.modules``.
+
+    The model weights are held by module-level globals inside
+    ``batch_utils.hybrid_runtime`` (``_tok/_proc/_model`` etc.), so deleting
+    the worker wrapper alone never frees VRAM. Evicting the module graph lets
+    those globals be collected; the next load re-imports a fresh copy.
+    ``kernel_utils`` (flash_attn handle cache) and ``transformers_modules``
+    are intentionally kept to speed up reload.
+    """
+    for name in list(sys.modules):
+        if name == "batch_utils" or name.startswith("batch_utils."):
+            try:
+                del sys.modules[name]
+            except KeyError:  # pragma: no cover - concurrent removal
+                pass
+
+
 class LocateAnythingWorker:
     """Single-image, multi-category detection worker.
 
@@ -44,6 +62,10 @@ class LocateAnythingWorker:
         from batch_utils import load  # type: ignore[import-untyped]
 
         load()
+
+    def unload(self) -> None:
+        """Evict the imported batch_utils module graph so model globals are freed."""
+        unload_runtime_modules()
 
     def detect(self, image: Any, categories: list[str]) -> dict[str, Any]:
         """Run detection on a single PIL image for the given categories.
