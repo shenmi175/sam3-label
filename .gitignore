@@ -144,6 +144,7 @@ sam3_logs/
 
 # Local runtime data and generated annotation state
 web-auto/data/
+web-auto/web-auto/
 sam3-api/data/
 /data/
 /datasets/
