@@ -63,6 +63,7 @@ class LocateAnythingEngine:
         self.settings = settings
         self._worker: Any | None = None
         self._load_error: str | None = None
+        self._infer_count = 0
 
     # -- lifecycle -----------------------------------------------------
     @property
@@ -133,6 +134,8 @@ class LocateAnythingEngine:
             max_detections=max_detections,
         )
 
+        self._release_cuda_cache_periodically()
+
         return {
             "model": "locate-anything-3b",
             "device": str(self.settings.device),
@@ -143,6 +146,18 @@ class LocateAnythingEngine:
             "detections": detections,
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
         }
+
+    def _release_cuda_cache_periodically(self) -> None:
+        self._infer_count += 1
+        if self._infer_count % 64:
+            return
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # -- answer parsing ----------------------------------------------------
