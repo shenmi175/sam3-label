@@ -37,7 +37,8 @@ services:
       SAM3_API_DEVICE: ${SAM3_API_DEVICE:-cuda}
       SAM3_API_CHECKPOINT: /models/sam3.pt
       SAM3_API_LOAD_FROM_HF: ${SAM3_API_LOAD_FROM_HF:-0}
-      SAM3_API_WARMUP_ON_START: ${SAM3_API_WARMUP_ON_START:-0}
+      # 启动即加载模型（fail-fast）；置 0 回退懒加载。旧名 SAM3_API_WARMUP_ON_START 仍兼容。
+      SAM3_API_EAGER_LOAD: ${SAM3_API_EAGER_LOAD:-1}
       SAM3_API_MAX_BATCH_FILES: ${SAM3_API_MAX_BATCH_FILES:-32}
       SAM3_API_MAX_IMAGE_MB: ${SAM3_API_MAX_IMAGE_MB:-50}
       SAM3_API_MAX_VIDEO_MB: ${SAM3_API_MAX_VIDEO_MB:-4096}
@@ -54,11 +55,11 @@ services:
       - sam3_hf_cache:/cache/huggingface
       - sam3_torch_cache:/cache/torch
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).read()\""]
+      test: ["CMD-SHELL", "python -c \"import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5)); sys.exit(0 if d.get('status') in ('ok','not_loaded','loading') else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 40s
+      start_period: 120s
 
   sapiens-api:
     build:
@@ -78,6 +79,8 @@ services:
       SAPIENS_MODEL_NAME: ${SAPIENS_MODEL_NAME:-sapiens2_5b}
       SAPIENS_REPO_DIR: /app/external/sapiens2
       SAPIENS_CHECKPOINT_ROOT: /models/sapiens2
+      # 启动即加载模型（fail-fast）；置 0 回退懒加载；权重缺失默认降级存活，SAPIENS_STRICT_EAGER_LOAD=1 时退出。
+      SAPIENS_EAGER_LOAD: ${SAPIENS_EAGER_LOAD:-1}
       SAPIENS_ALLOWED_DATA_ROOTS: ${WEB_AUTO_ALLOWED_DATA_ROOTS:-}
       SAPIENS_API_TOKEN: ${SAPIENS_API_TOKEN:?Set SAPIENS_API_TOKEN in .env}
       HF_HOME: /cache/huggingface
@@ -91,11 +94,11 @@ services:
       - sapiens_hf_cache:/cache/huggingface
       - sapiens_torch_cache:/cache/torch
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5).read()\""]
+      test: ["CMD-SHELL", "python -c \"import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5)); sys.exit(0 if d.get('status') in ('ok','not_loaded','loading') else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 10s
+      start_period: 300s
 
   locate-anything-api:
     build:
@@ -111,7 +114,8 @@ services:
       LOCATE_CHECKPOINT_PATH: /models/LocateAnything-3B
       LOCATE_API_TOKEN: ${LOCATE_API_TOKEN:-}
       LOCATE_ATTN_BACKEND: ${LOCATE_ATTN_BACKEND:-la_flash}
-      LOCATE_WARMUP_ON_START: ${LOCATE_WARMUP_ON_START:-false}
+      # 启动即加载模型（fail-fast）；置 0 回退懒加载。旧名 LOCATE_WARMUP_ON_START 仍兼容。
+      LOCATE_EAGER_LOAD: ${LOCATE_EAGER_LOAD:-1}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       HF_ENDPOINT: ${HF_ENDPOINT:-}
       HF_HOME: /cache/huggingface
@@ -123,7 +127,7 @@ services:
       - locate_hf_cache:/cache/huggingface
       - locate_torch_cache:/cache/torch
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=5).read()\""]
+      test: ["CMD-SHELL", "python -c \"import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=5)); sys.exit(0 if d.get('status') in ('ok','not_loaded','loading') else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5

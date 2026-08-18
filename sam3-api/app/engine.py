@@ -1,4 +1,5 @@
 import copy
+import gc
 import threading
 import time
 from contextlib import nullcontext
@@ -11,10 +12,16 @@ from PIL import Image
 import logging
 from torchvision.transforms import functional as TF
 
+from app import lifecycle
 from app.config import Settings
 from app.utils import mask_to_png_base64, split_mask_components
 
 logger = logging.getLogger("sam3_api")
+
+
+def _format_load_error(exc: BaseException) -> str:
+    text = str(exc or "").strip()
+    return text or type(exc).__name__
 
 
 class Sam3InferenceEngine:
@@ -25,6 +32,8 @@ class Sam3InferenceEngine:
         self._load_lock = threading.Lock()
         self._infer_lock = threading.Lock()
         self._loaded = False
+        self._state = "not_loaded"  # not_loaded | loading | loaded | load_failed
+        self._load_error: Optional[str] = None
         self._model = None
         self._processor = None
         self._processor_cls = None
@@ -47,11 +56,20 @@ class Sam3InferenceEngine:
         return self._loaded
 
     @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def load_error(self) -> Optional[str]:
+        return self._load_error
+
+    @property
     def default_input_size(self) -> int:
         return int(self._default_processor_resolution)
 
     def warmup(self) -> None:
         self._ensure_model()
+        self.verify_inference()
 
     def _ensure_model(self) -> None:
         if self._loaded:
@@ -59,8 +77,104 @@ class Sam3InferenceEngine:
         with self._load_lock:
             if self._loaded:
                 return
-            self._load_model()
+            self._state = "loading"
+            try:
+                self._load_model()
+            except Exception as exc:
+                category, _guidance = lifecycle.classify_load_error(exc)
+                self._load_error = f"{category}: {_format_load_error(exc)}"
+                self._state = "load_failed"
+                self._clear_load_artifacts()
+                if lifecycle.is_oom_error(exc):
+                    lifecycle.cleanup_after_oom()
+                raise
             self._loaded = True
+            self._state = "loaded"
+            self._load_error = None
+
+    def _clear_load_artifacts(self) -> None:
+        """Drop half-initialized references after a failed load."""
+        self._model = None
+        self._processor = None
+        self._processor_cls = None
+        self._find_stage_template = None
+        self._api_copy_to_device = None
+        self._api_postprocessor_cls = None
+        self._api_batched_datapoint_cls = None
+        self._api_find_stage_cls = None
+        self._api_find_target_cls = None
+        self._api_batched_meta_cls = None
+        self._api_convert_my_tensors = None
+
+    def verify_inference(self) -> None:
+        """Run a dummy forward pass through the full inference chain to validate the load.
+
+        A failure here is treated like a load failure: state becomes load_failed with a
+        classified error so /health and lazy-mode endpoints can report it.
+        """
+        try:
+            image = Image.new("RGB", (64, 64), color=(128, 128, 128))
+            # SAM3 ViTDet precomputes RoPE frequencies for the model's native grid,
+            # so the probe must run at the default resolution (not a smaller one).
+            self.infer(
+                image,
+                prompt="object",
+                threshold=0.5,
+                include_mask_png=False,
+                max_detections=1,
+            )
+        except Exception as exc:
+            category, _guidance = lifecycle.classify_load_error(exc)
+            self._load_error = f"{category}: {_format_load_error(exc)}"
+            self._state = "load_failed"
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+            raise
+        self._state = "loaded"
+        self._load_error = None
+
+    def unload(self) -> None:
+        """Idempotently unload the model and release VRAM."""
+        with self._load_lock, self._infer_lock:
+            if not self._loaded and self._model is None and not self._cuda_autocast_context_entered:
+                self._state = "not_loaded"
+                return
+            allocated_before: Optional[int] = None
+            if self._uses_cuda():
+                try:
+                    allocated_before = int(torch.cuda.memory_allocated())
+                except Exception:  # noqa: BLE001
+                    allocated_before = None
+
+            self._loaded = False
+            self._state = "not_loaded"
+            self._load_error = None
+            self._clear_load_artifacts()
+
+            # The autocast context entered at load time is never exited otherwise;
+            # pair it with an explicit __exit__ on unload.
+            if self._cuda_autocast_context_entered and self._cuda_autocast_context is not None:
+                try:
+                    self._cuda_autocast_context.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001
+                    logger.warning("failed to exit CUDA autocast context during unload", exc_info=True)
+            self._cuda_autocast_context = None
+            self._cuda_autocast_context_entered = False
+
+            gc.collect()
+            if self._uses_cuda():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+            if allocated_before is not None:
+                try:
+                    freed_mb = (allocated_before - int(torch.cuda.memory_allocated())) / 1024.0 / 1024.0
+                    logger.info("sam3 image model unloaded; freed ~%.0f MiB of allocated VRAM", freed_mb)
+                except Exception:  # noqa: BLE001
+                    logger.info("sam3 image model unloaded")
+            else:
+                logger.info("sam3 image model unloaded")
 
     def _load_model(self) -> None:
         checkpoint = self.settings.checkpoint_path

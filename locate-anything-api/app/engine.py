@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .lifecycle import classify_load_error, cleanup_after_oom, is_oom_error
+
 logger = logging.getLogger("locate_anything.engine")
 
 _BOX_TOKEN_RE = re.compile(r"<box><(\d+)><(\d+)><(\d+)><(\d+)></box>")
@@ -90,6 +92,7 @@ class LocateAnythingEngine:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
         self._worker: Any | None = None
+        self._state = "not_loaded"  # not_loaded | loading | loaded | load_failed
         self._load_error: str | None = None
         self._infer_count = 0
 
@@ -98,11 +101,22 @@ class LocateAnythingEngine:
     def loaded(self) -> bool:
         return self._worker is not None
 
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def load_error(self) -> str | None:
+        return self._load_error
+
     def warmup(self) -> None:
         self._ensure_loaded()
+        self.verify_inference()
 
     def unload(self) -> None:
         if self._worker is None:
+            self._state = "not_loaded"
+            self._load_error = None
             return
         worker, self._worker = self._worker, None
         allocated_before = _cuda_allocated_mb()
@@ -113,6 +127,8 @@ class LocateAnythingEngine:
         del worker
         gc.collect()
         _cuda_empty_cache()
+        self._state = "not_loaded"
+        self._load_error = None
         freed_mb = (allocated_before - _cuda_allocated_mb()) if allocated_before is not None else None
         if freed_mb is not None:
             logger.info("locate-anything unloaded; freed ~%.0f MiB of allocated VRAM", freed_mb)
@@ -122,23 +138,65 @@ class LocateAnythingEngine:
     def _ensure_loaded(self) -> Any:
         if self._worker is not None:
             return self._worker
+        self._state = "loading"
         try:
-            from locate_anything_runtime import LocateAnythingWorker  # type: ignore
-        except Exception as exc:  # pragma: no cover - optional runtime
-            self._load_error = f"LocateAnything runtime unavailable: {exc}"
-            logger.warning("locate-anything runtime not loadable: %s", exc)
-            raise RuntimeError(self._load_error) from exc
+            # Pre-check the checkpoint path so missing weights surface as a
+            # classifiable FileNotFoundError instead of an opaque runtime error.
+            checkpoint = Path(self.settings.checkpoint_path)
+            if not checkpoint.exists():
+                raise FileNotFoundError(
+                    f"LocateAnything checkpoint does not exist: {checkpoint}"
+                )
+            try:
+                from locate_anything_runtime import LocateAnythingWorker  # type: ignore
+            except Exception as exc:  # pragma: no cover - optional runtime
+                raise RuntimeError(f"LocateAnything runtime unavailable: {exc}") from exc
 
-        logger.info(
-            "loading LocateAnything checkpoint=%s attn=%s",
-            self.settings.checkpoint_path,
-            self.settings.attn_backend,
-        )
-        self._worker = LocateAnythingWorker(
-            self.settings.checkpoint_path,
-            attn=self.settings.attn_backend,
-        )
+            logger.info(
+                "loading LocateAnything checkpoint=%s attn=%s",
+                self.settings.checkpoint_path,
+                self.settings.attn_backend,
+            )
+            self._worker = LocateAnythingWorker(
+                self.settings.checkpoint_path,
+                attn=self.settings.attn_backend,
+            )
+        except Exception as exc:
+            category, _guidance = classify_load_error(exc)
+            self._worker = None
+            self._state = "load_failed"
+            self._load_error = f"[{category}] {exc}"
+            if is_oom_error(exc):
+                cleanup_after_oom()
+            logger.warning("locate-anything load failed (%s): %s", category, exc)
+            raise
+        self._state = "loaded"
+        self._load_error = None
         return self._worker
+
+    def verify_inference(self) -> None:
+        """Run one minimal real inference to prove the ViT+LLM chain works.
+
+        A verification failure is treated as a load failure: the model may be
+        resident in VRAM but unusable (e.g. silent weight corruption), so the
+        state machine must not report ``loaded``.
+        """
+        worker = self._ensure_loaded()
+        try:
+            from PIL import Image  # local import: optional dep at startup
+
+            pil = Image.new("RGB", (32, 32), color=(128, 128, 128))
+            worker.detect(pil, ["object"])
+        except Exception as exc:
+            category, _guidance = classify_load_error(exc)
+            # Drop the half-usable worker so a retry performs a clean reload.
+            self.unload()
+            self._state = "load_failed"
+            self._load_error = f"[{category}] verify_inference failed: {exc}"
+            if is_oom_error(exc):
+                cleanup_after_oom()
+            logger.warning("locate-anything verify_inference failed (%s): %s", category, exc)
+            raise
 
     # -- inference -----------------------------------------------------
     def infer(

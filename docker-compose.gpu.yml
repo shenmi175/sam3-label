@@ -1,3 +1,7 @@
+# GPU 分配覆盖层。默认三服务分卡（sam3=1、sapiens=0、locate=2），启动即加载（*_EAGER_LOAD 默认 1）互不冲突。
+# 注意：若把多个 *_GPU_DEVICE_ID 配成同一张卡，多个模型会同时 eager 加载导致显存不足（CUDA OOM），
+# 失败的服务会 fail-fast 退出并 crash-loop。同卡部署时必须保留至少一个服务 *_EAGER_LOAD=0，
+# 用 /v1/warmup + /v1/unload 手动轮换加载。
 services:
   sam3-api:
     gpus:

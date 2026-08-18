@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import logging
 import threading
 import time
 import uuid
@@ -13,8 +15,16 @@ import torch.nn.functional as F
 from ultralytics.models.sam import SAM3VideoSemanticPredictor
 from ultralytics.models.sam.amg import batched_mask_to_box
 
+from app import lifecycle
 from app.config import Settings
 from app.utils import mask_to_png_base64, split_mask_components
+
+logger = logging.getLogger("sam3_api")
+
+
+def _format_load_error(exc: BaseException) -> str:
+    text = str(exc or "").strip()
+    return text or type(exc).__name__
 
 
 class Sam3VideoSemanticSessionEngine:
@@ -25,6 +35,8 @@ class Sam3VideoSemanticSessionEngine:
         self._load_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._loaded = False
+        self._state = "not_loaded"  # not_loaded | loading | loaded | load_failed
+        self._load_error: Optional[str] = None
         self._predictor: SAM3VideoSemanticPredictor | None = None
         self._default_imgsz: int = 0
         self._sessions: dict[str, dict[str, Any]] = {}
@@ -35,7 +47,17 @@ class Sam3VideoSemanticSessionEngine:
     def loaded(self) -> bool:
         return self._loaded
 
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def load_error(self) -> Optional[str]:
+        return self._load_error
+
     def warmup(self) -> None:
+        # Load only: a dummy verification forward would need a real video file,
+        # and setup_model() already moves the full model onto the device.
         self._ensure_model()
 
     def _ensure_model(self) -> None:
@@ -44,8 +66,42 @@ class Sam3VideoSemanticSessionEngine:
         with self._load_lock:
             if self._loaded:
                 return
-            self._load_model()
+            self._state = "loading"
+            try:
+                self._load_model()
+            except Exception as exc:
+                category, _guidance = lifecycle.classify_load_error(exc)
+                self._load_error = f"{category}: {_format_load_error(exc)}"
+                self._state = "load_failed"
+                self._predictor = None
+                if lifecycle.is_oom_error(exc):
+                    lifecycle.cleanup_after_oom()
+                raise
             self._loaded = True
+            self._state = "loaded"
+            self._load_error = None
+
+    def unload(self) -> None:
+        """Idempotently unload the predictor and release VRAM."""
+        with self._load_lock, self._request_lock:
+            if not self._loaded and self._predictor is None and not self._sessions:
+                self._state = "not_loaded"
+                return
+            self._loaded = False
+            self._state = "not_loaded"
+            self._load_error = None
+            self._predictor = None
+            self._default_imgsz = 0
+            self._sessions = {}
+            self._session_cleanup_paths = {}
+            self._active_source_key = ""
+            gc.collect()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info("sam3 semantic video model unloaded")
 
     def _load_model(self) -> None:
         checkpoint = self.settings.checkpoint_path

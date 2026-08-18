@@ -49,7 +49,13 @@ class Settings:
     repetition_penalty: float = field(default_factory=lambda: _env_float("LOCATE_REPETITION_PENALTY", 1.1))
     generation_mode: str = field(default_factory=lambda: os.getenv("LOCATE_GEN_MODE", "hybrid"))
 
-    warmup_on_start: bool = field(default_factory=lambda: _env_bool("LOCATE_WARMUP_ON_START", False))
+    # Eager model load at startup (fail-fast). Falls back to the legacy
+    # LOCATE_WARMUP_ON_START variable for backward compatibility.
+    eager_load: bool = field(
+        default_factory=lambda: _env_bool(
+            "LOCATE_EAGER_LOAD", _env_bool("LOCATE_WARMUP_ON_START", True)
+        )
+    )
     api_token: str = field(default_factory=lambda: os.getenv("LOCATE_API_TOKEN", ""))
 
     # VRAM hygiene: gc+empty_cache when device usage reaches this percent.

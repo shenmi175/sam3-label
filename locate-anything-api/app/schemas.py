@@ -39,7 +39,9 @@ class InferResultOut(BaseModel):
 
 class HealthOut(BaseModel):
     status: str
+    mode: str = "lazy"
     model_loaded: bool
+    last_load_error: Optional[str] = None
     device: str
     checkpoint_path: str
     attn_backend: str = "la_flash"

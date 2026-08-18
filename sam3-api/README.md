@@ -317,7 +317,7 @@ curl -X POST "http://127.0.0.1:8001/v1/semantic/infer" \
 - `SAM3_API_LOAD_FROM_HF`: `1` 时允许从 HF 拉取 checkpoint
 - `SAM3_API_COMPILE`: `1` 时启用 compile
 - `SAM3_API_DEFAULT_THRESHOLD`: 默认阈值（默认 `0.5`）
-- `SAM3_API_WARMUP_ON_START`: `1` 时服务启动即预热模型
+- `SAM3_API_EAGER_LOAD`: `1`（默认）时服务启动即加载并校验模型，失败则退出（fail-fast）；`0` 回退懒加载。旧名 `SAM3_API_WARMUP_ON_START` 仍兼容
 - `SAM3_API_CORS_ORIGINS`: 允许跨域来源，逗号分隔（默认 `*`）
 - `SAM3_API_MAX_BATCH_FILES`: 批量接口最大文件数（默认 `32`）
 - `SAM3_API_MAX_IMAGE_MB`: 单图最大大小 MB（默认 `50`）

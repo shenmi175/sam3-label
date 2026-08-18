@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from .config import Settings, get_settings
 from .engine import LocateAnythingEngine, gpu_status_snapshot, load_image_from_bytes
+from . import lifecycle
 from .schemas import HealthOut, InferResultOut
 
 logger = logging.getLogger("locate_anything")
@@ -69,18 +70,32 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.on_event("startup")
     def startup_event() -> None:
-        if settings.warmup_on_start:
+        if settings.eager_load:
             try:
-                engine.warmup()
-            except Exception:  # noqa: BLE001
-                logger.exception("warmup failed; service still serving /health")
+                lifecycle.eager_load(engine, name="locate-anything")
+            except lifecycle.EagerLoadFailed:
+                logger.error(
+                    "FATAL: locate-anything eager load failed; exiting with code 1 "
+                    "(fix the error above and restart, or set LOCATE_EAGER_LOAD=0 "
+                    "to fall back to lazy loading)"
+                )
+                os._exit(1)
 
     # -- observability -------------------------------------------------
     @app.get("/health", response_model=HealthOut)
     def health() -> dict:
+        state = engine.state
+        if state == "loaded":
+            status = "ok"
+        elif state == "load_failed":
+            status = "load_failed"
+        else:  # not_loaded / loading
+            status = "not_loaded"
         return {
-            "status": "ok",
+            "status": status,
+            "mode": "eager" if settings.eager_load else "lazy",
             "model_loaded": engine.loaded,
+            "last_load_error": engine.load_error,
             "device": settings.device,
             "checkpoint_path": settings.checkpoint_display,
             "attn_backend": settings.attn_backend,
@@ -93,12 +108,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             engine.warmup()
             return {"ok": True, "model_loaded": engine.loaded}
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"warmup failed: {exc}") from exc
+            category, guidance = lifecycle.classify_load_error(exc)
+            detail = f"warmup failed ({category}): {exc} — {guidance}"
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                raise HTTPException(status_code=507, detail=detail) from exc
+            raise HTTPException(status_code=503, detail=detail) from exc
 
     @app.post("/v1/unload")
     def unload() -> dict:
         engine.unload()
-        return {"ok": True, "model_loaded": engine.loaded}
+        return {"ok": True, "model_loaded": engine.loaded, "status": engine.state}
 
     # -- inference -----------------------------------------------------
     @app.post("/v1/infer", response_model=InferResultOut)
@@ -152,6 +172,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 max_detections=max(1, int(max_detections)),
             )
         except RuntimeError as exc:
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                raise HTTPException(
+                    status_code=507, detail=f"GPU out of memory: {exc}"
+                ) from exc
+            raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc
+        except FileNotFoundError as exc:
             raise HTTPException(status_code=503, detail=f"model unavailable: {exc}") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

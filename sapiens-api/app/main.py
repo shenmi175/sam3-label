@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import threading
 import time
@@ -11,10 +12,15 @@ from typing import Any
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app import config as app_config
+from app import lifecycle
 from app.engine import MODEL_DOWNLOAD_URLS, SUPPORTED_SEG_MODELS, engine
 from app.pose_engine import POSE_DETECTOR_REPO_ID, POSE_MODEL_DOWNLOAD_URL, pose_engine
+
+logger = logging.getLogger(__name__)
 
 
 def _configured_api_token() -> str:
@@ -91,7 +97,9 @@ async def require_token(request: Request, call_next):
     if token and not _auth_public_path(request.url.path):
         supplied = _request_api_token(request)
         if not supplied or not hmac.compare_digest(supplied, token):
-            raise HTTPException(status_code=401, detail="invalid sapiens api token")
+            # Return directly: raising HTTPException inside middleware bypasses
+            # FastAPI's exception handlers and would surface as a 500.
+            return JSONResponse(status_code=401, content={"detail": "invalid sapiens api token"})
     return await call_next(request)
 
 
@@ -103,12 +111,95 @@ _DOWNLOADS: dict[str, dict[str, Any]] = {}
 _DOWNLOAD_BY_MODEL: dict[str, str] = {}
 
 
+def _startup_load_engine(eng: Any, name: str, download_hint: str) -> None:
+    """Eager-load one engine at startup.
+
+    Missing weights degrade the engine to ``weights_missing`` (survive so the
+    download endpoints stay reachable) unless SAPIENS_STRICT_EAGER_LOAD=1.
+    Weights present but load/verify failure exits the process (fail-fast).
+    """
+    if not eng.weights_ready():
+        expected = ", ".join(eng.expected_weight_paths())
+        if app_config.strict_eager_load():
+            logger.error(
+                "FATAL: %s weights missing and SAPIENS_STRICT_EAGER_LOAD=1; expected paths: %s; "
+                "fix by downloading weights (POST %s) or mounting them, then restart",
+                name, expected, download_hint,
+            )
+            os._exit(1)
+        logger.warning(
+            "%s weights missing; engine degraded to weights_missing (service stays up for weight download). "
+            "Expected paths: %s. Download via POST %s, then call POST /v1/warmup",
+            name, expected, download_hint,
+        )
+        eng.weights_missing = True
+        return
+    try:
+        lifecycle.eager_load(eng, name=name)
+    except lifecycle.EagerLoadFailed as exc:
+        logger.error("FATAL: %s — process will exit with code 1", exc)
+        os._exit(1)
+
+
+@app.on_event("startup")
+def startup_eager_load() -> None:
+    if not app_config.eager_load():
+        logger.info("SAPIENS_EAGER_LOAD disabled; engines will load lazily on first request")
+        return
+    # Engines are loaded independently: missing seg weights must not block pose.
+    _startup_load_engine(engine, "segmentation", "/v1/checkpoints/download")
+    _startup_load_engine(pose_engine, "pose", "/v1/pose/checkpoints/download")
+
+
+def _engine_effective_status(eng: Any) -> str:
+    """Per-engine status folded into the merged /health status."""
+    state = eng.state
+    if state == "loaded":
+        return "loaded"
+    if state == "load_failed":
+        return "load_failed"
+    if eng.weights_missing:
+        return "weights_missing"
+    if not eng.repo_exists():
+        # Legacy "missing_repo" semantics fold into load_failed; repo_exists
+        # fields in the payload keep the detail.
+        return "load_failed"
+    if state == "loading":
+        return "loading"
+    return "not_loaded"
+
+
+def _merged_engine_status() -> str:
+    """Merge both engines: load_failed > weights_missing > ok (both loaded) > loading > not_loaded."""
+    statuses = [_engine_effective_status(engine), _engine_effective_status(pose_engine)]
+    if "load_failed" in statuses:
+        return "load_failed"
+    if "weights_missing" in statuses:
+        return "weights_missing"
+    if all(item == "loaded" for item in statuses):
+        return "ok"
+    if "loading" in statuses:
+        return "loading"
+    return "not_loaded"
+
+
+def _merged_load_error() -> str:
+    parts = [item for item in (engine.load_error, pose_engine.load_error) if item]
+    return " | ".join(parts)
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     status = engine.status()
     status["pose"] = pose_engine.status()
     status["token_required"] = bool(_configured_api_token())
     status["allowed_data_roots"] = [str(root) for root in _allowed_roots()]
+    # Top-level lifecycle status (merged over both engines); the legacy
+    # per-engine "status"/"missing_repo" detail survives in repo_exists fields
+    # and in status["pose"].
+    status["status"] = _merged_engine_status()
+    status["mode"] = "eager" if app_config.eager_load() else "lazy"
+    status["last_load_error"] = _merged_load_error()
     return status
 
 
@@ -390,6 +481,27 @@ def get_pose_checkpoint_download(job_id: str) -> dict[str, Any]:
     return get_checkpoint_download(job_id)
 
 
+def _engine_unavailable_detail(eng: Any, download_hint: str) -> str:
+    if eng.weights_missing:
+        return f"weights missing; download them via POST {download_hint}, then call POST /v1/warmup"
+    return f"last load error: {eng.load_error or 'unknown'}; see /health, then retry or restart"
+
+
+def _inference_http_error(prefix: str, eng: Any, download_hint: str, exc: Exception) -> HTTPException:
+    if lifecycle.is_oom_error(exc):
+        lifecycle.cleanup_after_oom()
+        return HTTPException(
+            status_code=507,
+            detail=f"{prefix}: CUDA out of memory; freed cached VRAM, retry or unload other models via /v1/unload",
+        )
+    if eng.weights_missing or eng.state == "load_failed":
+        return HTTPException(
+            status_code=503,
+            detail=f"{prefix}: engine not ready (state={eng.state}); {_engine_unavailable_detail(eng, download_hint)}",
+        )
+    return HTTPException(status_code=500, detail=f"{prefix}: {exc}")
+
+
 @app.post("/v1/pose/infer")
 async def infer_pose(
     file: UploadFile = File(...),
@@ -407,8 +519,10 @@ async def infer_pose(
             nms_threshold=nms_threshold,
             keypoint_threshold=keypoint_threshold,
         )
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"pose inference failed: {exc}") from exc
+        raise _inference_http_error("pose inference failed", pose_engine, "/v1/pose/checkpoints/download", exc) from exc
 
 
 @app.post("/v1/seg/infer")
@@ -430,8 +544,55 @@ async def infer_segmentation(
             max_detections=max_detections,
             include_label_map=include_label_map,
         )
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"inference failed: {exc}") from exc
+        raise _inference_http_error("inference failed", engine, "/v1/checkpoints/download", exc) from exc
+
+
+@app.post("/v1/warmup")
+def warmup_engines() -> Any:
+    """Warm up (load + verify) both engines; engines with missing weights are
+    reported as weights_missing and are not treated as failures."""
+    results: dict[str, Any] = {}
+    failure_categories: list[str] = []
+    for name, eng, download_hint in (
+        ("segmentation", engine, "/v1/checkpoints/download"),
+        ("pose", pose_engine, "/v1/pose/checkpoints/download"),
+    ):
+        if not eng.weights_ready():
+            eng.weights_missing = True
+            results[name] = {
+                "state": "weights_missing",
+                "error": "",
+                "hint": f"weights missing; download via POST {download_hint}",
+            }
+            continue
+        try:
+            eng.warmup()
+            results[name] = {"state": eng.state, "error": ""}
+        except Exception as exc:  # noqa: BLE001
+            category, _guidance = lifecycle.classify_load_error(exc)
+            failure_categories.append(category)
+            results[name] = {"state": eng.state, "error": str(exc), "error_category": category}
+    payload = {"engines": results}
+    if failure_categories:
+        status_code = 507 if "cuda_oom" in failure_categories else 503
+        raise HTTPException(status_code=status_code, detail=payload)
+    return payload
+
+
+@app.post("/v1/unload")
+def unload_engines() -> dict[str, Any]:
+    """Unload both engines and free their VRAM."""
+    engine.unload()
+    pose_engine.unload()
+    return {
+        "engines": {
+            "segmentation": {"state": engine.state, "model_loaded": False},
+            "pose": {"state": pose_engine.state, "model_loaded": False},
+        }
+    }
 
 
 def _set_job(job_id: str, **values: Any) -> None:
@@ -466,6 +627,8 @@ def _run_batch_job(job_id: str, payload: BatchSegIn, stop_event: threading.Event
             )
             results.append({"image_path": str(resolved), "result": result})
         except Exception as exc:  # noqa: BLE001
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
             errors.append({"image_path": str(image_path), "error": str(exc)})
         _set_job(job_id, completed=index + 1, results=results, errors=errors)
     _set_job(job_id, status="completed", completed=len(payload.image_paths), finished_at=time.time(), results=results, errors=errors)

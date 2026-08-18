@@ -1,4 +1,4 @@
-﻿import os
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +13,7 @@ class Settings:
     load_from_hf: bool
     compile_model: bool
     default_threshold: float
-    warmup_on_start: bool
+    eager_load: bool
     cors_origins: list[str]
     max_batch_files: int
     max_image_bytes: int
@@ -69,6 +69,17 @@ def _parse_cors_origins() -> list[str]:
     return values or ["*"]
 
 
+def _resolve_eager_load() -> bool:
+    """Eager load flag with legacy fallback: SAM3_API_EAGER_LOAD -> SAM3_API_WARMUP_ON_START -> True."""
+    raw = os.getenv("SAM3_API_EAGER_LOAD")
+    if raw is not None and raw.strip():
+        return _env_bool("SAM3_API_EAGER_LOAD", True)
+    legacy = os.getenv("SAM3_API_WARMUP_ON_START")
+    if legacy is not None and legacy.strip():
+        return _env_bool("SAM3_API_WARMUP_ON_START", True)
+    return True
+
+
 def get_settings() -> Settings:
     project_root = _resolve_project_root()
     max_batch_files = int(os.getenv("SAM3_API_MAX_BATCH_FILES", "32"))
@@ -90,7 +101,7 @@ def get_settings() -> Settings:
         load_from_hf=_env_bool("SAM3_API_LOAD_FROM_HF", False),
         compile_model=_env_bool("SAM3_API_COMPILE", False),
         default_threshold=float(os.getenv("SAM3_API_DEFAULT_THRESHOLD", "0.5")),
-        warmup_on_start=_env_bool("SAM3_API_WARMUP_ON_START", False),
+        eager_load=_resolve_eager_load(),
         cors_origins=_parse_cors_origins(),
         max_batch_files=max(1, max_batch_files),
         max_image_bytes=max(1, max_image_mb) * 1024 * 1024,

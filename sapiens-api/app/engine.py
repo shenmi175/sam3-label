@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import logging
 import os
 import sys
 import threading
@@ -12,6 +14,10 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from app import lifecycle
+
+logger = logging.getLogger(__name__)
 
 
 DOME_CLASSES_29 = [
@@ -95,6 +101,17 @@ class SapiensSegmentationEngine:
         self._model: Any | None = None
         self._config: SapiensSegConfig | None = None
         self._load_error = ""
+        self._state = "not_loaded"  # not_loaded | loading | loaded | load_failed
+        # Set by startup when weights are absent on disk (degraded, non-fatal).
+        self.weights_missing = False
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def load_error(self) -> str:
+        return self._load_error
 
     @staticmethod
     def _repo_dir() -> Path:
@@ -124,11 +141,30 @@ class SapiensSegmentationEngine:
             device=self.default_device(),
         )
 
+    def weights_ready(self, model_name: str | None = None) -> bool:
+        """True when every file required by load() is present on disk."""
+        cfg = self._build_config(model_name)
+        return (
+            cfg.repo_dir.exists()
+            and cfg.config_path.exists()
+            and cfg.checkpoint_path.exists()
+        )
+
+    def expected_weight_paths(self, model_name: str | None = None) -> list[str]:
+        """Paths that must exist for load() to succeed (for operator-facing hints)."""
+        cfg = self._build_config(model_name)
+        return [str(cfg.repo_dir), str(cfg.config_path), str(cfg.checkpoint_path)]
+
+    def repo_exists(self, model_name: str | None = None) -> bool:
+        return self._build_config(model_name).repo_dir.exists()
+
     def status(self) -> dict[str, Any]:
         cfg = self._config or self._build_config()
         return {
             "service": "sapiens-api",
             "status": "ok" if cfg.repo_dir.exists() else "missing_repo",
+            "state": self._state,
+            "weights_missing": self.weights_missing,
             "model_loaded": self._model is not None,
             "model_name": cfg.model_name,
             "device": cfg.device,
@@ -167,31 +203,92 @@ class SapiensSegmentationEngine:
         with self._lock:
             if self._model is not None and self._config == cfg:
                 return self._model
-            if not cfg.repo_dir.exists():
-                raise RuntimeError(f"Sapiens2 repo not found: {cfg.repo_dir}")
-            if not cfg.config_path.exists():
-                raise RuntimeError(f"Sapiens2 config not found: {cfg.config_path}")
-            if not cfg.checkpoint_path.exists():
-                raise RuntimeError(
-                    "Sapiens2 segmentation checkpoint not found: "
-                    f"{cfg.checkpoint_path}. Put official checkpoints under "
-                    f"{cfg.checkpoint_root}/seg or set SAPIENS_CHECKPOINT_ROOT."
-                )
-
-            self._prepare_imports(cfg.repo_dir)
+            self._state = "loading"
+            # Model switch: release the old model before allocating the new one
+            # so both never occupy VRAM at the same time.
+            if self._model is not None:
+                self._release_locked()
             try:
-                from sapiens.dense.models import init_model
+                if not cfg.repo_dir.exists():
+                    raise RuntimeError(f"Sapiens2 repo not found: {cfg.repo_dir}")
+                if not cfg.config_path.exists():
+                    raise RuntimeError(f"Sapiens2 config not found: {cfg.config_path}")
+                if not cfg.checkpoint_path.exists():
+                    raise RuntimeError(
+                        "Sapiens2 segmentation checkpoint not found: "
+                        f"{cfg.checkpoint_path}. Put official checkpoints under "
+                        f"{cfg.checkpoint_root}/seg or set SAPIENS_CHECKPOINT_ROOT."
+                    )
 
-                model = init_model(str(cfg.config_path), str(cfg.checkpoint_path), device=cfg.device)
-                model.eval()
+                self._prepare_imports(cfg.repo_dir)
+                try:
+                    from sapiens.dense.models import init_model
+
+                    model = init_model(str(cfg.config_path), str(cfg.checkpoint_path), device=cfg.device)
+                    model.eval()
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(f"failed to load Sapiens2 segmentation model: {exc}") from exc
             except Exception as exc:  # noqa: BLE001
-                self._load_error = str(exc)
-                raise RuntimeError(f"failed to load Sapiens2 segmentation model: {exc}") from exc
+                self._record_load_failure(exc)
+                raise
 
             self._model = model
             self._config = cfg
+            self._state = "loaded"
             self._load_error = ""
+            self.weights_missing = False
             return model
+
+    def _record_load_failure(self, exc: BaseException) -> None:
+        category, guidance = lifecycle.classify_load_error(exc)
+        self._state = "load_failed"
+        self._load_error = f"[{category}] {exc}"
+        logger.error(
+            "sapiens seg engine load/verify failed (%s): %s — %s", category, exc, guidance
+        )
+        if lifecycle.is_oom_error(exc):
+            lifecycle.cleanup_after_oom()
+
+    def _release_locked(self) -> None:
+        """Drop model references and free VRAM. Caller must hold ``_lock``."""
+        self._model = None
+        self._config = None
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            logger.debug("torch.cuda.empty_cache unavailable; skipped", exc_info=True)
+
+    def unload(self) -> None:
+        """Idempotently release the model and reset lifecycle state."""
+        with self._lock:
+            self._release_locked()
+            self._state = "not_loaded"
+            self._load_error = ""
+
+    def verify_inference(self) -> None:
+        """Run a synthetic 64x64 image through the full infer_image pipeline.
+
+        Raises on any failure; success means the loaded model can actually infer.
+        """
+        image = np.zeros((64, 64, 3), dtype=np.uint8)
+        image[:] = (40, 90, 160)  # BGR
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:
+            raise RuntimeError("verify_inference: failed to encode synthetic test image")
+        result = self.infer_image(encoded.tobytes())
+        if not isinstance(result, dict):
+            raise RuntimeError(f"verify_inference: unexpected result type: {type(result)!r}")
+
+    def warmup(self) -> None:
+        """load() + verify_inference(); a verification failure counts as load failure."""
+        self.load()
+        try:
+            self.verify_inference()
+        except Exception as exc:  # noqa: BLE001
+            self._record_load_failure(exc)
+            raise
 
     @staticmethod
     def _decode_image(image_bytes: bytes) -> np.ndarray:

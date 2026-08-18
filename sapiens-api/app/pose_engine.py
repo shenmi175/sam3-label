@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import logging
 import os
 import sys
 import threading
@@ -12,6 +14,10 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+
+from app import lifecycle
+
+logger = logging.getLogger(__name__)
 
 
 POSE_MODEL_NAME = "sapiens2_5b"
@@ -65,6 +71,17 @@ class SapiensPoseEngine:
         self._detector_model: Any | None = None
         self._config: SapiensPoseConfig | None = None
         self._load_error = ""
+        self._state = "not_loaded"  # not_loaded | loading | loaded | load_failed
+        # Set by startup when weights are absent on disk (degraded, non-fatal).
+        self.weights_missing = False
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def load_error(self) -> str:
+        return self._load_error
 
     @staticmethod
     def _repo_dir() -> Path:
@@ -99,6 +116,31 @@ class SapiensPoseEngine:
         has_weights = (detector_dir / "model.safetensors").exists() or (detector_dir / "pytorch_model.bin").exists()
         return has_config and has_processor and has_weights
 
+    def weights_ready(self) -> bool:
+        """True when every file required by load() (pose model + DETR detector) is present."""
+        cfg = self._build_config()
+        return (
+            cfg.repo_dir.exists()
+            and cfg.config_path.exists()
+            and cfg.metainfo_path.exists()
+            and cfg.checkpoint_path.exists()
+            and self._detector_exists(cfg.detector_dir)
+        )
+
+    def expected_weight_paths(self) -> list[str]:
+        """Paths that must exist for load() to succeed (for operator-facing hints)."""
+        cfg = self._build_config()
+        return [
+            str(cfg.repo_dir),
+            str(cfg.config_path),
+            str(cfg.metainfo_path),
+            str(cfg.checkpoint_path),
+            str(cfg.detector_dir),
+        ]
+
+    def repo_exists(self) -> bool:
+        return self._build_config().repo_dir.exists()
+
     def checkpoint_status(self) -> dict[str, Any]:
         cfg = self._config or self._build_config()
         checkpoint = cfg.checkpoint_path
@@ -124,6 +166,8 @@ class SapiensPoseEngine:
             "service": "sapiens-api",
             "task": "pose",
             "status": "ok" if cfg.repo_dir.exists() else "missing_repo",
+            "state": self._state,
+            "weights_missing": self.weights_missing,
             "model_loaded": self._model is not None,
             "detector_loaded": self._detector_model is not None,
             "model_name": cfg.model_name,
@@ -155,52 +199,116 @@ class SapiensPoseEngine:
                 and self._config == cfg
             ):
                 return self._model, self._detector_processor, self._detector_model
-            if not cfg.repo_dir.exists():
-                raise RuntimeError(f"Sapiens2 repo not found: {cfg.repo_dir}")
-            if not cfg.config_path.exists():
-                raise RuntimeError(f"Sapiens2 pose config not found: {cfg.config_path}")
-            if not cfg.metainfo_path.exists():
-                raise RuntimeError(f"Sapiens2 pose metainfo not found: {cfg.metainfo_path}")
-            if not cfg.checkpoint_path.exists():
-                raise RuntimeError(
-                    "Sapiens2 pose checkpoint not found: "
-                    f"{cfg.checkpoint_path}. Use /v1/pose/checkpoints/download first."
-                )
-            if not self._detector_exists(cfg.detector_dir):
-                raise RuntimeError(
-                    "Sapiens2 pose detector not found: "
-                    f"{cfg.detector_dir}. Use /v1/pose/checkpoints/download first."
-                )
-
-            self._prepare_imports(cfg.repo_dir)
+            self._state = "loading"
+            # Release any stale model/detector before rebuilding so both never
+            # occupy VRAM at the same time.
+            if self._model is not None or self._detector_model is not None:
+                self._release_locked()
             try:
-                from sapiens.pose.datasets import UDPHeatmap, parse_pose_metainfo
-                from sapiens.pose.models import init_model
-                from transformers import DetrForObjectDetection, DetrImageProcessor
+                if not cfg.repo_dir.exists():
+                    raise RuntimeError(f"Sapiens2 repo not found: {cfg.repo_dir}")
+                if not cfg.config_path.exists():
+                    raise RuntimeError(f"Sapiens2 pose config not found: {cfg.config_path}")
+                if not cfg.metainfo_path.exists():
+                    raise RuntimeError(f"Sapiens2 pose metainfo not found: {cfg.metainfo_path}")
+                if not cfg.checkpoint_path.exists():
+                    raise RuntimeError(
+                        "Sapiens2 pose checkpoint not found: "
+                        f"{cfg.checkpoint_path}. Use /v1/pose/checkpoints/download first."
+                    )
+                if not self._detector_exists(cfg.detector_dir):
+                    raise RuntimeError(
+                        "Sapiens2 pose detector not found: "
+                        f"{cfg.detector_dir}. Use /v1/pose/checkpoints/download first."
+                    )
 
-                model = init_model(str(cfg.config_path), str(cfg.checkpoint_path), device=cfg.device)
-                model.eval()
-                if int(getattr(model.cfg, "num_keypoints", 0) or 0) == 308:
-                    model.pose_metainfo = parse_pose_metainfo(dict(from_file=str(cfg.metainfo_path)))
-                codec_cfg = dict(model.cfg.codec)
-                codec_type = codec_cfg.pop("type", "")
-                if codec_type != "UDPHeatmap":
-                    raise RuntimeError(f"unsupported Sapiens2 pose codec: {codec_type}")
-                model.codec = UDPHeatmap(**codec_cfg)
+                self._prepare_imports(cfg.repo_dir)
+                try:
+                    from sapiens.pose.datasets import UDPHeatmap, parse_pose_metainfo
+                    from sapiens.pose.models import init_model
+                    from transformers import DetrForObjectDetection, DetrImageProcessor
 
-                processor = DetrImageProcessor.from_pretrained(str(cfg.detector_dir), local_files_only=True)
-                detector = DetrForObjectDetection.from_pretrained(str(cfg.detector_dir), local_files_only=True)
-                detector.eval().to(cfg.device)
+                    model = init_model(str(cfg.config_path), str(cfg.checkpoint_path), device=cfg.device)
+                    model.eval()
+                    if int(getattr(model.cfg, "num_keypoints", 0) or 0) == 308:
+                        model.pose_metainfo = parse_pose_metainfo(dict(from_file=str(cfg.metainfo_path)))
+                    codec_cfg = dict(model.cfg.codec)
+                    codec_type = codec_cfg.pop("type", "")
+                    if codec_type != "UDPHeatmap":
+                        raise RuntimeError(f"unsupported Sapiens2 pose codec: {codec_type}")
+                    model.codec = UDPHeatmap(**codec_cfg)
+
+                    processor = DetrImageProcessor.from_pretrained(str(cfg.detector_dir), local_files_only=True)
+                    detector = DetrForObjectDetection.from_pretrained(str(cfg.detector_dir), local_files_only=True)
+                    detector.eval().to(cfg.device)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(f"failed to load Sapiens2 pose runtime: {exc}") from exc
             except Exception as exc:  # noqa: BLE001
-                self._load_error = str(exc)
-                raise RuntimeError(f"failed to load Sapiens2 pose runtime: {exc}") from exc
+                self._record_load_failure(exc)
+                raise
 
             self._model = model
             self._detector_processor = processor
             self._detector_model = detector
             self._config = cfg
+            self._state = "loaded"
             self._load_error = ""
+            self.weights_missing = False
             return model, processor, detector
+
+    def _record_load_failure(self, exc: BaseException) -> None:
+        category, guidance = lifecycle.classify_load_error(exc)
+        self._state = "load_failed"
+        self._load_error = f"[{category}] {exc}"
+        logger.error(
+            "sapiens pose engine load/verify failed (%s): %s — %s", category, exc, guidance
+        )
+        if lifecycle.is_oom_error(exc):
+            lifecycle.cleanup_after_oom()
+
+    def _release_locked(self) -> None:
+        """Drop pose model + DETR detector references and free VRAM. Caller must hold ``_lock``."""
+        self._model = None
+        self._detector_processor = None
+        self._detector_model = None
+        self._config = None
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            logger.debug("torch.cuda.empty_cache unavailable; skipped", exc_info=True)
+
+    def unload(self) -> None:
+        """Idempotently release the pose model and DETR detector and reset lifecycle state."""
+        with self._lock:
+            self._release_locked()
+            self._state = "not_loaded"
+            self._load_error = ""
+
+    def verify_inference(self) -> None:
+        """Run a synthetic 64x64 image through the full infer_image pipeline.
+
+        A plain synthetic image yields no DETR person detections, so this also
+        exercises the no-detection full-image fallback path (DETR + pose forward).
+        """
+        image = np.zeros((64, 64, 3), dtype=np.uint8)
+        image[:] = (40, 90, 160)  # BGR
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:
+            raise RuntimeError("verify_inference: failed to encode synthetic test image")
+        result = self.infer_image(encoded.tobytes())
+        if not isinstance(result, dict):
+            raise RuntimeError(f"verify_inference: unexpected result type: {type(result)!r}")
+
+    def warmup(self) -> None:
+        """load() + verify_inference(); a verification failure counts as load failure."""
+        self.load()
+        try:
+            self.verify_inference()
+        except Exception as exc:  # noqa: BLE001
+            self._record_load_failure(exc)
+            raise
 
     @staticmethod
     def _decode_image(image_bytes: bytes) -> np.ndarray:

@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import lifecycle
 from app.config import get_settings
 from app.engine import Sam3InferenceEngine
 from app.video_semantic_engine import Sam3VideoSemanticSessionEngine
@@ -132,9 +133,13 @@ def _parse_contour_mode(raw: Optional[str]) -> str:
     return mode
 
 
-def _is_oom_error(exc: BaseException) -> bool:
-    text = str(exc or "").lower()
-    return ("out of memory" in text) or ("cuda oom" in text) or ("cuda out of memory" in text)
+def _load_failure_http(engine_obj: Any, exc: BaseException, label: str) -> Optional[HTTPException]:
+    """Map an engine load-class failure to 503 with the classified detail, or None."""
+    if getattr(engine_obj, "state", None) != "load_failed":
+        return None
+    detail = getattr(engine_obj, "load_error", None) or _format_exc_message(exc)
+    logger.error("%s failed because the model is not loaded: %s", label, detail)
+    return HTTPException(status_code=503, detail=f"{label} unavailable: {detail}")
 
 
 def _is_not_found_error(exc: BaseException) -> bool:
@@ -351,22 +356,42 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def startup_event() -> None:
-        if settings.warmup_on_start:
-            engine.warmup()
-            try:
-                video_engine.warmup()
-            except Exception:
-                pass
+        if not settings.eager_load:
+            logger.info("SAM3_API_EAGER_LOAD disabled; models will be loaded lazily on first request")
+            return
+
+        try:
+            lifecycle.eager_load(engine, name="sam3 image")
+        except lifecycle.EagerLoadFailed as exc:
+            logger.error("FATAL: sam3 image model failed to load at startup: %s — exiting", exc)
+            os._exit(1)
+
+        try:
+            lifecycle.eager_load(video_engine, name="sam3 semantic video")
+        except lifecycle.EagerLoadFailed as exc:
+            # Video capability is optional: report clearly (visible via /health) but keep serving.
+            logger.error("sam3 semantic video model failed to load at startup: %s — continuing without it", exc)
 
     @app.get("/health", response_model=HealthOut)
     def health() -> dict:
         from app.sam3_compat import SAM3_PIN_SHA
 
+        engine_state = engine.state
+        if engine_state == "loaded":
+            status = "ok"
+        elif engine_state == "load_failed":
+            status = "load_failed"
+        else:
+            status = "not_loaded"
+
         return {
-            "status": "ok",
+            "status": status,
             "model_loaded": engine.loaded,
             "semantic_model_loaded": engine.loaded,
             "video_model_loaded": video_engine.loaded,
+            "mode": "eager" if settings.eager_load else "lazy",
+            "last_load_error": engine.load_error,
+            "video_last_load_error": video_engine.load_error,
             "device": settings.device,
             "checkpoint_path": str(settings.checkpoint_path),
             "gpu": _gpu_status(),
@@ -374,13 +399,35 @@ def create_app() -> FastAPI:
             "expected_ckpt_generation": settings.expected_ckpt_generation,
         }
 
+    def _warmup_failure_response(exc: BaseException, label: str) -> HTTPException:
+        if lifecycle.is_oom_error(exc):
+            lifecycle.cleanup_after_oom()
+            logger.error("%s failed with CUDA OOM: %s", label, exc)
+            return HTTPException(status_code=507, detail=f"{label} failed: CUDA out of memory")
+        category, guidance = lifecycle.classify_load_error(exc)
+        logger.error("%s failed (%s): %s — %s", label, category, exc, guidance)
+        return HTTPException(status_code=503, detail=f"{label} failed ({category}): {exc}. {guidance}")
+
+    def _video_failure_response(exc: BaseException, label: str) -> HTTPException:
+        """Map video engine failures: session-not-found→404, OOM→507, load failure→503, else 500."""
+        if _is_not_found_error(exc):
+            return HTTPException(status_code=404, detail=str(exc))
+        if lifecycle.is_oom_error(exc):
+            lifecycle.cleanup_after_oom()
+            logger.error("%s failed with CUDA OOM: %s", label, exc)
+            return HTTPException(status_code=507, detail=_format_exc_message(exc))
+        load_failure = _load_failure_http(video_engine, exc, label)
+        if load_failure is not None:
+            return load_failure
+        return HTTPException(status_code=500, detail=f"{label} failed: {_format_exc_message(exc)}")
+
     @app.post("/v1/warmup")
     def warmup() -> dict:
         try:
             engine.warmup()
             return {"ok": True, "model_loaded": engine.loaded}
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"warmup failed: {exc}") from exc
+            raise _warmup_failure_response(exc, "image warmup") from exc
 
     @app.post("/v1/semantic/warmup")
     def semantic_warmup() -> dict:
@@ -388,7 +435,7 @@ def create_app() -> FastAPI:
             engine.warmup()
             return {"ok": True, "semantic_model_loaded": engine.loaded}
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"semantic warmup failed: {exc}") from exc
+            raise _warmup_failure_response(exc, "semantic warmup") from exc
 
     @app.post("/v1/video/warmup")
     def video_warmup() -> dict:
@@ -396,7 +443,17 @@ def create_app() -> FastAPI:
             video_engine.warmup()
             return {"ok": True, "video_model_loaded": video_engine.loaded}
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video warmup failed: {exc}") from exc
+            raise _warmup_failure_response(exc, "video warmup") from exc
+
+    @app.post("/v1/unload")
+    def unload() -> dict:
+        engine.unload()
+        video_engine.unload()
+        return {
+            "ok": True,
+            "model_loaded": engine.loaded,
+            "video_model_loaded": video_engine.loaded,
+        }
 
     @app.post("/v1/infer", response_model=InferResultOut)
     async def infer(
@@ -450,6 +507,13 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                logger.error("single infer failed with CUDA OOM: %s", exc)
+                raise HTTPException(status_code=507, detail="inference failed: CUDA out of memory") from exc
+            load_failure = _load_failure_http(engine, exc, "image inference")
+            if load_failure is not None:
+                raise load_failure from exc
             logger.exception("single infer failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"inference failed: {_format_exc_message(exc)}") from exc
 
@@ -494,6 +558,15 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                logger.error("visual exemplar infer failed with CUDA OOM: %s", exc)
+                raise HTTPException(
+                    status_code=507, detail="visual exemplar inference failed: CUDA out of memory"
+                ) from exc
+            load_failure = _load_failure_http(engine, exc, "visual exemplar inference")
+            if load_failure is not None:
+                raise load_failure from exc
             logger.exception("visual exemplar infer failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"visual exemplar inference failed: {exc}") from exc
 
@@ -568,6 +641,15 @@ def create_app() -> FastAPI:
                     "items": items,
                 }
             except Exception as exc:  # noqa: BLE001
+                if lifecycle.is_oom_error(exc):
+                    lifecycle.cleanup_after_oom()
+                    logger.error("batched text inference failed with CUDA OOM: %s", exc)
+                    raise HTTPException(
+                        status_code=507, detail="inference batch failed: CUDA out of memory"
+                    ) from exc
+                load_failure = _load_failure_http(engine, exc, "image batch inference")
+                if load_failure is not None:
+                    raise load_failure from exc
                 logger.exception("batched text inference failed, fallback to per-image mode: %s", exc)
                 if not loaded:
                     raise HTTPException(status_code=500, detail=f"inference batch failed: {exc}") from exc
@@ -621,6 +703,15 @@ def create_app() -> FastAPI:
                 items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
                 succeeded += 1
             except Exception as exc:  # noqa: BLE001
+                if lifecycle.is_oom_error(exc):
+                    lifecycle.cleanup_after_oom()
+                    logger.error("batch inference aborted by CUDA OOM: %s", exc)
+                    raise HTTPException(
+                        status_code=507, detail="inference batch failed: CUDA out of memory"
+                    ) from exc
+                load_failure = _load_failure_http(engine, exc, "image batch inference")
+                if load_failure is not None:
+                    raise load_failure from exc
                 items.append(BatchItemOut(filename=filename, ok=False, error=str(exc)))
                 failed += 1
 
@@ -644,10 +735,9 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            code = 507 if _is_oom_error(exc) else 500
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video start_session") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video start_session failed: {exc}") from exc
+            raise _video_failure_response(exc, "video start_session") from exc
 
     @app.post("/v1/video/session/start_upload")
     async def video_session_start_upload(
@@ -695,24 +785,22 @@ def create_app() -> FastAPI:
                 target_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            code = 507 if _is_oom_error(exc) else 500
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video start_upload") from exc
         except Exception as exc:  # noqa: BLE001
             try:
                 target_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            raise HTTPException(status_code=500, detail=f"video start_upload failed: {exc}") from exc
+            raise _video_failure_response(exc, "video start_upload") from exc
 
     @app.get("/v1/video/session/{session_id}")
     def video_session_info(session_id: str) -> dict:
         try:
             return video_engine.get_session_info(session_id)
         except RuntimeError as exc:
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video session info") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video session info failed: {exc}") from exc
+            raise _video_failure_response(exc, "video session info") from exc
 
     @app.post("/v1/video/session/add_prompt")
     def video_add_prompt(payload: VideoAddPromptIn) -> dict:
@@ -732,11 +820,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             logger.exception("video add_prompt runtime failed: %s", exc)
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video add_prompt") from exc
         except Exception as exc:  # noqa: BLE001
             logger.exception("video add_prompt failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"video add_prompt failed: {exc}") from exc
+            raise _video_failure_response(exc, "video add_prompt") from exc
 
     @app.post("/v1/video/session/propagate")
     def video_propagate(payload: VideoPropagateIn) -> dict:
@@ -753,10 +840,9 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video propagate") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video propagate failed: {exc}") from exc
+            raise _video_failure_response(exc, "video propagate") from exc
 
     @app.post("/v1/video/session/remove_object")
     def video_remove_object(payload: VideoRemoveObjectIn) -> dict:
@@ -769,29 +855,26 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video remove_object") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video remove_object failed: {exc}") from exc
+            raise _video_failure_response(exc, "video remove_object") from exc
 
     @app.post("/v1/video/session/reset")
     def video_reset_session(payload: VideoSessionControlIn) -> dict:
         try:
             return video_engine.reset_session(payload.session_id)
         except RuntimeError as exc:
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video reset_session") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video reset_session failed: {exc}") from exc
+            raise _video_failure_response(exc, "video reset_session") from exc
 
     @app.post("/v1/video/session/close")
     def video_close_session(payload: VideoSessionControlIn) -> dict:
         try:
             return video_engine.close_session(payload.session_id)
         except RuntimeError as exc:
-            code = 404 if _is_not_found_error(exc) else (507 if _is_oom_error(exc) else 500)
-            raise HTTPException(status_code=code, detail=str(exc)) from exc
+            raise _video_failure_response(exc, "video close_session") from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"video close_session failed: {exc}") from exc
+            raise _video_failure_response(exc, "video close_session") from exc
 
     return app

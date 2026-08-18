@@ -31,7 +31,7 @@ code changes.
 | `LOCATE_MAX_NEW_TOKENS`       | `8192`                          |                                      |
 | `LOCATE_DEFAULT_SCORE`        | `0.5`                           | fallback when client omits           |
 | `LOCATE_API_TOKEN`            | `""`                            | set to enable Bearer auth            |
-| `LOCATE_WARMUP_ON_START`      | `false`                         | set `true` to load on startup        |
+| `LOCATE_EAGER_LOAD`           | `true`                          | load + verify on startup (fail-fast); set `0` for lazy load. Legacy `LOCATE_WARMUP_ON_START` still honored |
 
 ## Run locally
 

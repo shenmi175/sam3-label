@@ -1,4 +1,4 @@
-﻿from typing import Any, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -50,6 +50,9 @@ class HealthOut(BaseModel):
     model_loaded: bool
     semantic_model_loaded: bool = False
     video_model_loaded: bool = False
+    mode: str = "lazy"
+    last_load_error: Optional[str] = None
+    video_last_load_error: Optional[str] = None
     device: str
     checkpoint_path: str
     gpu: Optional[dict[str, Any]] = None

@@ -26,6 +26,6 @@ COPY locate-anything-api/ ./
 EXPOSE 8004
 
 HEALTHCHECK --interval=30s --timeout=8s --start-period=300s --retries=3 \
-  CMD python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:8004/health',timeout=5).status==200 else 1)"
+  CMD python -c "import urllib.request,json,sys;d=json.load(urllib.request.urlopen('http://localhost:8004/health',timeout=5));sys.exit(0 if d.get('status') in ('ok','not_loaded','loading') else 1)"
 
 CMD ["uvicorn", "run:app", "--host", "0.0.0.0", "--port", "8004"]
