@@ -57,12 +57,12 @@ sam3-api/
 
 字段：
 - `file`: 图片文件（必填）
-- `mode`: 推理模式，`text` / `points` / `boxes`（默认 `text`）
-- `prompt`: 文本提示词（`text` 模式必填；`points/boxes` 模式可选，留空则按视觉提示推理）
+- `mode`: 推理模式，`text` / `points` / `boxes`（默认 `text`；`boxes` 保留给 LA 检测框转蒙板批处理）
+- `prompt`: 文本提示词（`text` 模式必填；`points` 模式可选，留空则按视觉提示推理）
   - `text` 模式支持一次输入多个类别，使用逗号分隔（例如：`person, cat, door`）
 - `points`: 点提示（仅 `points` 模式），JSON 数组，支持正负样本标签  
   - 例：`[[120, 220, 1], [260, 180, 0]]` 或 `[{"x":120,"y":220,"label":1}]`
-- `boxes`: 框提示（仅 `boxes` 模式），JSON 数组，支持正负样本标签  
+- `boxes`: LA 框转蒙板内部使用（仅 `boxes` 模式），JSON 数组，支持正负样本标签
   - 例：`[[100, 100, 220, 280, 1], [240, 90, 320, 180, 0]]`
 - `point_box_size`: 点模式时将点转换为小框的尺寸（像素；若传 `0~1` 视为图像短边比例），默认 `16`
 - `threshold`: 置信度阈值，默认读取环境变量
@@ -103,17 +103,6 @@ curl -X POST "http://127.0.0.1:8001/v1/infer" \
   -F "include_mask_png=true"
 ```
 
-框提示（正负样本）示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/infer" \
-  -F "file=@/data/example.jpg" \
-  -F "mode=boxes" \
-  -F "boxes=[[100,100,220,280,1],[240,90,320,180,0]]" \
-  -F "threshold=0.5" \
-  -F "include_mask_png=true"
-```
-
 ### 4) 批量推理
 
 - `POST /v1/infer_batch`
@@ -121,6 +110,22 @@ curl -X POST "http://127.0.0.1:8001/v1/infer" \
 
 字段：
 - `files`: 多张图片
+- `save_ai_features`: 仅文本批推有效，默认 `false`
+- `feature_root`: 开启特征保存时必填，必须是允许根目录下名为 `feature` 的目录
+
+开启后，每个 item 会返回 `feature_status`、`feature_key`、
+`feature_relative_path`、`feature_bytes` 和可选的 `feature_error`。特征来自本次
+批量推理的同一次 backbone forward，写入失败不会把该图片的推理结果改为失败。
+
+### 5) 图片实例交互
+
+- `POST /v1/interactive/session/open`：载入或生成特征并打开会话；`keep_session=false` 用于预取
+- `POST /v1/interactive/predict`：提交前景/背景点并调用官方交互 decoder
+- `POST /v1/interactive/reset`：清空点和候选蒙板
+- `POST /v1/interactive/close`：关闭会话
+- `POST /v1/interactive/project/clear`：清理项目会话和 GPU LRU 条目
+
+低分辨率 logits 始终保存在服务端，会被后续点击作为 `mask_input`，不会传给浏览器。
 
 ## MCP 适配层
 
@@ -197,9 +202,7 @@ mcp_servers:
 - `sam3_warmup`
 - `sam3_image_infer_text`
 - `sam3_image_infer_points`
-- `sam3_image_infer_boxes`
 - `sam3_image_infer_batch_text`
-- `sam3_semantic_infer`
 - `sam3_video_start_session`
 - `sam3_video_get_session`
 - `sam3_video_add_prompt`
@@ -221,30 +224,7 @@ curl -X POST "http://127.0.0.1:8001/v1/infer_batch" \
   -F "threshold=0.45"
 ```
 
-### 5) 官方同图视觉框推理（兼容入口）
-
-- `POST /v1/semantic/infer`
-- `multipart/form-data`
-
-字段：
-- `file`: 图片文件（必填）
-- `boxes`: JSON 数组，至少包含 1 个正样本框，可混合负样本框
-- `threshold`: 置信度阈值
-- `include_mask_png`: 是否返回 mask PNG base64
-- `max_detections`: 最大返回目标数
-
-示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8001/v1/semantic/infer" \
-  -F "file=@/data/example.jpg" \
-  -F "boxes=[[100,100,220,280,1],[240,90,320,180,0]]" \
-  -F "threshold=0.5"
-```
-
-跨图片范例传播已移除；框提示只作用于上传的当前图片。
-
-### 6) 视频会话推理
+### 5) 视频会话推理
 
 新增会话式接口，适合本地标注工具按“创建会话 -> 添加提示 -> 传播 -> 关闭会话”流程调用。
 

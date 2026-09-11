@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ImportExistingProjectIn, OpenProjectIn
+from app.audit import AuditLogger
+from app.schemas import ImportExistingProjectIn, OpenProjectIn, UpdateProjectIn
 from app.storage import Storage
 
 
@@ -18,6 +19,9 @@ def create_projects_router(
     auto_import_project_manifests: Callable[..., dict[str, Any]],
     resolve_project_discovery_roots: Callable[[str], list[Path]],
     project_discovery_root_info: Callable[[list[Path]], list[dict[str, Any]]],
+    close_ai_project: Callable[[str], None] | None = None,
+    active_project_job: Callable[[str], dict[str, Any] | None] | None = None,
+    audit: AuditLogger | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -56,7 +60,7 @@ def create_projects_router(
         if project_type not in {'', 'image', 'pose'}:
             raise HTTPException(status_code=400, detail='unsupported project type; supported project types: image, pose')
         try:
-            return get_storage().import_existing_project(
+            result = get_storage().import_existing_project(
                 output_dir=payload.output_dir,
                 manifest_path=payload.manifest_path,
                 image_dir=payload.image_dir,
@@ -64,6 +68,10 @@ def create_projects_router(
                 classes_text=payload.classes_text,
                 project_type=project_type or 'image',
             )
+            project = result.get('project', result) if isinstance(result, dict) else {}
+            if audit:
+                audit.emit(category='project', action='import', project_id=str(project.get('id') or ''), message='Existing project imported', details={'project_type': project_type or 'image'})
+            return result
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -109,6 +117,8 @@ def create_projects_router(
                 len(project.get('images', [])),
                 len(project.get('classes', [])),
             )
+            if audit:
+                audit.emit(category='project', action='create_open', project_id=str(project.get('id') or ''), message='Project created and opened', details={'project_type': project_type, 'image_count': len(project.get('images', [])), 'class_count': len(project.get('classes', []))})
             return {'project': project}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -118,11 +128,28 @@ def create_projects_router(
                 detail=f'path not accessible from the service ({exc}); mount it first via ./deploy.sh data-root add',
             ) from exc
 
+    @router.patch('/api/projects/{project_id}')
+    def update_project(project_id: str, payload: UpdateProjectIn) -> dict[str, Any]:
+        try:
+            project = get_storage().update_project_name(project_id, payload.name)
+            return {'project': project}
+        except ValueError as exc:
+            message = str(exc)
+            raise HTTPException(status_code=404 if message == 'project not found' else 400, detail=message) from exc
+
     @router.delete('/api/projects/{project_id}')
     def delete_project(project_id: str) -> dict[str, Any]:
         try:
+            if active_project_job is not None:
+                active = active_project_job(project_id)
+                if active:
+                    raise HTTPException(status_code=409, detail='请先停止当前项目的活动任务')
+            if close_ai_project is not None:
+                close_ai_project(project_id)
             get_storage().delete_project(project_id)
             return {'ok': True}
+        except HTTPException:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

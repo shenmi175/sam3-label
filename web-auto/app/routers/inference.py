@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.audit import AuditLogger
 from app.schemas import (
     InferBatchIn,
     InferIn,
@@ -29,6 +30,7 @@ def create_inference_router(
     resume_infer_job: Callable[[InferJobResumeIn], dict[str, Any]],
     acquire_interactive_gpu: Callable[[], str],
     release_interactive_gpu: Callable[[str], None],
+    audit: AuditLogger | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -55,13 +57,11 @@ def create_inference_router(
                     classes=payload.classes,
                     active_class=payload.active_class,
                     points=payload.points,
-                    boxes=payload.boxes,
                     threshold=payload.threshold,
                     api_base_url=payload.api_base_url,
                     model_backend=payload.model_backend,
                     locate_api_base_url=payload.locate_api_base_url,
                     score_default=payload.score_default,
-                    contour_mode=payload.contour_mode,
                 )
             except HTTPException:
                 raise
@@ -69,6 +69,8 @@ def create_inference_router(
                 raise _to_upstream_error(exc, 'interactive inference failed') from exc
         finally:
             release_interactive_gpu(lease_id)
+        if audit:
+            audit.emit(category='inference', action='run_single', project_id=payload.project_id, message='Single-image inference completed', details={'image_id': payload.image_id, 'mode': payload.mode, 'classes': payload.classes, 'detection_count': len(out['detections'])})
         return {
             'project_id': payload.project_id,
             'image_id': payload.image_id,
@@ -108,6 +110,8 @@ def create_inference_router(
             raise
         except Exception as exc:  # noqa: BLE001
             raise _to_upstream_error(exc, 'failed to start batch inference job') from exc
+        if audit:
+            audit.emit(category='inference', action='start_batch', outcome='accepted', project_id=payload.project_id, job_id=str(job.get('job_id') or ''), message='Batch inference started', details={'classes': payload.classes, 'scope': payload.scope_mode, 'append_mode': payload.merge_mode, 'batch_size': payload.batch_size, 'save_features': payload.save_ai_features, 'target_count': len(payload.image_ids)})
         return {'job': job}
 
     @router.get('/api/infer/jobs/active')
@@ -115,7 +119,10 @@ def create_inference_router(
         get_project_or_404(project_id, enrich=False, include_images=False)
         job = get_active_infer_job_for_project(project_id)
         if not job:
-            job = get_latest_infer_job_for_project(project_id, statuses={'paused', 'pausing'})
+            # Return the latest durable error as well. The frontend ignores
+            # ordinary terminal errors, but can restore an unacknowledged
+            # fatal OOM dialog after a page reload.
+            job = get_latest_infer_job_for_project(project_id, statuses={'paused', 'pausing', 'error'})
         return {'job': job}
 
     @router.get('/api/infer/jobs/{job_id}')
@@ -132,6 +139,8 @@ def create_inference_router(
         state = get_active_infer_job_for_project(payload.project_id)
         if not state:
             paused = get_latest_infer_job_for_project(payload.project_id, statuses={'paused', 'pausing'})
+            if audit:
+                audit.emit(category='task', action='pause_request', outcome='rejected', project_id=payload.project_id, message='Inference pause request had no active task')
             return {'job': paused or get_latest_infer_job_for_project(payload.project_id)}
         job_id = str(state.get('job_id') or '').strip()
         if not job_id:
@@ -143,12 +152,18 @@ def create_inference_router(
         # within one poll cycle. The worker, still mid-HTTP-call, will observe
         # the terminal status on its next cooperative check and exit cleanly.
         update_infer_job_state(job_id, status='paused', running=False, message='paused')
+        if audit:
+            audit.emit(category='task', action='pause_request', outcome='accepted', project_id=payload.project_id, job_id=job_id, message='Inference pause request accepted', details={'previous_status': current_status})
         return {'job': get_infer_job_state_or_404(job_id)}
 
     @router.post('/api/infer/jobs/resume')
     def resume_infer_job_endpoint(payload: InferJobResumeIn) -> dict[str, Any]:
         try:
-            return resume_infer_job(payload)
+            result = resume_infer_job(payload)
+            job = result.get('job', result) if isinstance(result, dict) else {}
+            if audit:
+                audit.emit(category='task', action='resume_request', outcome='accepted', project_id=payload.project_id, job_id=str(job.get('job_id') or ''), message='Inference resume request accepted')
+            return result
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001

@@ -3,8 +3,10 @@ import OpenSeadragon from 'openseadragon';
 export type AnnotationShape = 'bbox' | 'polygon' | 'polygons';
 
 export interface Annotation {
+  schema_version?: number;
   id: string;
   class_name?: string;
+  raw_label?: string;
   class_id?: number;
   shape?: AnnotationShape;
   /** [x1, y1, x2, y2] in image pixels */
@@ -13,8 +15,19 @@ export interface Annotation {
   polygon?: [number, number][];
   /** multi-contour mask polygons */
   polygons?: [number, number][][];
+  area?: number | null;
+  mask_url?: string;
+  overlay_url?: string;
+  source_model?: string;
   source?: string;
   score?: number;
+  component_count?: number;
+  edited?: boolean;
+  modified_by?: string;
+  accepted_by?: string;
+  ai_assisted_by?: string;
+  created_at?: string;
+  updated_at?: string;
   status?: string;
   /** display color override (any CSS color) */
   color?: string;
@@ -74,8 +87,8 @@ export interface ImageBundle {
 }
 
 export interface Prompt {
-  type: 'box' | 'point';
-  /** Flat coordinate payload used by the viewer: point=[x,y], box=[x1,y1,x2,y2,label?] */
+  type: 'point';
+  /** Flat coordinate payload used by the viewer: [x,y,label?]. */
   data: number[];
   label?: 0 | 1;
   bbox?: [number, number, number, number];

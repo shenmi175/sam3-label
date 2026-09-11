@@ -244,9 +244,6 @@ class AnnotationRecordRepository:
                 or original_id in project_used
                 or self.looks_like_model_detection_id(original_id)
             )
-            if self.looks_like_model_detection_id(original_id) and not item.get('model_det_id'):
-                item['model_det_id'] = original_id
-
             next_id = original_id
             if needs_generated_id:
                 next_id = new_id('ann_')

@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { testSam3, testLocate } from '../../api/system';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useAnnotationStore } from '../../stores/workspace/annotationStore';
+import { useProjectStore } from '../../stores/workspace/projectStore';
 import { toast } from '../../utils/notify';
+import { useImageNavigation } from '../../hooks/useImageNavigation';
 
 interface InferenceSettingsDialogProps {
   open: boolean;
@@ -36,7 +38,7 @@ const stepperSx = {
  * Inference settings dialog — the legacy AutoAnnotatePanel "backend" and
  * "params" groups merged into one two-column dialog:
  *   - left column: backend URL inputs + connection test + backend select
- *   - right column: contour mode / threshold (±0.05) / batch size (±1)
+ *   - right column: threshold (±0.05) / batch size (±1)
  * Every control stays bound to settingsStore, so edits apply instantly and
  * the panel summary button refreshes once the dialog closes.
  */
@@ -47,8 +49,8 @@ export function InferenceSettingsDialog({ open, onClose }: InferenceSettingsDial
   const defaultBackend = useSettingsStore((s) => s.defaultBackend);
   const threshold = useSettingsStore((s) => s.threshold);
   const batchSize = useSettingsStore((s) => s.batchSize);
-  const contourMode = useSettingsStore((s) => s.contourMode);
   const setSetting = useSettingsStore((s) => s.set);
+  const { applyFilters } = useImageNavigation();
 
   const [testing, setTesting] = useState(false);
 
@@ -79,6 +81,10 @@ export function InferenceSettingsDialog({ open, onClose }: InferenceSettingsDial
     useAnnotationStore
       .getState()
       .setSourceFilter(value === 'locate-anything' ? 'locate-anything' : 'sam3');
+    const project = useProjectStore.getState();
+    if (project.imageFilterClass) {
+      void applyFilters(project.imageFilterClass, project.imageFilterStatus);
+    }
   };
 
   const adjustThreshold = (delta: number) => {
@@ -183,20 +189,6 @@ export function InferenceSettingsDialog({ open, onClose }: InferenceSettingsDial
                 </IconButton>
               </Box>
             </Box>
-            <TextField
-              select
-              size="small"
-              value={contourMode || 'split'}
-              disabled={isLocate}
-              onChange={(e) => setSetting('contourMode', e.target.value as 'split' | 'merged')}
-              label={t('contour_mode')}
-              inputProps={{ style: { fontSize: 11, padding: '6px 8px' } }}
-              fullWidth
-              sx={{ opacity: isLocate ? 0.45 : 1 }}
-            >
-              <MenuItem value="split" sx={{ fontSize: 12 }}>{t('contour_split')}</MenuItem>
-              <MenuItem value="merged" sx={{ fontSize: 12 }}>{t('contour_merged')}</MenuItem>
-            </TextField>
           </Box>
         </Box>
       </Box>

@@ -14,7 +14,6 @@ import { useSettingsStore } from '../stores/settingsStore';
 import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
 import { useAnnotationStore } from '../stores/workspace/annotationStore';
-import { useViewerStore } from '../stores/workspace/viewerStore';
 import { useInferenceStore } from '../stores/workspace/inferenceStore';
 import { toast } from '../utils/notify';
 import { startJobPolling } from './useJobPolling';
@@ -42,14 +41,13 @@ function backendPayload(): BackendPayload {
     model_backend: settings.defaultBackend || 'sam3',
     locate_api_base_url: settings.locateApiUrl || '',
     score_default: Number(settings.scoreDefault ?? 0.5),
-    contour_mode: settings.contourMode || 'split',
   };
 }
 
 /**
  * Inference orchestration — 1:1 port of the legacy InferenceController's
- * request side (runSingle / box-prompt infer / batch start / stop / resume /
- * cancel / retry). Polling lives in useJobPolling; modal state lives in
+ * request side (runSingle / batch start / stop / resume / cancel / retry).
+ * Polling lives in useJobPolling; modal state lives in
  * inferenceStore.
  */
 export function useInference() {
@@ -107,27 +105,29 @@ export function useInference() {
 
   const startBatchTask = useCallback(async () => {
     const projectId = useProjectStore.getState().projectId;
-    const classes = useProjectStore.getState().getSelectedClassesForInference();
-    if (classes.length === 0) {
-      toast(t('text_infer_class_required'), 'error');
-      return;
-    }
+    const defaultClasses = useProjectStore.getState().getSelectedClassesForInference();
     const inference = useInferenceStore.getState();
-    const config = await inference.openBatchConfig(classes, t('batch_title'));
+    const config = await inference.openBatchConfig(
+      defaultClasses,
+      t('batch_title'),
+      useSettingsStore.getState().defaultBackend !== 'locate-anything',
+    );
     if (!config) return;
 
     const settings = useSettingsStore.getState();
     const payload = {
       project_id: projectId,
       mode: 'text' as const,
-      classes,
+      classes: config.classes,
       threshold: settings.threshold,
       batch_size: settings.batchSize,
       api_base_url: settings.sam3ApiUrl,
       scope_mode: config.scope_mode,
+      merge_mode: config.merge_mode,
       related_classes: config.related_classes || [],
       image_ids: config.image_ids || [],
       retry_image_ids: config.retry_image_ids || [],
+      save_ai_features: Boolean(config.save_ai_features),
       all_images:
         config.scope_mode === 'all' &&
         (config.image_ids || []).length === 0 &&
@@ -154,20 +154,21 @@ export function useInference() {
 
   const startLaBoxesBatchTask = useCallback(async () => {
     const projectId = useProjectStore.getState().projectId;
-    const classes = useProjectStore.getState().getSelectedClassesForInference();
+    const defaultClasses = useProjectStore.getState().getSelectedClassesForInference();
     const inference = useInferenceStore.getState();
-    const config = await inference.openBatchConfig(classes, t('la_boxes_batch'));
+    const config = await inference.openBatchConfig(defaultClasses, t('la_boxes_batch'), false, false);
     if (!config) return;
 
     const settings = useSettingsStore.getState();
     const payload = {
       project_id: projectId,
       mode: 'la_boxes' as const,
-      classes,
+      classes: config.classes,
       threshold: settings.threshold,
       batch_size: settings.batchSize,
       api_base_url: settings.sam3ApiUrl,
       scope_mode: config.scope_mode,
+      merge_mode: 'replace' as const,
       related_classes: config.related_classes || [],
       image_ids: config.image_ids || [],
       retry_image_ids: config.retry_image_ids || [],
@@ -202,16 +203,32 @@ export function useInference() {
       const projectId = useProjectStore.getState().projectId;
       const settings = useSettingsStore.getState();
       const jobMode = String(job.payload_dict?.mode || 'text');
+      const result = (job.result || {}) as Record<string, unknown>;
+      const isCudaOom = Boolean(job.fatal || result.fatal)
+        && String(job.error_code || result.error_code || '') === 'CUDA_OOM';
+      if (isCudaOom && !window.confirm(t('batch_oom_retry_confirm', {
+        count: retryImageIds.length,
+        batchSize: Number(job.payload_dict?.batch_size || 1),
+        saveFeatures: job.payload_dict?.save_ai_features ? t('yes') : t('no'),
+      }))) {
+        return;
+      }
       try {
         const res = await startBatchInfer({
           project_id: projectId,
           mode: jobMode === 'la_boxes' ? 'la_boxes' : 'text',
-          classes: useProjectStore.getState().getSelectedClassesForInference(),
+          classes: Array.isArray(job.payload_dict?.classes)
+            ? job.payload_dict.classes.map((value) => String(value)).filter(Boolean)
+            : [],
+          merge_mode: job.payload_dict?.merge_mode === 'append' ? 'append' : 'replace',
           retry_image_ids: retryImageIds,
-          threshold: settings.threshold,
-          batch_size: settings.batchSize,
-          api_base_url: settings.sam3ApiUrl,
-          ...backendPayload(),
+          threshold: Number(job.payload_dict?.threshold ?? settings.threshold),
+          batch_size: Number(job.payload_dict?.batch_size ?? settings.batchSize),
+          api_base_url: String(job.payload_dict?.api_base_url || settings.sam3ApiUrl),
+          save_ai_features: Boolean(job.payload_dict?.save_ai_features),
+          model_backend: String(job.payload_dict?.model_backend || settings.defaultBackend || 'sam3'),
+          locate_api_base_url: String(job.payload_dict?.locate_api_base_url || settings.locateApiUrl || ''),
+          score_default: Number(job.payload_dict?.score_default ?? settings.scoreDefault ?? 0.5),
           ...(jobMode === 'la_boxes' ? { model_backend: 'sam3' } : {}),
         });
         const jobId = res?.job?.job_id || '';
@@ -289,71 +306,8 @@ export function useInference() {
     }
   }, [t]);
 
-  /**
-   * SAM box-prompt inference (replaces the legacy example-preview flow). The
-   * positive/negative prompt boxes drawn on the current image are sent to the
-   * existing POST /api/infer endpoint with mode='boxes'; the backend saves the
-   * result directly (save_result=true), so no preview/adoption step remains.
-   */
-  const runBoxPromptInference = useCallback(async () => {
-    const image = useImageStore.getState();
-    const projectId = useProjectStore.getState().projectId;
-    const settings = useSettingsStore.getState();
-    const viewer = useViewerStore.getState();
-    if (!image.selectedImageId) {
-      toast(t('select_image_first'), 'error');
-      return;
-    }
-    if (settings.defaultBackend === 'locate-anything') {
-      toast(t('locate_backend_text_only'), 'error');
-      return;
-    }
-    // Prompt boxes carry [x1, y1, x2, y2, label] (label 0 = negative).
-    const boxes = viewer.currentPrompts.filter((p) => p.type === 'box').map((p) => p.data);
-    if (boxes.length === 0) {
-      viewer.setBoxPromptLabel(1);
-      toast(t('box_exemplar_required'), 'info');
-      return;
-    }
-    const selectedClass = useProjectStore.getState().selectedClass;
-    if (!selectedClass) {
-      toast(t('select_class_first'), 'error');
-      return;
-    }
-    const annotation = useAnnotationStore.getState();
-    if (annotation.dirty) {
-      await annotation.flushSave('before-infer');
-      if (useAnnotationStore.getState().dirty) {
-        toast(t('anns_not_saved_infer'), 'error');
-        return;
-      }
-    }
-    try {
-      const res = await infer({
-        project_id: projectId,
-        image_id: image.selectedImageId,
-        mode: 'boxes',
-        active_class: selectedClass,
-        boxes,
-        threshold: settings.threshold,
-        api_base_url: settings.sam3ApiUrl,
-        ...backendPayload(),
-      });
-      // Result is already saved server-side: clear the prompts and refresh.
-      useViewerStore.getState().clearPrompts();
-      bundleCache.invalidateBundle(projectId, image.selectedImageId);
-      await useImageStore.getState().reloadSelectedImage();
-      await useProjectStore.getState().loadProjectInfo();
-      toast(t('box_infer_saved', { count: Number(res?.num_detections ?? 0) }), 'success');
-    } catch (err) {
-      if (handleBackendError(err)) return;
-      toast(err instanceof Error ? err.message : String(err), 'error');
-    }
-  }, [t, handleBackendError]);
-
   return {
     runSingle,
-    runBoxPromptInference,
     startBatchTask,
     startLaBoxesBatchTask,
     retryBatch,

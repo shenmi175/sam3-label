@@ -39,11 +39,13 @@ class InferResultOut(BaseModel):
 
 class HealthOut(BaseModel):
     status: str
+    model_state: str = "not_loaded"
     mode: str = "lazy"
     model_loaded: bool
     last_load_error: Optional[str] = None
     device: str
     checkpoint_path: str
+    checkpoint_available: bool = False
     attn_backend: str = "la_flash"
     gpu: Optional[dict[str, Any]] = None
 

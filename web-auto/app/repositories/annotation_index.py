@@ -3,7 +3,11 @@ from __future__ import annotations
 from threading import RLock
 from typing import Any, Callable
 
+from app.annotations import parse_image_annotations
 from app.utils import norm_text, now_ts
+
+
+SOURCE_CLASS_INDEX_VERSION = 3
 
 
 class AnnotationIndexRepository:
@@ -13,39 +17,28 @@ class AnnotationIndexRepository:
 
     @staticmethod
     def annotation_class_name(ann: dict[str, Any]) -> str:
-        return str(ann.get('class_name') or ann.get('label') or '').strip()
+        parsed = parse_image_annotations([ann]).instances
+        return parsed[0].class_name if parsed else ''
 
     @staticmethod
     def annotation_score(ann: dict[str, Any]) -> float:
-        try:
-            return float(ann.get('score') or ann.get('confidence') or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
+        parsed = parse_image_annotations([ann]).instances
+        return (parsed[0].score or 0.0) if parsed else 0.0
 
     @staticmethod
     def annotation_area(ann: dict[str, Any]) -> float:
-        try:
-            area = float(ann.get('area') or 0.0)
-            if area > 0.0:
-                return area
-        except (TypeError, ValueError):
-            pass
-
-        bbox = ann.get('bbox') or ann.get('bbox_xyxy') or ann.get('box') or []
-        if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
-            try:
-                x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
-                return max(0.0, abs(x2 - x1) * abs(y2 - y1))
-            except (TypeError, ValueError):
-                return 0.0
-        return 0.0
+        parsed = parse_image_annotations([ann]).instances
+        if not parsed:
+            return 0.0
+        geometry = parsed[0].geometry
+        return geometry.segmentation_area_px or geometry.bbox_area_px or 0.0
 
     @classmethod
     def payload(cls, annotations: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        anns = [ann for ann in annotations if isinstance(ann, dict)]
-        scores = [cls.annotation_score(ann) for ann in anns]
-        areas = [cls.annotation_area(ann) for ann in anns]
-        count = len(anns)
+        instances = parse_image_annotations(annotations).instances
+        scores = [instance.score or 0.0 for instance in instances]
+        areas = [instance.geometry.segmentation_area_px or instance.geometry.bbox_area_px or 0.0 for instance in instances]
+        count = len(instances)
         stats = {
             'annotation_count': count,
             'total_area': float(sum(areas)),
@@ -55,8 +48,8 @@ class AnnotationIndexRepository:
         }
 
         by_class: dict[str, dict[str, Any]] = {}
-        for ann in anns:
-            class_name = cls.annotation_class_name(ann)
+        for instance in instances:
+            class_name = instance.class_name
             class_norm = norm_text(class_name)
             if not class_norm:
                 continue
@@ -71,8 +64,8 @@ class AnnotationIndexRepository:
                 },
             )
             item['ann_count'] += 1
-            item['total_area'] += cls.annotation_area(ann)
-            item['scores'].append(cls.annotation_score(ann))
+            item['total_area'] += instance.geometry.segmentation_area_px or instance.geometry.bbox_area_px or 0.0
+            item['scores'].append(instance.score or 0.0)
 
         class_rows: list[dict[str, Any]] = []
         for item in by_class.values():
@@ -83,6 +76,29 @@ class AnnotationIndexRepository:
             class_rows.append(item)
         return stats, class_rows
 
+    @staticmethod
+    def source_class_rows(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Build the class index at annotation-source granularity."""
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for annotation in parse_image_annotations(annotations).instances:
+            class_name = annotation.class_name
+            class_norm = norm_text(class_name)
+            if not class_norm:
+                continue
+            source_norm = annotation.provenance.producer.source_id
+            key = (class_norm, source_norm)
+            row = grouped.setdefault(
+                key,
+                {
+                    'class_name_norm': class_norm,
+                    'class_name': class_name,
+                    'source_model_norm': source_norm,
+                    'ann_count': 0,
+                },
+            )
+            row['ann_count'] += 1
+        return list(grouped.values())
+
     def replace(
         self,
         project_id: str,
@@ -92,7 +108,9 @@ class AnnotationIndexRepository:
         conn: Any | None = None,
         updated_at: str | None = None,
     ) -> None:
-        stats, class_rows = self.payload(annotations if isinstance(annotations, list) else [])
+        normalized = annotations if isinstance(annotations, list) else []
+        stats, class_rows = self.payload(normalized)
+        source_class_rows = self.source_class_rows(normalized)
         ts = str(updated_at or now_ts())
 
         def write(target: Any) -> None:
@@ -138,6 +156,29 @@ class AnnotationIndexRepository:
                         float(row['max_confidence']),
                     )
                     for row in class_rows
+                ],
+            )
+            target.execute(
+                'DELETE FROM image_source_class_index WHERE project_id = ? AND image_id = ?',
+                (str(project_id), str(image_id)),
+            )
+            target.executemany(
+                '''
+                INSERT INTO image_source_class_index (
+                    project_id, image_id, class_name_norm, class_name,
+                    source_model_norm, ann_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        str(project_id),
+                        str(image_id),
+                        str(row['class_name_norm']),
+                        str(row['class_name']),
+                        str(row['source_model_norm']),
+                        int(row['ann_count']),
+                    )
+                    for row in source_class_rows
                 ],
             )
 

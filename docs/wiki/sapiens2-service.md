@@ -23,7 +23,7 @@ web-auto 会通过内部 `ops-api` 执行受限 Docker 操作：
 服务器命令仍保留为兜底方式：
 
 ```bash
-cd ~/zmb_work/sam3
+cd /path/to/sam3
 git submodule update --init --recursive external/sapiens2
 ./deploy.sh sapiens enable
 ```
@@ -81,7 +81,6 @@ HF_TOKEN=你的令牌
 
 - `sam3-api`
 - `sapiens-api`
-- `caddy`，仅反代模式使用
 
 服务器命令也可直接执行：
 

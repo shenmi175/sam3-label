@@ -97,6 +97,18 @@ class WebAutoPerformanceServiceTests(unittest.TestCase):
             self.assertGreaterEqual(len(anns[0].get('polygon') or []), 3)
             self.assertTrue(annotation_mask_path(tmp, 'p1', 'img1', 'ann1').is_file())
 
+            invalidated = normalize_annotation_masks(
+                base_dir=tmp,
+                project_id='p1',
+                image_id='img1',
+                annotations=[{
+                    'id': 'ann1', 'class_name': 'door', 'mask_url': anns[0]['mask_url'],
+                    'polygon': [[1, 1], [8, 1], [8, 8]], '__invalidate_mask': True,
+                }],
+            )
+            self.assertEqual(invalidated[0]['mask_url'], '')
+            self.assertFalse(annotation_mask_path(tmp, 'p1', 'img1', 'ann1').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

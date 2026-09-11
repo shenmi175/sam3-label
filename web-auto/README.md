@@ -7,7 +7,7 @@
 - 项目管理
 - 图片文件访问
 - 标注读写
-- 单图推理、同图视觉框找同类、文本批量推理
+- 单图文本/点提示推理、文本批量推理
 - 智能过滤
 - 导出
 
@@ -52,6 +52,13 @@ python -c "import sqlite3; print(sqlite3.sqlite_version)"
 conda install sqlite
 ```
 
+已完成任务的逐图明细保存在数据目录的 `.job-results/`，SQLite 仅保留摘要；任务过期清理时会同步删除明细文件。智能过滤回滚快照默认最多保留每项目最近 10 次且不超过 30 天，任一阈值超出即清理。可以通过以下环境变量调整：
+
+```text
+WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS=10
+WEB_AUTO_SMART_FILTER_RETENTION_DAYS=30
+```
+
 ## 启动
 
 ```bash
@@ -92,7 +99,6 @@ python run.py
 - `GET /health`
 - `POST /v1/infer`
 - `POST /v1/infer_batch`
-- `POST /v1/semantic/infer`
 
 ## 文档
 

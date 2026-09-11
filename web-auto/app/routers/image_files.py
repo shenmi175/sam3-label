@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, Response
 from PIL import Image
 
 from app.services.annotation_masks import build_overlay, build_semantic_mask, mask_file_or_404
+from app.services.cache_gate import CACHE_MAINTENANCE_LOCK
 from app.services.image_previews import ImagePreviewService
 from app.services.image_tiles import ImageTileService
 from app.storage import Storage
@@ -247,13 +248,14 @@ def create_image_files_router(
         project = _get_project_or_404(storage, project_id)
         image = _get_image_or_404(storage, project, image_id)
         image_path = tile_service.image_file_path_or_404(image)
-        path = build_semantic_mask(
-            base_dir=storage.base_dir,
-            project_id=project_id,
-            image_id=image_id,
-            image_size=_source_image_size(image_path),
-            annotations=storage.load_annotations(project_id, image_id),
-        )
+        with CACHE_MAINTENANCE_LOCK:
+            path = build_semantic_mask(
+                base_dir=storage.base_dir,
+                project_id=project_id,
+                image_id=image_id,
+                image_size=_source_image_size(image_path),
+                annotations=storage.load_annotations(project_id, image_id),
+            )
         return FileResponse(str(path), media_type='image/png')
 
     @router.get('/api/projects/{project_id}/images/{image_id}/masks/{mask_image_id}/overlay.webp')
@@ -264,13 +266,14 @@ def create_image_files_router(
         project = _get_project_or_404(storage, project_id)
         image = _get_image_or_404(storage, project, image_id)
         image_path = tile_service.image_file_path_or_404(image)
-        path = build_overlay(
-            base_dir=storage.base_dir,
-            project_id=project_id,
-            image_id=image_id,
-            image_size=_source_image_size(image_path),
-            annotations=storage.load_annotations(project_id, image_id),
-        )
+        with CACHE_MAINTENANCE_LOCK:
+            path = build_overlay(
+                base_dir=storage.base_dir,
+                project_id=project_id,
+                image_id=image_id,
+                image_size=_source_image_size(image_path),
+                annotations=storage.load_annotations(project_id, image_id),
+            )
         return FileResponse(str(path), media_type='image/webp')
 
     return router

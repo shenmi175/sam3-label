@@ -4,6 +4,7 @@ import { clearBundleCache } from '../api/bundleCache';
 import { useInferenceStore } from '../stores/workspace/inferenceStore';
 import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
+import type { InferJob } from '../api/inference';
 
 const JOB_POLL_INTERVAL_MS = 1000;
 const JOB_POLL_ERROR_INTERVAL_MS = 3000;
@@ -12,6 +13,12 @@ const TASK_BAR_HIDE_DELAY_MS = 3000;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 const TERMINAL_STATUSES = new Set(['done', 'error', 'cancelled']);
+
+export function shouldShowBatchResult(job: InferJob): boolean {
+  const result = (job.result || {}) as Record<string, unknown>;
+  const isFatalError = job.status === 'error' && Boolean(job.fatal || result.fatal);
+  return job.job_type === 'text_batch' && (job.status === 'done' || isFatalError);
+}
 
 /**
  * Job status polling loop — 1:1 port of the legacy `pollTaskStatus` state
@@ -53,12 +60,14 @@ export function startJobPolling(): void {
       current.setTaskBar(true, job.message || `${Math.round(pct)}%`);
 
       if (TERMINAL_STATUSES.has(job.status)) {
-        if (job.job_type === 'text_batch' && job.status === 'done') {
+        const result = (job.result || {}) as Record<string, unknown>;
+        const isFatalError = job.status === 'error' && Boolean(job.fatal || result.fatal);
+        if (shouldShowBatchResult(job)) {
           if (current.batchResultShownForJobId !== job.job_id) {
             current.showBatchResult(job);
           }
         }
-        if (job.status === 'done') {
+        if (job.status === 'done' || isFatalError) {
           clearBundleCache();
           await useProjectStore.getState().loadProjectInfo();
           if (useImageStore.getState().selectedImageId) {
@@ -124,6 +133,12 @@ export function useJobPolling(projectId: string) {
       .then((res) => {
         if (cancelled) return;
         const job = res?.job;
+        if (job && shouldShowBatchResult(job)) {
+          const store = useInferenceStore.getState();
+          store.setJob(job);
+          if (store.batchResultShownForJobId !== job.job_id) store.showBatchResult(job);
+          return;
+        }
         if (job && job.status !== 'done' && job.status !== 'error' && job.status !== 'cancelled') {
           const store = useInferenceStore.getState();
           store.setActiveJobId(job.job_id);

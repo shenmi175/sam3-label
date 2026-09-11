@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import type { Annotation, Prompt } from '../../api/types';
 import type { PromptMode } from '../../components/viewer/ImageViewer';
+import { annotationSource } from '../../utils/annotations';
 
-export type SourceFilter = 'sam3' | 'locate-anything' | 'manual';
+export type SourceFilter = 'sam3' | 'locate-anything';
 
 /**
  * Viewer-side semantic state (replaces the prompt/focus fields of the
@@ -10,10 +11,14 @@ export type SourceFilter = 'sam3' | 'locate-anything' | 'manual';
  * viewer-core; this store only holds declarative inputs.
  */
 interface ViewerState {
+  editable: boolean;
   promptMode: PromptMode;
-  boxPromptLabel: 0 | 1;
+  pointPromptLabel: 0 | 1;
   currentPrompts: Prompt[];
+  promptRedoStack: Prompt[];
   focusedAnnotationId: string | null;
+  /** Annotation ids highlighted together after clicking a class-count row. */
+  highlightedAnnotationIds: string[];
   showMasks: boolean;
   /**
    * Guard registered by the workspace page: commits a pending manual polygon
@@ -22,11 +27,15 @@ interface ViewerState {
    */
   commitPolygonGuard: (() => boolean) | null;
 
+  setEditable: (editable: boolean) => void;
   setPromptMode: (mode: PromptMode | 'pointer' | 'pan', workspaceMode?: 'auto' | 'review') => void;
-  setBoxPromptLabel: (label: number) => void;
-  addPrompt: (type: 'point' | 'box', data: number[]) => void;
+  setPointPromptLabel: (label: number) => void;
+  addPrompt: (type: 'point', data: number[]) => void;
+  undoPrompt: () => void;
+  redoPrompt: () => void;
   clearPrompts: () => void;
   setFocusedAnnotation: (id: string | null) => void;
+  setHighlightedAnnotations: (ids: string[]) => void;
   setShowMasks: (show: boolean) => void;
   registerCommitPolygonGuard: (guard: (() => boolean) | null) => void;
   commitPendingManualPolygon: () => boolean;
@@ -34,42 +43,73 @@ interface ViewerState {
 }
 
 export const useViewerStore = create<ViewerState>((set, get) => ({
+  editable: true,
   promptMode: 'none',
-  boxPromptLabel: 1,
+  pointPromptLabel: 1,
   currentPrompts: [],
+  promptRedoStack: [],
   focusedAnnotationId: null,
+  highlightedAnnotationIds: [],
   showMasks: true,
   commitPolygonGuard: null,
 
-  setPromptMode: (mode, workspaceMode = 'auto') => {
-    let next: PromptMode = mode === 'pointer' || mode === 'none' ? 'none' : (mode as PromptMode);
-    if (next === 'point') next = 'none';
-    // Legacy behavior: box prompts are not available in review mode.
-    if (workspaceMode === 'review' && next === 'box') next = 'none';
+  setEditable: (editable) => set({
+    editable: Boolean(editable),
+    ...(editable ? {} : { promptMode: 'none' as PromptMode, currentPrompts: [], promptRedoStack: [] }),
+  }),
+
+  setPromptMode: (mode) => {
+    const next: PromptMode = mode === 'pointer' || mode === 'none' || !get().editable ? 'none' : (mode as PromptMode);
     set({ promptMode: next });
   },
 
-  setBoxPromptLabel: (label) => {
+  setPointPromptLabel: (label) => {
+    if (!get().editable) return;
     const nextLabel: 0 | 1 = Number(label) === 0 ? 0 : 1;
-    set({ boxPromptLabel: nextLabel, promptMode: 'box' });
+    set({ pointPromptLabel: nextLabel, promptMode: 'point' });
   },
 
-  // Legacy addPrompt: points are ignored, boxes carry a positive/negative label.
   addPrompt: (type, data) => {
-    if (type === 'point') return;
-    const { boxPromptLabel } = get();
-    const promptData =
-      type === 'box'
-        ? [...data.slice(0, 4), data.length >= 5 ? (Number(data[4]) === 0 ? 0 : 1) : boxPromptLabel]
-        : data;
+    if (!get().editable) return;
+    const promptData = data.slice(0, 2);
+    const pointLabel = data.length >= 3 ? (Number(data[2]) === 0 ? 0 : 1) : get().pointPromptLabel;
     set((state) => ({
-      currentPrompts: [...state.currentPrompts, { type, data: promptData }],
+      currentPrompts: [...state.currentPrompts, { type, data: promptData, label: pointLabel }],
+      promptRedoStack: [],
     }));
   },
 
-  clearPrompts: () => set({ currentPrompts: [] }),
+  undoPrompt: () => set((state) => {
+    if (!state.editable) return state;
+    const prompt = state.currentPrompts[state.currentPrompts.length - 1];
+    if (!prompt) return state;
+    return {
+      currentPrompts: state.currentPrompts.slice(0, -1),
+      promptRedoStack: [...state.promptRedoStack, prompt],
+    };
+  }),
 
-  setFocusedAnnotation: (id) => set({ focusedAnnotationId: id || null }),
+  redoPrompt: () => set((state) => {
+    if (!state.editable) return state;
+    const prompt = state.promptRedoStack[state.promptRedoStack.length - 1];
+    if (!prompt) return state;
+    return {
+      currentPrompts: [...state.currentPrompts, prompt],
+      promptRedoStack: state.promptRedoStack.slice(0, -1),
+    };
+  }),
+
+  clearPrompts: () => set({ currentPrompts: [], promptRedoStack: [] }),
+
+  setFocusedAnnotation: (id) => set({
+    focusedAnnotationId: id || null,
+    highlightedAnnotationIds: [],
+  }),
+
+  setHighlightedAnnotations: (ids) => set({
+    focusedAnnotationId: null,
+    highlightedAnnotationIds: Array.from(new Set(ids.map(String).filter(Boolean))),
+  }),
 
   setShowMasks: (show) => set({ showMasks: Boolean(show) }),
 
@@ -82,10 +122,13 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
 
   reset: () =>
     set({
+      editable: true,
       promptMode: 'none',
-      boxPromptLabel: 1,
+      pointPromptLabel: 1,
       currentPrompts: [],
+      promptRedoStack: [],
       focusedAnnotationId: null,
+      highlightedAnnotationIds: [],
       showMasks: true,
       commitPolygonGuard: null,
     }),
@@ -93,5 +136,5 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
 
 /** Selector helper: annotations visible under the single-select source filter. */
 export function filterAnnotationsBySource(annotations: Annotation[], sourceFilter: SourceFilter): Annotation[] {
-  return (annotations || []).filter((a) => String(a.source_model || 'sam3') === sourceFilter);
+  return (annotations || []).filter((annotation) => annotationSource(annotation) === sourceFilter);
 }

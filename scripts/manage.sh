@@ -7,7 +7,6 @@ MOUNTS_COMPOSE_FILE="$ROOT_DIR/docker-compose.mounts.yml"
 DOCKER_CMD=()
 FORCE_PROFILE_PROMPT=0
 FORCE_CONFIG_PROMPT=0
-ACCESS_MODE_OVERRIDE=""
 
 info() {
   printf '\033[1;34m==>\033[0m %s\n' "$*"
@@ -39,7 +38,7 @@ Commands:
   logs [service]     Follow logs for all services or one service.
   services           Manage model/runtime containers with Docker Compose.
   sapiens            Enable, disable, or inspect optional sapiens-api.
-  doctor             Run DNS, port, HTTPS, and Caddy diagnostics.
+  doctor             Run port and web-auto HTTP diagnostics.
   reset-admin [pass] Reset web-auto admin password and recreate web-auto.
   data-root          Manage extra host data roots mounted into web-auto.
   mirror [url]       Configure a Docker Hub registry mirror.
@@ -52,8 +51,6 @@ Commands:
 Options for install/update/start:
   --gpu              Use GPU profile. This is the default.
   --cpu              Use CPU profile for functional testing.
-  --direct           Expose web-auto directly on IP:port. This is the default.
-  --proxy            Enable optional Caddy HTTPS reverse proxy.
   --mirror URL       Configure Docker Hub mirror before pulling images.
   --skip-pull        Skip pre-pulling base images.
   --skip-gpu-check   Skip Docker GPU runtime preflight.
@@ -62,8 +59,6 @@ Options for install/update/start:
 Examples:
   ./deploy.sh
   ./deploy.sh install
-  ./deploy.sh install --direct
-  ./deploy.sh install --proxy
   ./deploy.sh install --mirror https://your-mirror.example
   ./deploy.sh update
   ./deploy.sh rebuild-web-auto
@@ -72,10 +67,9 @@ Examples:
   ./deploy.sh restart web-auto
   ./deploy.sh reset-admin
   ./deploy.sh data-root list
-  ./deploy.sh data-root doctor /media/enabot/disk/zmb_datas/openimg
-  ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
-  ./deploy.sh data-root remove /media/enabot/disk/zmb_datas
-  ./deploy.sh logs caddy
+  ./deploy.sh data-root doctor /mnt/datasets/openimg
+  ./deploy.sh data-root add /mnt/datasets --default
+  ./deploy.sh data-root remove /mnt/datasets
   ./deploy.sh services status
   ./deploy.sh services restart sam3-api
   ./deploy.sh sapiens enable
@@ -327,7 +321,6 @@ normalize_data_roots() {
 
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
-    [[ "$item" != "/home/zmb" ]] || continue
     item="$(repair_data_root_path "$item")"
     resolved="$(canonical_dir "$item")"
     existing=0
@@ -452,78 +445,6 @@ auth_file_path() {
   printf '%s/auth.json' "$(project_path "${web_data:-./web-auto/data}")"
 }
 
-is_real_email() {
-  local email="${1,,}"
-  [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || return 1
-  local domain="${email##*@}"
-  case "$domain" in
-    example.com|example.org|example.net|localhost) return 1 ;;
-  esac
-  return 0
-}
-
-is_valid_domain() {
-  local domain="${1,,}"
-  domain="$(trim "$domain")"
-  [[ -n "$domain" ]] || return 1
-  [[ "$domain" != *"://"* && "$domain" != *"/"* && "$domain" != *"@"* ]] || return 1
-  [[ "$domain" != *"*"* && "$domain" != *":"* ]] || return 1
-  [[ "${#domain}" -le 253 ]] || return 1
-  [[ "$domain" == *.* ]] || return 1
-
-  local label
-  IFS='.' read -r -a labels <<<"$domain"
-  [[ "${#labels[@]}" -ge 2 ]] || return 1
-  for label in "${labels[@]}"; do
-    [[ "${#label}" -ge 1 && "${#label}" -le 63 ]] || return 1
-    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
-  done
-  return 0
-}
-
-prompt_required_domain() {
-  local prompt="$1"
-  local current_value="${2:-}"
-  local value=""
-  is_interactive || die "$prompt is required."
-  while true; do
-    if is_valid_domain "$current_value"; then
-      read -r -p "$prompt [$current_value]: " value
-      value="${value:-$current_value}"
-    else
-      read -r -p "$prompt: " value
-    fi
-    value="${value,,}"
-    value="$(trim "$value")"
-    if is_valid_domain "$value"; then
-      printf '%s' "$value"
-      return
-    fi
-    warn "Enter a real domain such as sam3.example.com. Do not include http://, paths, ports, or wildcard domains."
-  done
-}
-
-prompt_required_email() {
-  local prompt="$1"
-  local current_value="${2:-}"
-  local value=""
-  is_interactive || die "$prompt is required."
-  while true; do
-    if is_real_email "$current_value"; then
-      read -r -p "$prompt [$current_value]: " value
-      value="${value:-$current_value}"
-    else
-      read -r -p "$prompt: " value
-    fi
-    value="$(trim "$value")"
-    if is_real_email "$value"; then
-      printf '%s' "$value"
-      return
-    fi
-    warn "Enter a real email address. Placeholder domains such as example.com are not allowed."
-  done
-}
-
 ensure_env() {
   local profile_override="${1:-}"
   cd "$ROOT_DIR"
@@ -561,7 +482,7 @@ ensure_env() {
     set_env_var LOCATE_API_TOKEN "$locate_token"
     info "Generated LOCATE_API_TOKEN in .env"
   fi
-  [[ -n "$(get_env_var OPS_ALLOWED_SERVICES || true)" ]] || set_env_var OPS_ALLOWED_SERVICES "sam3-api,locate-anything-api,sapiens-api,caddy"
+  [[ -n "$(get_env_var OPS_ALLOWED_SERVICES || true)" ]] || set_env_var OPS_ALLOWED_SERVICES "sam3-api,locate-anything-api,sapiens-api"
   set_env_var OPS_HOST_PROJECT_ROOT "$ROOT_DIR"
 
   local admin_user admin_password
@@ -627,25 +548,10 @@ ensure_env() {
   [[ -n "$(get_env_var LOCATE_CHECKPOINT_DIR || true)" ]] || set_env_var LOCATE_CHECKPOINT_DIR "./locate_checkpoints"
   [[ -n "$(get_env_var LOCATE_ENABLED || true)" ]] || set_env_var LOCATE_ENABLED "0"
 
-  local access_mode
-  access_mode="$(get_env_var SAM3_ACCESS_MODE || true)"
-  if [[ -n "$ACCESS_MODE_OVERRIDE" ]]; then
-    access_mode="$ACCESS_MODE_OVERRIDE"
-  fi
-  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && -z "$ACCESS_MODE_OVERRIDE" && is_interactive ]]; then
-    access_mode="$(prompt_choice "Access mode" "${access_mode:-direct}" "direct proxy")"
-  elif [[ -z "$access_mode" ]]; then
-    access_mode="direct"
-  fi
-  case "$access_mode" in
-    direct|proxy) set_env_var SAM3_ACCESS_MODE "$access_mode" ;;
-    *) die "Invalid SAM3_ACCESS_MODE: $access_mode. Use direct or proxy." ;;
-  esac
-
   local web_http_port web_http_bind
   web_http_port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
   web_http_bind="$(get_env_var WEB_AUTO_HTTP_BIND || true)"
-  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && "$access_mode" == "direct" && is_interactive ]]; then
+  if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
     web_http_bind="$(prompt_value "web-auto direct bind address" "${web_http_bind:-0.0.0.0}")"
     web_http_port="$(prompt_value "web-auto direct HTTP port" "${web_http_port:-8000}")"
   fi
@@ -653,66 +559,24 @@ ensure_env() {
   set_env_var WEB_AUTO_HTTP_PORT "${web_http_port:-8000}"
   [[ -n "$(get_env_var WEB_AUTO_WORKER_BATCH_SLICE || true)" ]] || set_env_var WEB_AUTO_WORKER_BATCH_SLICE "4"
 
-  if [[ "$access_mode" == "proxy" ]]; then
-    local public_domain
-    public_domain="$(get_env_var PUBLIC_DOMAIN || true)"
-    if ! is_valid_domain "$public_domain"; then
-      if is_interactive; then
-        public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
-      else
-        die "PUBLIC_DOMAIN must be set in .env to a real domain, for example sam3.example.com."
-      fi
-      set_env_var PUBLIC_DOMAIN "$public_domain"
-    elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-      public_domain="$(prompt_required_domain "Public domain for web-auto" "$public_domain")"
-      set_env_var PUBLIC_DOMAIN "$public_domain"
-    fi
-
-    local acme_email
-    acme_email="$(get_env_var ACME_EMAIL || true)"
-    if ! is_real_email "$acme_email"; then
-      if is_interactive; then
-        acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
-      else
-        die "ACME_EMAIL must be set in .env to a real email address."
-      fi
-      set_env_var ACME_EMAIL "$acme_email"
-    elif [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-      acme_email="$(prompt_required_email "Email for Let's Encrypt account" "$acme_email")"
-      set_env_var ACME_EMAIL "$acme_email"
-    fi
-  fi
-
-  local caddy_http_port caddy_https_port caddy_http_bind caddy_https_bind caddy_image_tag
-  caddy_http_port="$(get_env_var CADDY_HTTP_PORT || true)"
-  caddy_https_port="$(get_env_var CADDY_HTTPS_PORT || true)"
-  caddy_http_bind="$(get_env_var CADDY_HTTP_BIND || true)"
-  caddy_https_bind="$(get_env_var CADDY_HTTPS_BIND || true)"
-  caddy_image_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
-  [[ -n "$caddy_http_port" ]] || set_env_var CADDY_HTTP_PORT "80"
-  [[ -n "$caddy_https_port" ]] || set_env_var CADDY_HTTPS_PORT "443"
-  [[ -n "$caddy_http_bind" ]] || set_env_var CADDY_HTTP_BIND "0.0.0.0"
-  [[ -n "$caddy_https_bind" ]] || set_env_var CADDY_HTTPS_BIND "0.0.0.0"
-  [[ -n "$caddy_image_tag" ]] || set_env_var CADDY_IMAGE_TAG "2.11.2-alpine"
-
   local host_root default_data_root upload_target default_upload_target
   default_data_root="$(default_host_data_root)"
   host_root="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
   if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    [[ -n "$host_root" && "$host_root" != "/home/zmb" ]] || host_root="$default_data_root"
+    [[ -n "$host_root" ]] || host_root="$default_data_root"
     host_root="$(prompt_value "Server project data root mounted into web-auto" "$host_root")"
-  elif [[ -z "$host_root" || "$host_root" == "/home/zmb" ]]; then
+  elif [[ -z "$host_root" ]]; then
     host_root="$default_data_root"
   fi
   host_root="$(canonical_dir "$host_root")"
   upload_target="$(get_env_var WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR || true)"
   default_upload_target="$(default_upload_target_dir "$host_root")"
   if [[ "$FORCE_CONFIG_PROMPT" -eq 1 && is_interactive ]]; then
-    if [[ -z "$upload_target" || "$upload_target" == "/home/zmb"* ]]; then
+    if [[ -z "$upload_target" ]]; then
       upload_target="$default_upload_target"
     fi
     upload_target="$(prompt_value "Default dataset upload directory" "$upload_target")"
-  elif [[ -z "$upload_target" || "$upload_target" == "/home/zmb"* ]]; then
+  elif [[ -z "$upload_target" ]]; then
     upload_target="$default_upload_target"
   fi
   upload_target="$(canonical_dir "$upload_target")"
@@ -798,16 +662,6 @@ effective_profile() {
   printf '%s' "${profile:-gpu}"
 }
 
-effective_access_mode() {
-  local mode
-  mode="$(get_env_var SAM3_ACCESS_MODE || true)"
-  printf '%s' "${mode:-direct}"
-}
-
-using_proxy_mode() {
-  [[ "$(effective_access_mode)" == "proxy" ]]
-}
-
 sapiens_enabled() {
   local enabled
   enabled="$(get_env_var SAPIENS_ENABLED || true)"
@@ -824,9 +678,6 @@ compose_args() {
   printf '%s\0' -f docker-compose.yml
   if [[ -f "$MOUNTS_COMPOSE_FILE" ]]; then
     printf '%s\0' -f "$(basename "$MOUNTS_COMPOSE_FILE")"
-  fi
-  if using_proxy_mode; then
-    printf '%s\0' --profile proxy
   fi
   if sapiens_enabled; then
     printf '%s\0' --profile sapiens
@@ -847,12 +698,21 @@ compose() {
   (cd "$ROOT_DIR" && "${DOCKER_CMD[@]}" compose "${args[@]}" "$@")
 }
 
+sam3_compose() {
+  local args=()
+  while IFS= read -r -d '' item; do
+    args+=("$item")
+  done < <(compose_args)
+  (cd "$ROOT_DIR" && "${DOCKER_CMD[@]}" compose "${args[@]}" --profile sam3 "$@")
+}
+
+ensure_stopped_sam3_service() {
+  info "Creating sam3-api in stopped state (start it from the service card when needed)"
+  sam3_compose create --build sam3-api
+}
+
 compose_env_defaults() {
   local value
-  value="$(get_env_var PUBLIC_DOMAIN || true)"
-  export PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-${value:-status.local}}"
-  value="$(get_env_var ACME_EMAIL || true)"
-  export ACME_EMAIL="${ACME_EMAIL:-${value:-status@example.org}}"
   value="$(get_env_var SAM3_API_TOKEN || true)"
   export SAM3_API_TOKEN="${SAM3_API_TOKEN:-${value:-status-token}}"
   value="$(get_env_var SAPIENS_API_TOKEN || true)"
@@ -909,13 +769,9 @@ PY
 }
 
 required_images() {
-  local caddy_tag base_image sapiens_base_image
-  caddy_tag="$(get_env_var CADDY_IMAGE_TAG || true)"
+  local base_image sapiens_base_image
   base_image="$(get_env_var SAM3_API_BASE_IMAGE || true)"
   sapiens_base_image="$(get_env_var SAPIENS_API_BASE_IMAGE || true)"
-  if using_proxy_mode; then
-    printf '%s\n' "caddy:${caddy_tag:-2.11.2-alpine}"
-  fi
   printf '%s\n' "python:3.11-slim"
   printf '%s\n' "${base_image:-$(default_sam3_api_base_image)}"
   if sapiens_enabled; then
@@ -1060,122 +916,6 @@ pull_required_images() {
   return "$failed"
 }
 
-get_public_ipv4() {
-  command -v curl >/dev/null 2>&1 || die "curl is required for DNS preflight."
-  local url value
-  for url in https://api.ipify.org https://ifconfig.me/ip; do
-    value="$(curl --noproxy '*' -fsS --max-time 8 "$url" 2>/dev/null || true)"
-    value="$(trim "$value")"
-    if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-      printf '%s' "$value"
-      return 0
-    fi
-  done
-  return 1
-}
-
-resolve_domain_records() {
-  local domain="$1"
-  require_command python3
-  PUBLIC_DOMAIN="$domain" python3 - <<'PY'
-import socket
-import os
-
-domain = os.environ["PUBLIC_DOMAIN"]
-records = []
-for family, label in ((socket.AF_INET, "A"), (socket.AF_INET6, "AAAA")):
-    try:
-        infos = socket.getaddrinfo(domain, 80, family, socket.SOCK_STREAM)
-    except socket.gaierror:
-        continue
-    for item in infos:
-        address = item[4][0]
-        row = (label, address)
-        if row not in records:
-            records.append(row)
-for label, address in records:
-    print(label, address)
-PY
-}
-
-array_contains() {
-  local needle="$1"
-  shift
-  local item
-  for item in "$@"; do
-    [[ "$item" == "$needle" ]] && return 0
-  done
-  return 1
-}
-
-validate_domain_dns() {
-  local domain public_ipv4
-  domain="$(get_env_var PUBLIC_DOMAIN || true)"
-  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid: ${domain:-empty}"
-
-  info "Checking DNS for $domain"
-  if env | grep -qiE '^(http|https|all)_proxy='; then
-    warn "Proxy environment variables are set; DNS preflight bypasses them with curl --noproxy '*'."
-  fi
-  public_ipv4="$(get_public_ipv4)" || die "Cannot determine this server's public IPv4. Check outbound network access, then rerun."
-
-  local dns_lines=()
-  mapfile -t dns_lines < <(resolve_domain_records "$domain")
-
-  local a_records=()
-  local aaaa_records=()
-  local line record_type address
-  for line in "${dns_lines[@]}"; do
-    read -r record_type address <<<"$line"
-    case "$record_type" in
-      A) a_records+=("$address") ;;
-      AAAA) aaaa_records+=("$address") ;;
-    esac
-  done
-
-  [[ "${#a_records[@]}" -gt 0 ]] || die "DNS preflight failed: $domain has no A record. Add an A record pointing to $public_ipv4."
-  if ! array_contains "$public_ipv4" "${a_records[@]}"; then
-    die "DNS preflight failed: $domain A record is ${a_records[*]}, but this server's public IPv4 is $public_ipv4. Fix DNS first."
-  fi
-
-  if [[ "${#aaaa_records[@]}" -gt 0 ]]; then
-    die "DNS preflight failed: $domain has AAAA record(s) ${aaaa_records[*]}. Remove AAAA records for this deployment and use an A record to $public_ipv4."
-  fi
-}
-
-check_caddy_ports() {
-  local http_port https_port http_bind https_bind port matches udp_matches
-  http_bind="$(get_env_var CADDY_HTTP_BIND || true)"
-  https_bind="$(get_env_var CADDY_HTTPS_BIND || true)"
-  http_port="$(get_env_var CADDY_HTTP_PORT || true)"
-  https_port="$(get_env_var CADDY_HTTPS_PORT || true)"
-  http_bind="${http_bind:-0.0.0.0}"
-  https_bind="${https_bind:-0.0.0.0}"
-  http_port="${http_port:-80}"
-  https_port="${https_port:-443}"
-  [[ "$http_bind" == "0.0.0.0" ]] || die "CADDY_HTTP_BIND must be 0.0.0.0 for public ACME validation, current value: $http_bind"
-  [[ "$https_bind" == "0.0.0.0" ]] || die "CADDY_HTTPS_BIND must be 0.0.0.0 for public HTTPS access, current value: $https_bind"
-  [[ "$http_port" == "80" ]] || die "CADDY_HTTP_PORT must be 80 for Let's Encrypt HTTP-01 validation."
-  [[ "$https_port" == "443" ]] || die "CADDY_HTTPS_PORT must be 443 for automatic HTTPS."
-
-  if ! command -v ss >/dev/null 2>&1; then
-    warn "ss command not found; skipping local port occupancy check."
-    return 0
-  fi
-  for port in "$http_port" "$https_port"; do
-    matches="$(ss -ltnp 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" {print}' || true)"
-    if [[ -n "$matches" ]]; then
-      printf '%s\n' "$matches" >&2
-      die "Port $port is already in use after stopping this Compose stack. Stop the process using it, then rerun."
-    fi
-  done
-  udp_matches="$(ss -lunp 2>/dev/null | awk -v suffix=":$https_port" '$4 ~ suffix "$" {print}' || true)"
-  if [[ -n "$udp_matches" ]]; then
-    printf '%s\n' "$udp_matches" >&2
-    die "UDP port $https_port is already in use after stopping this Compose stack. Stop the process using it, then rerun."
-  fi
-}
-
 check_direct_port() {
   local bind port matches
   bind="$(get_env_var WEB_AUTO_HTTP_BIND || true)"
@@ -1198,34 +938,6 @@ stop_stack_for_recreate() {
   compose down --remove-orphans
 }
 
-show_caddy_logs() {
-  warn "Last Caddy log lines:"
-  compose logs --tail=160 caddy >&2 || true
-}
-
-wait_for_https() {
-  local domain url last_error attempt
-  domain="$(get_env_var PUBLIC_DOMAIN || true)"
-  is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid: ${domain:-empty}"
-  command -v curl >/dev/null 2>&1 || die "curl is required for HTTPS validation."
-
-  url="https://${domain}/api/health"
-  info "Waiting for Caddy HTTPS certificate and web-auto health: $url"
-  last_error=""
-  for attempt in $(seq 1 60); do
-    if curl --noproxy '*' -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" >/dev/null 2>&1; then
-      info "HTTPS validation passed: $url"
-      return 0
-    fi
-    last_error="$(curl --noproxy '*' -fsS --max-time 8 --resolve "${domain}:443:127.0.0.1" "$url" 2>&1 >/dev/null || true)"
-    sleep 3
-  done
-
-  warn "HTTPS validation failed after waiting. Last curl error: ${last_error:-unknown}"
-  show_caddy_logs
-  die "Caddy did not serve a valid HTTPS response for $url. Run './deploy.sh doctor' for the full diagnostic report."
-}
-
 wait_for_direct_http() {
   local port url last_error
   port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
@@ -1246,8 +958,7 @@ wait_for_direct_http() {
 }
 
 print_next_steps() {
-  local domain web_user web_password port host_ip
-  domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  local web_user web_password port host_ip
   web_user="$(get_env_var WEB_AUTO_ADMIN_USERNAME || true)"
   web_password="$(get_env_var WEB_AUTO_ADMIN_PASSWORD || true)"
   port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
@@ -1258,17 +969,7 @@ print_next_steps() {
 Deployment is running.
 
 web-auto:
-EOF
-  if using_proxy_mode; then
-    cat <<EOF
-  https://${domain}
-EOF
-  else
-    cat <<EOF
   http://${host_ip}:${port:-8000}
-EOF
-  fi
-  cat <<EOF
 
 web-auto login:
   Username: ${web_user:-admin}
@@ -1285,11 +986,6 @@ Useful commands:
   ./deploy.sh logs web-auto
   ./deploy.sh services status
 EOF
-  if using_proxy_mode; then
-    cat <<EOF
-  ./deploy.sh logs caddy
-EOF
-  fi
 }
 
 parse_common_options() {
@@ -1307,14 +1003,6 @@ parse_common_options() {
         ;;
       --cpu)
         PROFILE_OVERRIDE="cpu"
-        shift
-        ;;
-      --direct)
-        ACCESS_MODE_OVERRIDE="direct"
-        shift
-        ;;
-      --proxy)
-        ACCESS_MODE_OVERRIDE="proxy"
         shift
         ;;
       --mirror)
@@ -1375,25 +1063,15 @@ cmd_install() {
       MIRROR_URL="$(prompt_value "Docker Hub registry mirror URL" "")"
     fi
   fi
-  if using_proxy_mode; then
-    validate_domain_dns
-  fi
   prepare_runtime
   stop_stack_for_recreate
-  if using_proxy_mode; then
-    check_caddy_ports
-  else
-    check_direct_port
-  fi
+  check_direct_port
 
   info "Building and starting stack"
-  compose up -d --build --remove-orphans
+  compose up -d --build --remove-orphans ops-api web-auto task-worker
+  ensure_stopped_sam3_service
   compose ps
-  if using_proxy_mode; then
-    wait_for_https
-  else
-    wait_for_direct_http
-  fi
+  wait_for_direct_http
   print_next_steps
 }
 
@@ -1402,9 +1080,6 @@ cmd_update() {
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown update option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
   ensure_external_submodules
-  if using_proxy_mode; then
-    validate_domain_dns
-  fi
   select_docker
   [[ -z "$MIRROR_URL" ]] || configure_mirror "$MIRROR_URL"
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
@@ -1426,19 +1101,12 @@ cmd_update() {
   fi
 
   stop_stack_for_recreate
-  if using_proxy_mode; then
-    check_caddy_ports
-  else
-    check_direct_port
-  fi
+  check_direct_port
   info "Rebuilding and restarting stack"
-  compose up -d --build --remove-orphans
+  compose up -d --build --remove-orphans ops-api web-auto task-worker
+  ensure_stopped_sam3_service
   compose ps
-  if using_proxy_mode; then
-    wait_for_https
-  else
-    wait_for_direct_http
-  fi
+  wait_for_direct_http
   print_next_steps
 }
 
@@ -1450,11 +1118,7 @@ cmd_rebuild_web_auto() {
   info "Rebuilding and recreating web-auto"
   compose up -d --build --force-recreate web-auto
   compose ps web-auto
-  if using_proxy_mode; then
-    wait_for_https
-  else
-    wait_for_direct_http
-  fi
+  wait_for_direct_http
 }
 
 cmd_start() {
@@ -1462,24 +1126,14 @@ cmd_start() {
   [[ "${#POSITIONAL[@]}" -eq 0 ]] || die "Unknown start option: ${POSITIONAL[*]}"
   ensure_env "$PROFILE_OVERRIDE"
   ensure_external_submodules
-  if using_proxy_mode; then
-    validate_domain_dns
-  fi
   select_docker
   [[ "$SKIP_GPU_CHECK" -eq 1 ]] || gpu_preflight
   stop_stack_for_recreate
-  if using_proxy_mode; then
-    check_caddy_ports
-  else
-    check_direct_port
-  fi
-  compose up -d --remove-orphans
+  check_direct_port
+  compose up -d --remove-orphans ops-api web-auto task-worker
+  ensure_stopped_sam3_service
   compose ps
-  if using_proxy_mode; then
-    wait_for_https
-  else
-    wait_for_direct_http
-  fi
+  wait_for_direct_http
   print_next_steps
 }
 
@@ -1510,77 +1164,28 @@ cmd_logs() {
 
 cmd_doctor() {
   compose_env_defaults
-  local domain public_ipv4 port
-  domain="$(get_env_var PUBLIC_DOMAIN || true)"
+  local port
   port="$(get_env_var WEB_AUTO_HTTP_PORT || true)"
 
   select_docker
   echo "== SAM3 deployment doctor =="
-  echo "Access mode: $(effective_access_mode)"
-  if using_proxy_mode; then
-    is_valid_domain "$domain" || die "PUBLIC_DOMAIN is invalid or missing in .env."
-    echo "Domain: $domain"
-  else
-    echo "Direct URL: http://127.0.0.1:${port:-8000}"
-  fi
-  public_ipv4="$(get_public_ipv4 || true)"
-  echo "Server public IPv4: ${public_ipv4:-unknown}"
+  echo "Direct URL: http://127.0.0.1:${port:-8000}"
   echo
-
-  if using_proxy_mode; then
-    echo "DNS records:"
-    resolve_domain_records "$domain" || true
-    echo
-  fi
 
   echo "Compose status:"
   compose ps || true
   echo
 
   if command -v ss >/dev/null 2>&1; then
-    if using_proxy_mode; then
-      echo "TCP listeners on 80/443:"
-      ss -ltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print}' || true
-      echo
-      echo "UDP listeners on 443:"
-      ss -lunp 2>/dev/null | awk '$4 ~ /:443$/ {print}' || true
-    else
-      echo "TCP listeners on web-auto port ${port:-8000}:"
-      ss -ltnp 2>/dev/null | awk -v suffix=":${port:-8000}" '$4 ~ suffix "$" {print}' || true
-    fi
+    echo "TCP listeners on web-auto port ${port:-8000}:"
+    ss -ltnp 2>/dev/null | awk -v suffix=":${port:-8000}" '$4 ~ suffix "$" {print}' || true
     echo
   fi
 
   if command -v curl >/dev/null 2>&1; then
-    if using_proxy_mode; then
-      echo "Local Caddy HTTP probe:"
-      curl --noproxy '*' -sS -I --max-time 8 --resolve "${domain}:80:127.0.0.1" "http://${domain}/" || true
-      echo
-      echo "Local Caddy HTTPS probe:"
-      curl --noproxy '*' -v --max-time 10 --resolve "${domain}:443:127.0.0.1" "https://${domain}/api/health" -o /dev/null || true
-      echo
-      echo "Public DNS HTTP probe:"
-      curl --noproxy '*' -sS -I --max-time 10 "http://${domain}/.well-known/acme-challenge/deploy-doctor" || true
-      echo
-      echo "Public DNS HTTPS probe:"
-      curl --noproxy '*' -v --max-time 10 "https://${domain}/api/health" -o /dev/null || true
-      echo
-    else
-      echo "Direct web-auto health probe:"
-      curl --noproxy '*' -sS -i --max-time 8 "http://127.0.0.1:${port:-8000}/api/health" || true
-      echo
-    fi
-  fi
-
-  if using_proxy_mode; then
-    if command -v openssl >/dev/null 2>&1; then
-      echo "TLS handshake probe:"
-      printf '' | openssl s_client -servername "$domain" -connect "127.0.0.1:443" -brief 2>&1 || true
-      echo
-    fi
-
-    echo "Caddy logs:"
-    compose logs --tail=200 caddy || true
+    echo "Direct web-auto health probe:"
+    curl --noproxy '*' -sS -i --max-time 8 "http://127.0.0.1:${port:-8000}/api/health" || true
+    echo
   fi
 }
 
@@ -1630,9 +1235,9 @@ Usage:
   ./deploy.sh data-root remove <host-path> [--no-recreate]
 
 Examples:
-  ./deploy.sh data-root doctor /media/enabot/disk/zmb_datas/openimg
-  ./deploy.sh data-root add /media/enabot/disk/zmb_datas --default
-  ./deploy.sh data-root add /media/enabot/disk/zmb_datas --upload-target /media/enabot/disk/zmb_datas/uploads
+  ./deploy.sh data-root doctor /mnt/datasets/openimg
+  ./deploy.sh data-root add /mnt/datasets --default
+  ./deploy.sh data-root add /mnt/datasets --upload-target /mnt/datasets/uploads
 
 Notes:
   - Added paths are mounted into web-auto at the same absolute path.
@@ -1644,7 +1249,7 @@ EOF
 current_allowed_roots() {
   local host_root allowed
   host_root="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
-  [[ -n "$host_root" && "$host_root" != "/home/zmb" ]] || host_root="$(default_host_data_root)"
+  [[ -n "$host_root" ]] || host_root="$(default_host_data_root)"
   host_root="$(canonical_dir "$host_root")"
   allowed="$(get_env_var WEB_AUTO_ALLOWED_DATA_ROOTS || true)"
   normalize_data_roots "$host_root" "$allowed"
@@ -1791,7 +1396,7 @@ fi
       ensure_env ""
       local primary allowed new_root root exists roots=()
       primary="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
-      [[ -n "$primary" && "$primary" != "/home/zmb" ]] || primary="$(default_host_data_root)"
+      [[ -n "$primary" ]] || primary="$(default_host_data_root)"
       primary="$(canonical_dir "$primary")"
       allowed="$(current_allowed_roots)"
       new_root="$(canonical_dir "$path")"
@@ -1854,10 +1459,10 @@ fi
       ensure_env ""
       remove_root="$(canonical_dir "$path")"
       primary="$(get_env_var WEB_AUTO_HOST_DATA_ROOT || true)"
-      [[ -n "$primary" && "$primary" != "/home/zmb" ]] || primary="$(default_host_data_root)"
+      [[ -n "$primary" ]] || primary="$(default_host_data_root)"
       primary="$(canonical_dir "$primary")"
       if [[ "$remove_root" == "$primary" ]]; then
-        die "Cannot remove the primary WEB_AUTO_HOST_DATA_ROOT. Change it in .env or rerun './deploy.sh install --direct'."
+        die "Cannot remove the primary WEB_AUTO_HOST_DATA_ROOT. Change it in .env or rerun './deploy.sh install'."
       fi
       allowed="$(current_allowed_roots)"
       while IFS= read -r root; do
@@ -1908,10 +1513,10 @@ services_usage() {
   cat <<'EOF'
 Usage:
   ./deploy.sh services status
-  ./deploy.sh services start <sam3-api|locate-anything-api|sapiens-api|caddy>
-  ./deploy.sh services stop <sam3-api|locate-anything-api|sapiens-api|caddy>
-  ./deploy.sh services restart <sam3-api|locate-anything-api|sapiens-api|caddy>
-  ./deploy.sh services logs <sam3-api|locate-anything-api|sapiens-api|caddy>
+  ./deploy.sh services start <sam3-api|locate-anything-api|sapiens-api>
+  ./deploy.sh services stop <sam3-api|locate-anything-api|sapiens-api>
+  ./deploy.sh services restart <sam3-api|locate-anything-api|sapiens-api>
+  ./deploy.sh services logs <sam3-api|locate-anything-api|sapiens-api>
 
 Notes:
   - web-auto is intentionally not managed here to avoid killing the UI from the UI.
@@ -1934,7 +1539,7 @@ cmd_services() {
       local service="${1:-}"
       [[ -n "$service" ]] || die "services $subcommand requires a service name."
       case "$service" in
-        sam3-api|locate-anything-api|sapiens-api|caddy) ;;
+        sam3-api|locate-anything-api|sapiens-api) ;;
         web-auto) die "web-auto is not controlled by services; use './deploy.sh restart web-auto' from the server." ;;
         *) die "Unsupported service: $service" ;;
       esac
@@ -1944,20 +1549,32 @@ cmd_services() {
       fi
       compose_env_defaults
       select_docker
-      compose "$subcommand" "$service"
+      if [[ "$service" == "sam3-api" ]]; then
+        if [[ "$subcommand" == "start" ]]; then
+          sam3_compose up -d sam3-api
+        else
+          sam3_compose "$subcommand" sam3-api
+        fi
+      else
+        compose "$subcommand" "$service"
+      fi
       compose ps
       ;;
     logs)
       local service="${1:-}"
       [[ -n "$service" ]] || die "services logs requires a service name."
       case "$service" in
-        sam3-api|locate-anything-api|sapiens-api|caddy) ;;
+        sam3-api|locate-anything-api|sapiens-api) ;;
         *) die "Unsupported service: $service" ;;
       esac
       ensure_env ""
       compose_env_defaults
       select_docker
-      compose logs -f --tail=200 "$service"
+      if [[ "$service" == "sam3-api" ]]; then
+        sam3_compose logs -f --tail=200 sam3-api
+      else
+        compose logs -f --tail=200 "$service"
+      fi
       ;;
     help|-h|--help|"")
       services_usage

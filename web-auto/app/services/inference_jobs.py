@@ -13,6 +13,15 @@ class InferJobPaused(RuntimeError):
     """Cooperative stop for long-running infer jobs."""
 
 
+class InferJobFatal(RuntimeError):
+    """Non-retryable inference failure carrying a durable partial result."""
+
+    def __init__(self, message: str, *, error_code: str, result: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code or 'INFERENCE_FATAL')
+        self.result = dict(result)
+
+
 class InferenceJobService:
     def __init__(
         self,
@@ -82,8 +91,10 @@ class InferenceJobService:
             'retry_image_ids_count': len(payload.get('retry_image_ids', []) or []),
             'all_images': bool(payload.get('all_images')),
             'scope_mode': str(payload.get('scope_mode') or 'all'),
+            'merge_mode': str(payload.get('merge_mode') or 'replace'),
             'requested_batch_size': payload.get('batch_size'),
             'threshold': payload.get('threshold'),
+            'save_ai_features': bool(payload.get('save_ai_features', False)),
             'api_base_url': str(payload.get('api_base_url') or ''),
             'positive_points': pos_points,
             'negative_points': neg_points,
@@ -153,10 +164,28 @@ class InferenceJobService:
 
     def pause_job(self, project_id: str) -> bool:
         state = self.queue.active(project_id, job_prefix='infer:')
-        return bool(state and self.queue.request_pause(str(state.get('job_id') or '')))
+        job_id = str(state.get('job_id') or '') if state else ''
+        result = bool(state and self.queue.request_pause(job_id))
+        self._logger.info(
+            'infer_pause_requested project_id=%s job_id=%s previous_status=%s accepted=%s',
+            project_id,
+            job_id,
+            str(state.get('status') or '') if state else 'missing',
+            result,
+        )
+        return result
 
     def cancel_job(self, job_id: str) -> bool:
-        return bool(job_id and self.queue.cancel(str(job_id)))
+        state = self.queue.get(str(job_id), include_details=False) if job_id else None
+        result = bool(job_id and self.queue.cancel(str(job_id)))
+        self._logger.info(
+            'infer_cancel_requested job_id=%s project_id=%s previous_status=%s accepted=%s',
+            job_id,
+            str(state.get('project_id') or '') if state else '',
+            str(state.get('status') or '') if state else 'missing',
+            result,
+        )
+        return result
 
     def count_running_jobs(self) -> int:
         return self.queue.count_running(job_prefix='infer:')

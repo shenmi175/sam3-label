@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
+from app.audit import AuditLogger
 from app.schemas import ImportImagesIn
 from app.storage import Storage
 from app.utils import IMAGE_EXTENSIONS, ensure_dir
@@ -44,7 +45,7 @@ def _safe_upload_target(root: Path, filename: str) -> Path:
     raise HTTPException(status_code=409, detail='too many duplicate filenames')
 
 
-def create_project_images_router(*, get_storage: Callable[[], Storage]) -> APIRouter:
+def create_project_images_router(*, get_storage: Callable[[], Storage], audit: AuditLogger | None = None) -> APIRouter:
     router = APIRouter()
 
     @router.post('/api/projects/{project_id}/images/upload')
@@ -82,6 +83,7 @@ def create_project_images_router(*, get_storage: Callable[[], Storage]) -> APIRo
         image_id: str = Query(default=''),
         status: str = Query(default=''),
         class_name: str = Query(default=''),
+        source_model: str = Query(default=''),
     ) -> dict[str, Any]:
         try:
             items, total, safe_offset, safe_limit, image_index = get_storage().get_project_images_page(
@@ -91,6 +93,7 @@ def create_project_images_router(*, get_storage: Callable[[], Storage]) -> APIRo
                 image_id=image_id,
                 status=status,
                 class_name=class_name,
+                source_model=source_model,
             )
             return {
                 'items': items,
@@ -100,6 +103,7 @@ def create_project_images_router(*, get_storage: Callable[[], Storage]) -> APIRo
                 'image_index': image_index,
                 'status': status,
                 'class_name': class_name,
+                'source_model': source_model,
             }
         except ValueError as exc:
             raise HTTPException(status_code=_error_code(exc), detail=str(exc)) from exc
@@ -146,6 +150,8 @@ def create_project_images_router(*, get_storage: Callable[[], Storage]) -> APIRo
     def import_project_images(project_id: str, payload: ImportImagesIn) -> dict[str, Any]:
         try:
             project, copied, added = get_storage().import_images_from_dir(project_id, payload.source_dir)
+            if audit:
+                audit.emit(category='data_transfer', action='import_images', project_id=project_id, message='Images imported into project', details={'copied_files': copied, 'added_images': added})
             return {'project': project, 'copied_files': copied, 'added_images': added}
         except ValueError as exc:
             raise HTTPException(status_code=_error_code(exc), detail=str(exc)) from exc

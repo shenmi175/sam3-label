@@ -41,6 +41,9 @@ export function BatchResultModal() {
     ? (result.retry_image_ids as unknown[]).map((id) => String(id))
     : [];
   const classRows = Object.entries(classAdditions);
+  const featureFailed = Number(result.feature_failed || 0);
+  const isFatal = Boolean(job?.fatal || result.fatal);
+  const isCudaOom = isFatal && String(job?.error_code || result.error_code || '') === 'CUDA_OOM';
 
   const stats = job
     ? [
@@ -48,6 +51,7 @@ export function BatchResultModal() {
         { label: t('batch_processed'), value: statValue(result.processed_images, job.progress_done, 0) },
         { label: t('batch_succeeded'), value: statValue(result.saved_images, result.succeeded, job.succeeded, 0), color: '#10b981' },
         { label: t('batch_failed'), value: statValue(result.failed_images, result.failed, job.failed, 0), color: '#ef4444' },
+        { label: t('batch_unprocessed'), value: statValue(result.unprocessed_images, 0), color: isFatal ? '#f59e0b' : undefined },
         { label: t('batch_skipped'), value: statValue(result.skipped_images, result.skipped, job.skipped, 0) },
         { label: t('batch_new_anns'), value: statValue(result.new_annotations, job.new_annotations, 0) },
       ]
@@ -56,12 +60,27 @@ export function BatchResultModal() {
   return (
     <Dialog open={job !== null} onClose={closeBatchResult} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ fontSize: 18, fontWeight: 700, pr: 6 }}>
-        {t('batch_result_title')}
+        {isCudaOom ? t('batch_oom_title') : t('batch_result_title')}
         <IconButton onClick={closeBatchResult} size="small" sx={{ position: 'absolute', right: 10, top: 10, color: '#ef4444' }} aria-label="close">
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
+        {isCudaOom ? (
+          <Box sx={{ mb: 2, p: 1.75, borderRadius: 2, bgcolor: 'error.light', color: 'error.contrastText' }}>
+            <Typography sx={{ fontSize: 13, fontWeight: 800 }}>{t('batch_oom_warning')}</Typography>
+            <Typography sx={{ mt: 0.75, fontSize: 12, lineHeight: 1.7 }}>
+              {t('batch_oom_annotations_safe')}
+            </Typography>
+            {result.stopped_image_rel_path || result.stopped_image_id ? (
+              <Typography sx={{ mt: 0.75, fontSize: 12, fontWeight: 700 }}>
+                {t('batch_oom_stopped_at', {
+                  image: String(result.stopped_image_rel_path || result.stopped_image_id),
+                })}
+              </Typography>
+            ) : null}
+          </Box>
+        ) : null}
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1.5 }}>
           {stats.map((item) => (
             <Box key={item.label} sx={{ p: 1.75, borderRadius: 3, border: '1px solid', borderColor: 'divider' }}>
@@ -86,6 +105,12 @@ export function BatchResultModal() {
             <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>{t('batch_no_class_stats')}</Typography>
           )}
         </Box>
+
+        {featureFailed > 0 ? (
+          <Typography sx={{ mt: 2, p: 1.5, borderRadius: 2, bgcolor: 'warning.light', color: 'warning.contrastText', fontSize: 12 }}>
+            {t('batch_feature_failed_warning', { count: featureFailed })}
+          </Typography>
+        ) : null}
 
         <Typography sx={{ mt: 2, fontSize: 12, color: 'text.secondary', lineHeight: 1.7 }}>
           {String(job?.message || result.message || t('batch_done_default'))}

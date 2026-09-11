@@ -76,7 +76,7 @@ export function PathsTab({ config, onSaved }: PathsTabProps) {
       : '--default';
     const doctorTarget = uploadTargetInsideDataRoot ? uploadTargetClean : dataRoot;
     const command = [
-      'cd ~/zmb_work/sam3',
+      'cd /path/to/sam3',
       `./deploy.sh data-root add ${shellQuote(dataRoot)} ${addArgs}`,
       `./deploy.sh data-root doctor ${shellQuote(doctorTarget)}`,
     ].join('\n');
@@ -180,7 +180,7 @@ export function PathsTab({ config, onSaved }: PathsTabProps) {
             fullWidth
             value={uploadTarget}
             onChange={(e) => setUploadTarget(e.target.value)}
-            placeholder="/home/enabot/datasets"
+            placeholder="/mnt/datasets"
           />
           <Typography sx={hintSx}>{t('upload_target_hint')}</Typography>
         </Box>
@@ -192,7 +192,7 @@ export function PathsTab({ config, onSaved }: PathsTabProps) {
             fullWidth
             value={newDataRoot}
             onChange={(e) => setNewDataRoot(e.target.value)}
-            placeholder="/media/enabot/disk/zmb_datas"
+            placeholder="/mnt/datasets"
           />
           <Typography sx={hintSx}>{t('new_data_root_hint')}</Typography>
         </Box>

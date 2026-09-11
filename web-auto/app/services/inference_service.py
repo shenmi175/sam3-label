@@ -5,9 +5,10 @@ from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
+from app.annotations import parse_image_annotations
 from app.schemas import InferBatchIn, InferJobResumeIn
-from app.services.inference_jobs import InferenceJobService, InferJobPaused
-from app.services.annotation_geometry import _ann_bbox
+from app.sam3_client import Sam3ApiError
+from app.services.inference_jobs import InferenceJobService, InferJobFatal, InferJobPaused
 from app.services.inference_results import _convert_detections, _replace_by_classes
 from app.services.inference_visual_prompts import (
     _filter_negative_only,
@@ -128,6 +129,8 @@ class InferenceService:
                 return call()
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                if isinstance(exc, Sam3ApiError) and exc.status_code == 507:
+                    raise
                 if attempt >= 3:
                     raise
         assert last_error is not None
@@ -167,8 +170,8 @@ class InferenceService:
             payload['api_base_url'] = str(overrides['api_base_url'] or '').strip() or self._default_api_base_url
 
         if job_type == 'text_batch':
-            if 'classes' in overrides and overrides.get('classes') is not None:
-                payload['classes'] = [str(x).strip() for x in overrides.get('classes', []) if str(x).strip()]
+            # Classes and merge semantics define the original task. Resume may
+            # tune execution parameters, but must not silently change its work.
             return payload
 
         return payload
@@ -213,16 +216,22 @@ class InferenceService:
         if job_type == 'text_batch':
             scope = str(merged.get('scope_mode') or 'all').strip().lower()
             if pending_truncated:
-                if scope not in {'unlabeled', 'class_related', 'class_related_unlabeled'}:
-                    raise HTTPException(
-                        status_code=409,
-                        detail='paused job has too many remaining images to resume exactly; start a new "unlabeled only" job instead',
-                    )
-                merged['image_ids'] = []
-                merged['retry_image_ids'] = []
+                merge_mode = str(merged.get('merge_mode') or 'replace').strip().lower()
+                if merge_mode != 'append':
+                    if scope not in {'unlabeled', 'class_related', 'class_related_unlabeled'}:
+                        raise HTTPException(
+                            status_code=409,
+                            detail='paused job has too many remaining images to resume exactly; start a new "unlabeled only" job instead',
+                        )
+                    merged['image_ids'] = []
+                    merged['retry_image_ids'] = []
+                    merged['all_images'] = False
+                # Append keeps its original selector (including a retry list,
+                # when present); the worker excludes every image already in
+                # resume_state without broadening the original target set.
             else:
                 merged['image_ids'] = pending_image_ids
-            merged['all_images'] = False
+                merged['all_images'] = False
             job = self._infer_jobs.spawn_job(
                 project_id=payload.project_id,
                 job_type='text_batch',
@@ -248,20 +257,18 @@ class InferenceService:
         classes: list[str],
         active_class: str,
         points: list[list[float | int]],
-        boxes: list[list[float | int]],
         threshold: float,
         api_base_url: str,
         model_backend: str = 'sam3',
         locate_api_base_url: str = '',
         score_default: float = 0.5,
-        contour_mode: str = 'split',
     ) -> dict[str, Any]:
         backend = str(model_backend or 'sam3').strip().lower()
         infer_mode = str(mode).strip().lower()
         if backend == 'locate-anything' and infer_mode != 'text':
             raise HTTPException(
                 status_code=400,
-                detail='locate-anything backend supports mode=text only (points/boxes are sam3-only)',
+                detail='locate-anything backend supports mode=text only (points are sam3-only)',
             )
         locate_url = self._resolve_locate_api_base_url(locate_api_base_url)
         self._check_both_loaded_oom_guard(
@@ -297,19 +304,8 @@ class InferenceService:
             impacted_classes = []
             infer_points = points
             infer_boxes = []
-        elif infer_mode == 'boxes':
-            if not boxes:
-                raise HTTPException(status_code=400, detail='boxes mode requires boxes')
-            if not _has_positive_visual_prompt([], boxes):
-                raise HTTPException(status_code=400, detail='boxes mode requires at least one positive prompt')
-            active_hint = str(active_class).strip()
-            forced_class = active_hint or 'unknown'
-            prompt = ''
-            impacted_classes = []
-            infer_points = []
-            infer_boxes = boxes
         else:
-            raise HTTPException(status_code=400, detail='mode must be text/points/boxes')
+            raise HTTPException(status_code=400, detail='mode must be text/points')
 
         def _run_once(
             *,
@@ -335,7 +331,6 @@ class InferenceService:
                     boxes=infer_boxes,
                     point_box_size=point_box_size,
                     include_mask_png=True,
-                    contour_mode=contour_mode,
                 )
             detections_local = result_local.get('detections', [])
             detections_local = detections_local if isinstance(detections_local, list) else []
@@ -348,7 +343,7 @@ class InferenceService:
             return result_local, converted_local
 
         def _apply_visual_scope(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            if infer_mode not in {'points', 'boxes'}:
+            if infer_mode != 'points':
                 return list(detections)
             return _filter_visual_detections(detections, points=infer_points, boxes=infer_boxes)
 
@@ -475,7 +470,13 @@ class InferenceService:
         )
         is_locate_batch = backend == 'locate-anything'
         score_default = float(getattr(payload, 'score_default', 0.5) or 0.5)
-        contour_mode = str(getattr(payload, 'contour_mode', 'split') or 'split').strip().lower()
+        save_features = (
+            bool(getattr(payload, 'save_ai_features', False))
+            and not is_locate_batch
+            and str(payload.mode or 'text').strip().lower() == 'text'
+        )
+        feature_root = str(self.storage.ai_feature_root(payload.project_id)) if save_features else ''
+        merge_mode = str(getattr(payload, 'merge_mode', 'replace') or 'replace').strip().lower()
 
         classes = [str(c).strip() for c in payload.classes if str(c).strip()]
         if not classes:
@@ -497,14 +498,20 @@ class InferenceService:
         failed = max(0, int(prior.get('failed') or 0))
         skipped = max(0, int(prior.get('skipped') or 0))
         total_new = max(0, int(prior.get('new_annotations') or 0))
+        feature_failed = max(0, int(prior.get('feature_failed') or 0))
         errors = list(prior.get('errors', [])) if isinstance(prior.get('errors'), list) else []
         failed_image_ids = [str(x).strip() for x in prior.get('failed_image_ids', []) if str(x).strip()]
         skipped_image_ids = [str(x).strip() for x in prior.get('skipped_image_ids', []) if str(x).strip()]
         image_results = list(prior.get('image_results', [])) if isinstance(prior.get('image_results'), list) else []
+        resumed_append = bool(resume_state) and merge_mode == 'append'
         completed_image_ids = {
             str(item.get('image_id') or '').strip()
             for item in image_results
-            if isinstance(item, dict) and str(item.get('status') or '') == 'saved'
+            if isinstance(item, dict)
+            and (
+                resumed_append
+                or str(item.get('status') or '') == 'saved'
+            )
         }
         if completed_image_ids:
             target_images = [
@@ -516,6 +523,122 @@ class InferenceService:
         total = max(int(prior.get('progress_total') or 0), processed + len(target_images))
         prompt = ', '.join(classes)
         pending_images = list(target_images)
+        pending_feature_writes: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        def feature_info_from_item(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                'feature_status': str(item.get('feature_status') or 'feature_failed'),
+                'feature_write_id': str(item.get('feature_write_id') or ''),
+                'feature_key': str(item.get('feature_key') or ''),
+                'feature_relative_path': str(item.get('feature_relative_path') or ''),
+                'feature_bytes': int(item.get('feature_bytes') or 0),
+                'feature_error': str(item.get('feature_error') or ''),
+                'image_digest': str(item.get('image_digest') or ''),
+                'model_fingerprint': str(item.get('model_fingerprint') or ''),
+                'input_size': int(item.get('feature_input_size') or item.get('input_size') or 1008),
+                'dtype': str(item.get('feature_dtype') or item.get('dtype') or 'bfloat16'),
+                'format_version': str(item.get('feature_format_version') or item.get('format_version') or ''),
+                'persisted_by_batch': True,
+            }
+
+        def index_feature(image_id: str, info: dict[str, Any]) -> None:
+            nonlocal feature_failed
+            try:
+                self.storage.upsert_ai_feature(payload.project_id, image_id, info)
+            except Exception as feature_index_exc:  # annotations remain successful
+                info['feature_status'] = 'feature_failed'
+                info['feature_error'] = f'feature index update failed: {feature_index_exc}'
+            if info.get('feature_status') == 'feature_failed':
+                feature_failed += 1
+
+        def drain_feature_writes() -> None:
+            if not pending_feature_writes:
+                return
+            write_ids = list(pending_feature_writes)
+            try:
+                waited = batch_client.wait_feature_writes(
+                    api_base_url=batch_client_url,
+                    write_ids=write_ids,
+                )
+                raw_items = waited.get('items', []) if isinstance(waited, dict) else []
+                final_by_id = {
+                    str(raw.get('feature_write_id') or ''): raw
+                    for raw in raw_items
+                    if isinstance(raw, dict) and str(raw.get('feature_write_id') or '')
+                }
+            except Exception as exc:  # feature failure must not roll back annotations
+                final_by_id = {
+                    write_id: {
+                        'feature_write_id': write_id,
+                        'feature_status': 'feature_failed',
+                        'feature_error': f'feature write finalization failed: {exc}',
+                    }
+                    for write_id in write_ids
+                }
+
+            for write_id in write_ids:
+                image_id, image_result = pending_feature_writes.pop(write_id)
+                final_raw = final_by_id.get(write_id) or {
+                    'feature_write_id': write_id,
+                    'feature_status': 'feature_failed',
+                    'feature_error': 'feature write result is missing',
+                }
+                final_info = feature_info_from_item({**image_result, **final_raw})
+                image_result.update(final_info)
+                index_feature(image_id, final_info)
+
+        def unique_ids(*groups: list[str]) -> list[str]:
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for group in groups:
+                for raw in group:
+                    value = str(raw or '').strip()
+                    if value and value not in seen:
+                        seen.add(value)
+                        ordered.append(value)
+            return ordered
+
+        def result_payload(*, fatal: bool = False, fatal_error: str = '') -> dict[str, Any]:
+            retry_ids = unique_ids(failed_image_ids, skipped_image_ids)
+            summary = (
+                f'CUDA out of memory; stopped after {processed}/{total} images. '
+                f'{max(0, total - processed)} images were not processed.'
+                if fatal
+                else (
+                    f'Text batch complete: success {succeeded}, failed {failed}, skipped {skipped}, new {total_new}, batch={batch_size}'
+                    if failed > 0 or skipped > 0
+                    else f'Text batch complete: success {succeeded}, new {total_new}, batch={batch_size}'
+                )
+            )
+            return {
+                'project_id': payload.project_id,
+                'requested': total,
+                'processed_images': processed,
+                'saved_images': succeeded,
+                'failed_images': failed,
+                'skipped_images': skipped,
+                'unprocessed_images': max(0, total - processed),
+                'requested_batch_size': requested_batch_size,
+                'batch_size': batch_size,
+                'max_remote_batch_size': self._max_batch_files,
+                'succeeded': succeeded,
+                'failed': failed,
+                'skipped': skipped,
+                'new_annotations': total_new,
+                'save_ai_features': save_features,
+                'feature_failed': feature_failed,
+                'errors': errors,
+                'failed_image_ids': failed_image_ids,
+                'skipped_image_ids': skipped_image_ids,
+                'retry_image_ids': retry_ids,
+                'class_additions': class_additions,
+                'image_results': image_results,
+                'selection': selection_meta,
+                'fatal': fatal,
+                'error_code': 'CUDA_OOM' if fatal else '',
+                'fatal_error': fatal_error if fatal else '',
+                'message': summary,
+            }
 
         def emit_progress(**extra: Any) -> None:
             if not progress_cb:
@@ -529,6 +652,8 @@ class InferenceService:
                 failed=failed,
                 skipped=skipped,
                 new_annotations=total_new,
+                save_ai_features=save_features,
+                feature_failed=feature_failed,
                 failed_image_ids=failed_image_ids,
                 skipped_image_ids=skipped_image_ids,
                 class_additions=class_additions,
@@ -546,6 +671,7 @@ class InferenceService:
 
         for batch_images in self._chunked(target_images, batch_size):
             if should_stop and should_stop():
+                drain_feature_writes()
                 emit_progress(
                     status='paused',
                     message='Paused. Adjust parameters and resume when ready.',
@@ -575,7 +701,8 @@ class InferenceService:
                             prompt=prompt,
                             threshold=payload.threshold,
                             include_mask_png=True,
-                            contour_mode=contour_mode,
+                            save_ai_features=save_features,
+                            feature_root=feature_root,
                         )
                     )
                 items = batch_result.get('items', [])
@@ -584,6 +711,55 @@ class InferenceService:
                         f'remote batch result count mismatch: {len(items) if isinstance(items, list) else "invalid"} != {len(batch_images)}'
                     )
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, Sam3ApiError) and exc.status_code == 507:
+                    current_batch_ids: list[str] = []
+                    for image in batch_images:
+                        processed += 1
+                        failed += 1
+                        image_id = str(image.get('id') or '')
+                        rel_path = str(image.get('rel_path') or image_id)
+                        current_batch_ids.append(image_id)
+                        errors.append({'image_id': image_id, 'error': str(exc), 'code': 'CUDA_OOM'})
+                        failed_image_ids.append(image_id)
+                        image_results.append({
+                            'image_id': image_id,
+                            'rel_path': rel_path,
+                            'status': 'failed',
+                            'reason': 'cuda_oom',
+                            'new_annotations': 0,
+                            'error': str(exc),
+                        })
+                        if pending_images:
+                            pending_images.pop(0)
+                    unprocessed_ids = self._infer_job_image_ids(pending_images)
+                    failed_image_ids[:] = unique_ids(failed_image_ids)
+                    drain_feature_writes()
+                    partial = result_payload(fatal=True, fatal_error=str(exc))
+                    partial['retry_image_ids'] = unique_ids(
+                        failed_image_ids,
+                        skipped_image_ids,
+                        current_batch_ids,
+                        unprocessed_ids,
+                    )
+                    partial['stopped_image_id'] = current_batch_ids[0] if current_batch_ids else ''
+                    partial['stopped_image_rel_path'] = (
+                        str(batch_images[0].get('rel_path') or current_batch_ids[0])
+                        if batch_images else ''
+                    )
+                    partial['unprocessed_image_ids'] = unprocessed_ids
+                    emit_progress(
+                        fatal=True,
+                        error_code='CUDA_OOM',
+                        error=str(exc),
+                        message=partial['message'],
+                        progress_done=processed,
+                        progress_total=total,
+                    )
+                    raise InferJobFatal(
+                        str(partial['message']),
+                        error_code='CUDA_OOM',
+                        result=partial,
+                    ) from exc
                 for image in batch_images:
                     processed += 1
                     failed += 1
@@ -613,15 +789,6 @@ class InferenceService:
                 continue
 
             for image, item in zip(batch_images, items):
-                if should_stop and should_stop():
-                    emit_progress(
-                        status='paused',
-                        message='Paused. Adjust parameters and resume when ready.',
-                        progress_done=processed,
-                        progress_total=total,
-                    )
-                    raise InferJobPaused('Paused. Adjust parameters and resume when ready.')
-
                 processed += 1
                 image_id = str(image.get('id') or '')
                 rel_path = str(image.get('rel_path') or image_id)
@@ -644,28 +811,48 @@ class InferenceService:
                         source_model=batch_source,
                     )
                     old = self.storage.load_annotations(payload.project_id, image_id)
-                    merged = _replace_by_classes(
-                        old_annotations=old,
-                        impacted_classes=classes,
-                        new_annotations=converted,
-                        source_model=batch_source,
-                    )
-                    self.storage.save_annotations(payload.project_id, image_id, merged)
+                    if merge_mode == 'append':
+                        # save_annotations assigns project-wide, collision-free
+                        # canonical IDs. With no detections, skip the write so
+                        # content_rev and the existing records remain untouched.
+                        if converted:
+                            self.storage.save_annotations(
+                                payload.project_id,
+                                image_id,
+                                [*old, *converted],
+                            )
+                    else:
+                        merged = _replace_by_classes(
+                            old_annotations=old,
+                            impacted_classes=classes,
+                            new_annotations=converted,
+                            source_model=batch_source,
+                        )
+                        self.storage.save_annotations(payload.project_id, image_id, merged)
+                    feature_info: dict[str, Any] = {}
+                    if save_features:
+                        feature_info = feature_info_from_item(item)
                     succeeded += 1
                     total_new += len(converted)
                     for ann in converted:
                         cls = str(ann.get('class_name') or '').strip()
                         if cls:
                             class_additions[cls] = int(class_additions.get(cls, 0) or 0) + 1
-                    image_results.append(
-                        {
-                            'image_id': image_id,
-                            'rel_path': rel_path,
-                            'status': 'saved',
-                            'reason': 'ok',
-                            'new_annotations': len(converted),
-                        }
-                    )
+                    image_result = {
+                        'image_id': image_id,
+                        'rel_path': rel_path,
+                        'status': 'saved',
+                        'reason': 'ok',
+                        'new_annotations': len(converted),
+                        **feature_info,
+                    }
+                    image_results.append(image_result)
+                    if save_features:
+                        write_id = str(feature_info.get('feature_write_id') or '')
+                        if feature_info.get('feature_status') == 'queued' and write_id:
+                            pending_feature_writes[write_id] = (image_id, image_result)
+                        else:
+                            index_feature(image_id, feature_info)
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
                     message = f'Failed {processed}/{total}: {rel_path}'
@@ -691,34 +878,8 @@ class InferenceService:
                     current_image_rel_path=rel_path,
                 )
 
-        summary = (
-            f'Text batch complete: success {succeeded}, failed {failed}, skipped {skipped}, new {total_new}, batch={batch_size}'
-            if failed > 0 or skipped > 0
-            else f'Text batch complete: success {succeeded}, new {total_new}, batch={batch_size}'
-        )
-        return {
-            'project_id': payload.project_id,
-            'requested': total,
-            'processed_images': processed,
-            'saved_images': succeeded,
-            'failed_images': failed,
-            'skipped_images': skipped,
-            'requested_batch_size': requested_batch_size,
-            'batch_size': batch_size,
-            'max_remote_batch_size': self._max_batch_files,
-            'succeeded': succeeded,
-            'failed': failed,
-            'skipped': skipped,
-            'new_annotations': total_new,
-            'errors': errors,
-            'failed_image_ids': failed_image_ids,
-            'skipped_image_ids': skipped_image_ids,
-            'retry_image_ids': failed_image_ids + skipped_image_ids,
-            'class_additions': class_additions,
-            'image_results': image_results,
-            'selection': selection_meta,
-            'message': summary,
-        }
+        drain_feature_writes()
+        return result_payload()
 
 
     def _check_sam3_ready_for_la_boxes(self, *, sam3_url: str, locate_url: str) -> None:
@@ -769,18 +930,22 @@ class InferenceService:
     ) -> dict[str, list[list[float]]]:
         allowed = {c for c in classes if c}
         grouped: dict[str, list[list[float]]] = {}
-        for ann in annotations if isinstance(annotations, list) else []:
-            if not isinstance(ann, dict):
+        for instance in parse_image_annotations(annotations).instances:
+            if instance.provenance.producer.source_id != 'locate-anything':
                 continue
-            if str(ann.get('source_model') or '').strip().lower() != 'locate-anything':
-                continue
-            class_name = str(ann.get('class_name') or ann.get('label') or '').strip()
+            class_name = instance.class_name
             if not class_name or (allowed and class_name not in allowed):
                 continue
-            bbox = _ann_bbox(ann)
-            if not bbox:
+            bbox = instance.geometry.bbox
+            if bbox is None:
                 continue
-            grouped.setdefault(class_name, []).append([*bbox, 1.0])
+            grouped.setdefault(class_name, []).append([
+                bbox.x1,
+                bbox.y1,
+                bbox.x2,
+                bbox.y2,
+                1.0,
+            ])
         return grouped
 
     def precheck_infer_batch(self, payload: InferBatchIn) -> None:
@@ -791,6 +956,11 @@ class InferenceService:
         """
         if str(getattr(payload, 'mode', 'text') or 'text').strip().lower() != 'la_boxes':
             return
+        if str(getattr(payload, 'merge_mode', 'replace') or 'replace').strip().lower() == 'append':
+            raise HTTPException(
+                status_code=400,
+                detail='LA boxes segmentation does not support append merge mode',
+            )
         if str(getattr(payload, 'model_backend', 'sam3') or 'sam3').strip().lower() == 'locate-anything':
             raise HTTPException(
                 status_code=400,
@@ -813,6 +983,12 @@ class InferenceService:
         if project.get('project_type') != 'image':
             raise HTTPException(status_code=400, detail='batch infer currently supports image project only')
 
+        if str(getattr(payload, 'merge_mode', 'replace') or 'replace').strip().lower() == 'append':
+            raise HTTPException(
+                status_code=400,
+                detail='LA boxes segmentation does not support append merge mode',
+            )
+
         backend = str(getattr(payload, 'model_backend', 'sam3') or 'sam3').strip().lower()
         if backend == 'locate-anything':
             raise HTTPException(
@@ -822,7 +998,6 @@ class InferenceService:
         locate_url = self._resolve_locate_api_base_url(getattr(payload, 'locate_api_base_url', ''))
         self._check_sam3_ready_for_la_boxes(sam3_url=payload.api_base_url, locate_url=locate_url)
 
-        contour_mode = str(getattr(payload, 'contour_mode', 'split') or 'split').strip().lower()
         classes = [str(c).strip() for c in payload.classes if str(c).strip()]
 
         target_images, selection_meta = self._select_text_batch_target_images(
@@ -928,7 +1103,6 @@ class InferenceService:
                                 threshold=payload.threshold,
                                 boxes=boxes,
                                 include_mask_png=True,
-                                contour_mode=contour_mode,
                             )
                         )
                         detections = result.get('detections', [])

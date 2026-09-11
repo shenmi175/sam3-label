@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -14,6 +14,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../../stores/workspace/projectStore';
 import { useAnnotationStore } from '../../stores/workspace/annotationStore';
+import { useViewerStore } from '../../stores/workspace/viewerStore';
 import { getClassColor } from '../../utils/geometry';
 import { toast } from '../../utils/notify';
 
@@ -29,8 +30,11 @@ export function ClassPanel({ collapsed }: { collapsed: boolean }) {
   const selectedClass = useProjectStore((s) => s.selectedClass);
   const inferenceChecked = useProjectStore((s) => s.inferenceCheckedClasses);
   const annotations = useAnnotationStore((s) => s.annotations);
+  const focusedAnnotationId = useViewerStore((s) => s.focusedAnnotationId);
+  const highlightedAnnotationIds = useViewerStore((s) => s.highlightedAnnotationIds);
   const [addOpen, setAddOpen] = useState(false);
   const [addText, setAddText] = useState('');
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
@@ -40,6 +44,22 @@ export function ClassPanel({ collapsed }: { collapsed: boolean }) {
     }
     return map;
   }, [annotations]);
+
+  const focusedClass = useMemo(() => {
+    if (!focusedAnnotationId) return '';
+    const annotation = annotations.find((ann) => String(ann?.id || '') === String(focusedAnnotationId));
+    return String(annotation?.class_name || '').trim();
+  }, [annotations, focusedAnnotationId]);
+
+  useEffect(() => {
+    if (!focusedClass || !classes.includes(focusedClass)) return;
+    if (useProjectStore.getState().selectedClass !== focusedClass) {
+      useProjectStore.getState().setSelectedClass(focusedClass);
+    }
+    if (collapsed) return;
+    const row = rowRefs.current.get(focusedClass);
+    row?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [classes, collapsed, focusedClass]);
 
   const handleAdd = async () => {
     const text = addText.trim();
@@ -68,10 +88,26 @@ export function ClassPanel({ collapsed }: { collapsed: boolean }) {
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', pr: 0.5, flex: 1, minHeight: 0 }}>
         {classes.map((className) => {
           const selected = className === selectedClass;
+          const classAnnotationIds = annotations
+            .filter((annotation) => String(annotation?.class_name || '') === className)
+            .map((annotation) => String(annotation?.id || ''))
+            .filter(Boolean);
+          const highlighted = classAnnotationIds.length > 0
+            && classAnnotationIds.every((id) => highlightedAnnotationIds.includes(id));
           return (
             <Box
               key={className}
-              onClick={() => useProjectStore.getState().setSelectedClass(className)}
+              ref={(node: HTMLDivElement | null) => {
+                if (node) rowRefs.current.set(className, node);
+                else rowRefs.current.delete(className);
+              }}
+              data-class-name={className}
+              onClick={() => {
+                useProjectStore.getState().setSelectedClass(className);
+                useViewerStore.getState().setHighlightedAnnotations(
+                  highlighted ? [] : classAnnotationIds,
+                );
+              }}
               sx={{
                 display: 'flex',
                 alignItems: 'center',
@@ -80,6 +116,8 @@ export function ClassPanel({ collapsed }: { collapsed: boolean }) {
                 borderRadius: 2,
                 cursor: 'pointer',
                 bgcolor: selected ? 'action.selected' : 'transparent',
+                outline: highlighted ? '2px solid' : 'none',
+                outlineColor: highlighted ? getClassColor(className) : 'transparent',
                 '&:hover': { bgcolor: 'action.hover' },
               }}
             >

@@ -1,6 +1,6 @@
 # Docker 部署
 
-默认方案是不做反代，直接用 `IP:端口` 登录 `web-auto`。`sam3-api` 仍然只在 Docker 内部网络暴露，不映射到宿主机端口。
+默认通过 `IP:端口` 登录 `web-auto`。`sam3-api` 仍然只在 Docker 内部网络暴露，不映射到宿主机端口。
 
 ## 构建前置：子模块必须检出
 
@@ -37,7 +37,6 @@ Password: .env 里的 WEB_AUTO_ADMIN_PASSWORD
 
 默认值：
 
-- `SAM3_ACCESS_MODE=direct`
 - `WEB_AUTO_HTTP_BIND=0.0.0.0`
 - `WEB_AUTO_HTTP_PORT=8000`
 - `SAM3_DEPLOY_PROFILE=gpu`
@@ -51,10 +50,10 @@ WEB_AUTO_HTTP_PORT=18000
 然后重启：
 
 ```bash
-./deploy.sh start --direct
+./deploy.sh start
 ```
 
-## 直接模式安全边界
+## HTTP 访问安全边界
 
 - 对外只发布 `web-auto` 的 HTTP 端口，例如 `8000`。
 - `sam3-api` 不发布宿主机端口，只允许 `web-auto` 通过 `http://sam3-api:8001` 内部调用。
@@ -77,27 +76,27 @@ WEB_AUTO_HTTP_PORT=18000
 安装时直接设置主数据根目录：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+/mnt/datasets
 ```
 
 脚本会写入：
 
 ```text
-WEB_AUTO_HOST_DATA_ROOT=/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
-WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+WEB_AUTO_HOST_DATA_ROOT=/mnt/datasets
+WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/mnt/datasets/uploads
 ```
 
 部署后新增一个外置盘挂载：
 
 ```bash
-./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
+./deploy.sh data-root add /mnt/datasets --default
 ```
 
 或指定精确上传目录：
 
 ```bash
-./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas \
-  --upload-target /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+./deploy.sh data-root add /mnt/datasets \
+  --upload-target /mnt/datasets/uploads
 ```
 
 设置页会在目标目录未挂载时生成可复制命令。
@@ -111,13 +110,13 @@ WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480
 删除一个额外挂载：
 
 ```bash
-./deploy.sh data-root remove /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+./deploy.sh data-root remove /mnt/datasets
 ```
 
 上传后创建图片项目时，图片目录填写服务器路径，例如：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads/my-project
+/mnt/datasets/uploads/my-project
 ```
 
 出于安全限制，上传目标必须位于任意一个已挂载数据根目录下。如果页面提示目录未挂载，在服务器执行：
@@ -144,31 +143,6 @@ WEB_AUTO_DEFAULT_UPLOAD_TARGET_DIR=/media/enabot/f6c408f7-8050-4999-b77c-ce34480
 
 详细说明见 [项目恢复和已有输出导入 Wiki](docs/wiki/project-recovery.md)。
 
-## 可选 HTTPS 反代
-
-公司网络、NAT、运营商或安全组不允许公网 `80/443` 入站时，不建议启用反代。
-
-确认公网 `80/443` 可入站后，可以手动启用：
-
-```bash
-./deploy.sh start --proxy
-```
-
-反代模式需要 `.env` 配置：
-
-```text
-SAM3_ACCESS_MODE=proxy
-PUBLIC_DOMAIN=sam3.example.com
-ACME_EMAIL=you@example.com
-```
-
-Caddy 相关依据：
-
-- Caddy Automatic HTTPS: https://caddyserver.com/docs/automatic-https
-- Caddy reverse_proxy: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
-- Caddy Docker 镜像: https://hub.docker.com/_/caddy
-- Let’s Encrypt challenge: https://letsencrypt.org/docs/challenge-types/
-
 ## 常用命令
 
 ```bash
@@ -178,7 +152,7 @@ Caddy 相关依据：
 ./deploy.sh logs sam3-api
 ./deploy.sh restart web-auto
 ./deploy.sh reset-admin
-./deploy.sh update --direct
+./deploy.sh update
 ```
 
 如果登录提示 `invalid username or password`，说明旧的 `web-auto/data/auth.json` 里已有管理员密码哈希。重置管理员密码：
@@ -203,7 +177,7 @@ GPU 检查：
 
 ```bash
 ./deploy.sh gpu-install
-./deploy.sh start --gpu --direct
+./deploy.sh start --gpu
 ```
 
 ## 卸载

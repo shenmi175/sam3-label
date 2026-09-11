@@ -11,17 +11,23 @@ export interface BackendErrorModalState {
 }
 
 export interface BatchConfigRequest {
+  /** Classes checked outside the modal; used only as this run's defaults. */
   classes: string[];
   title: string;
   /** Resolved with the modal result, or null when the modal is cancelled. */
   resolve: (result: BatchConfigResult | null) => void;
+  supportsAiFeatures: boolean;
+  supportsAppendMode: boolean;
 }
 
 export interface BatchConfigResult {
+  classes: string[];
   scope_mode: 'all' | 'unlabeled' | 'class_related' | 'class_related_unlabeled';
+  merge_mode: 'replace' | 'append';
   related_classes: string[];
   image_ids: string[];
   retry_image_ids: string[];
+  save_ai_features: boolean;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -54,7 +60,12 @@ interface InferenceStore {
   closeBatchResult: () => void;
   showBackendError: (type: BackendErrorType, detail: Record<string, unknown>) => void;
   closeBackendError: () => void;
-  openBatchConfig: (classes: string[], title: string) => Promise<BatchConfigResult | null>;
+  openBatchConfig: (
+    classes: string[],
+    title: string,
+    supportsAiFeatures?: boolean,
+    supportsAppendMode?: boolean,
+  ) => Promise<BatchConfigResult | null>;
   resolveBatchConfig: (result: BatchConfigResult | null) => void;
   reset: () => void;
 }
@@ -84,9 +95,9 @@ export const useInferenceStore = create<InferenceStore>((set, get) => ({
 
   closeBackendError: () => set({ backendErrorModal: null }),
 
-  openBatchConfig: (classes, title) => {
+  openBatchConfig: (classes, title, supportsAiFeatures = false, supportsAppendMode = true) => {
     return new Promise<BatchConfigResult | null>((resolve) => {
-      set({ batchConfigRequest: { classes, title, resolve } });
+      set({ batchConfigRequest: { classes, title, supportsAiFeatures, supportsAppendMode, resolve } });
     });
   },
 

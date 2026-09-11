@@ -36,13 +36,13 @@ web_auto_project.json
 如果项目在某个子目录下，例如：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg/prj_xxx
+/mnt/datasets/openimg/prj_xxx
 ```
 
 可以把“扫描根目录”直接填成：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg
+/mnt/datasets/openimg
 ```
 
 选择旧的 `prj_*` 输出目录后，填写当时创建项目使用的图片目录，然后点击“恢复项目”。
@@ -70,7 +70,7 @@ curl -s http://服务器IP:8000/api/projects/discover
 ```bash
 curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
   -H 'Content-Type: application/json' \
-  -d '{"manifest_path":"/data/zmb_datas/prj_xxx/web_auto_project.json"}'
+  -d '{"manifest_path":"/data/datasets/prj_xxx/web_auto_project.json"}'
 ```
 
 导入旧输出目录：
@@ -79,8 +79,8 @@ curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
 curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
   -H 'Content-Type: application/json' \
   -d '{
-    "output_dir": "/data/zmb_datas/prj_xxx",
-    "image_dir": "/data/zmb_datas/001",
+    "output_dir": "/data/datasets/prj_xxx",
+    "image_dir": "/data/datasets/001",
     "name": "001"
   }'
 ```
@@ -98,13 +98,13 @@ curl -s -X POST http://服务器IP:8000/api/projects/import_existing \
 确认容器能看到目录：
 
 ```bash
-./deploy.sh data-root doctor /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/openimg
+./deploy.sh data-root doctor /mnt/datasets/openimg
 ```
 
 如果容器内没有这个目录，先执行：
 
 ```bash
-./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
+./deploy.sh data-root add /mnt/datasets --default
 ```
 
 如果已经添加过但容器环境还是旧的，重建 `web-auto`：

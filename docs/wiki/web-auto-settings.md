@@ -20,15 +20,15 @@
 例如新增外置盘目录：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+/mnt/datasets
 ```
 
 页面会生成类似命令：
 
 ```bash
-cd ~/zmb_work/sam3
-./deploy.sh data-root add '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas' --upload-target '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads'
-./deploy.sh data-root doctor '/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads'
+cd /path/to/sam3
+./deploy.sh data-root add '/mnt/datasets' --upload-target '/mnt/datasets/uploads'
+./deploy.sh data-root doctor '/mnt/datasets/uploads'
 ```
 
 复制整段到服务器终端运行。`data-root add` 会生成或修复 `docker-compose.mounts.yml`，并重建 `web-auto`，不用再手写 `docker compose -f ...`。
@@ -46,7 +46,7 @@ cd ~/zmb_work/sam3
 ./deploy.sh data-root add /path/to/data-root --default
 ```
 
-项目管理页面另有“模型服务”区域，可管理 `sam3-api`、`sapiens-api` 和可选 `caddy` 容器。`sapiens-api` 使用独立容器和独立 checkpoint 目录，详见 [Sapiens2 服务](sapiens2-service.md)。
+项目管理页面另有“模型服务”区域，可管理 `sam3-api`、`locate-anything-api` 和 `sapiens-api` 容器。`sapiens-api` 使用独立容器和独立 checkpoint 目录，详见 [Sapiens2 服务](sapiens2-service.md)。
 
 ## 登录管理
 

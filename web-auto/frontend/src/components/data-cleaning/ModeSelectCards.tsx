@@ -1,76 +1,55 @@
 import { Box, Button, Typography } from '@mui/material';
 import { useTranslation } from 'react-i18next';
-import { useProjectStore } from '../../stores/workspace/projectStore';
-import {
-  useSmartFilterStore,
-  type SmartFilterConfig,
-} from '../../stores/workspace/smartFilterStore';
+import type { FilterTaskType } from '../../api/filters';
+import { useSmartFilterStore } from '../../stores/workspace/smartFilterStore';
 
-/**
- * Data-cleaning mode selection cards — recipe presets (legacy
- * filter-recipe-card) + the merge/rule/delete-unlabeled operation mode
- * switch with its mode hint text.
- */
-export function ModeSelectCards() {
+const GROUPS: Array<{ title: string; tasks: FilterTaskType[] }> = [
+  { title: 'sf_group_mask', tasks: ['remove_small_components', 'remove_edge_spurs', 'shortest_bridge', 'morph_close', 'fill_small_holes'] },
+  { title: 'sf_group_delete', tasks: ['deduplicate_same_class', 'remove_small_instances', 'remove_confidence_range', 'remove_position_region', 'delete_by_box_count'] },
+  { title: 'sf_group_organize', tasks: ['normalize_classes', 'delete_unlabeled_images'] },
+];
+
+export const DATA_CLEANING_TASK_TABS: Record<'noise' | 'instances' | 'merge' | 'unlabeled', FilterTaskType[]> = {
+  noise: ['remove_small_components', 'deduplicate_same_class', 'normalize_classes'],
+  instances: ['remove_small_instances', 'remove_confidence_range', 'remove_position_region', 'delete_by_box_count'],
+  merge: ['remove_edge_spurs', 'fill_small_holes', 'shortest_bridge', 'morph_close'],
+  unlabeled: ['delete_unlabeled_images'],
+};
+
+export function ModeSelectCards({ tasks }: { tasks?: FilterTaskType[] }) {
   const { t } = useTranslation();
-  const classes = useProjectStore((s) => s.classes);
-  const activePreset = useSmartFilterStore((s) => s.activePreset);
-  const operationMode = useSmartFilterStore((s) => s.config.operationMode);
+  const taskType = useSmartFilterStore((state) => state.config.taskType);
+  const selectTask = useSmartFilterStore((state) => state.selectTask);
+  const taskButton = (task: FilterTaskType) => (
+    <Button
+      key={task}
+      size="small"
+      variant={taskType === task ? 'contained' : 'outlined'}
+      onClick={() => selectTask(task)}
+      sx={{ justifyContent: 'flex-start', textAlign: 'left', minHeight: 38 }}
+    >
+      {t(`sf_task_${task}`)}
+    </Button>
+  );
 
-  const update = (partial: Partial<SmartFilterConfig>) =>
-    useSmartFilterStore.getState().updateConfig(partial);
-
-  const isMerge = operationMode === 'merge';
-  const isRule = operationMode === 'rule';
+  if (tasks) {
+    return (
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2,minmax(0,1fr))' }, gap: 0.75 }}>
+        {tasks.map(taskButton)}
+      </Box>
+    );
+  }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-      {/* Recipe presets (legacy filter-recipe-card) */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 1 }}>
-        {([
-          ['dedupe', 'sf_preset_dedupe', 'sf_preset_dedupe_desc'],
-          ['canonical', 'sf_preset_canonical', 'sf_preset_canonical_desc'],
-          ['cleanup', 'sf_preset_cleanup', 'sf_preset_cleanup_desc'],
-          ['delete_unlabeled', 'sf_preset_delete', 'sf_preset_delete_desc'],
-        ] as const).map(([preset, titleKey, descKey]) => (
-          <Button
-            key={preset}
-            size="small"
-            variant={activePreset === preset ? 'contained' : 'outlined'}
-            onClick={() => useSmartFilterStore.getState().applyPreset(preset, classes)}
-            sx={{ flexDirection: 'column', alignItems: 'flex-start', gap: 0.5, p: 1, textTransform: 'none' }}
-          >
-            <Typography sx={{ fontSize: 12, fontWeight: 800 }}>{t(titleKey)}</Typography>
-            <Typography sx={{ fontSize: 10, color: activePreset === preset ? 'inherit' : 'text.secondary', textAlign: 'left', lineHeight: 1.4 }}>
-              {t(descKey)}
-            </Typography>
-          </Button>
-        ))}
-      </Box>
-
-      {/* Operation mode switch (legacy merge/rule/delete buttons) */}
-      <Box sx={{ display: 'flex', gap: 0.75 }}>
-        {([
-          ['merge', 'sf_op_merge'],
-          ['rule', 'sf_op_rule'],
-          ['delete_unlabeled', 'sf_op_delete_unlabeled'],
-        ] as const).map(([mode, labelKey]) => (
-          <Button
-            key={mode}
-            size="small"
-            fullWidth
-            variant={operationMode === mode ? 'contained' : 'outlined'}
-            color={mode === 'merge' ? 'primary' : 'error'}
-            onClick={() => update({ operationMode: mode })}
-            sx={{ fontSize: 11, fontWeight: 700 }}
-          >
-            {t(labelKey)}
-          </Button>
-        ))}
-      </Box>
-      <Typography sx={{ fontSize: 11, color: 'text.secondary', lineHeight: 1.6, p: 1.25, borderRadius: 1.5, bgcolor: 'action.hover' }}>
-        {isMerge ? t('sf_hint_merge') : isRule ? t('sf_hint_rule') : t('sf_hint_delete')}
-      </Typography>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {GROUPS.map((group) => (
+        <Box key={group.title}>
+          <Typography sx={{ mb: 0.75, fontSize: 12, fontWeight: 800, color: 'text.secondary' }}>{t(group.title)}</Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2,minmax(0,1fr))' }, gap: 0.75 }}>
+            {group.tasks.map(taskButton)}
+          </Box>
+        </Box>
+      ))}
     </Box>
   );
 }

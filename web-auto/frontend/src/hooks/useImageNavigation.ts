@@ -7,6 +7,7 @@ import { useProjectStore, type ImageFilterStatus } from '../stores/workspace/pro
 import { useImageStore } from '../stores/workspace/imageStore';
 import { useAnnotationStore } from '../stores/workspace/annotationStore';
 import { useLayoutStore } from '../stores/workspace/layoutStore';
+import { useSettingsStore } from '../stores/settingsStore';
 
 function sanitizeOffset(offset: number, total: number, limit: number): number {
   let next = Math.max(0, Math.floor(offset));
@@ -37,6 +38,9 @@ export function useImageNavigation() {
       const resp = await getImages(projectId, offset, project.limit, {
         status: project.imageFilterStatus === 'all' ? undefined : project.imageFilterStatus,
         className: project.imageFilterClass || undefined,
+        sourceModel: project.imageFilterClass
+          ? (useSettingsStore.getState().defaultBackend || 'sam3')
+          : undefined,
         imageId: useImageStore.getState().selectedImageId || '',
       });
       const current = useProjectStore.getState();

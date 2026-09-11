@@ -5,17 +5,15 @@ export interface BackendPayload {
   model_backend?: string;
   locate_api_base_url?: string;
   score_default?: number;
-  contour_mode?: string;
 }
 
 export interface InferSinglePayload extends BackendPayload {
   project_id: string;
   image_id: string;
-  mode: 'text' | 'points' | 'boxes';
+  mode: 'text' | 'points';
   classes?: string[];
   active_class?: string;
   points?: number[][];
-  boxes?: number[][];
   threshold?: number;
   api_base_url?: string;
 }
@@ -28,10 +26,12 @@ export interface InferBatchPayload extends BackendPayload {
   retry_image_ids?: string[];
   all_images?: boolean;
   scope_mode?: string;
+  merge_mode?: 'replace' | 'append';
   related_classes?: string[];
   batch_size?: number;
   threshold?: number;
   api_base_url?: string;
+  save_ai_features?: boolean;
 }
 
 export interface InferDetection {

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from pydantic import ValidationError
 
 try:
     import cv2
@@ -55,6 +56,18 @@ def _load_web_auto_conversion():
 
 @unittest.skipIf(cv2 is None, "cv2 is not installed")
 class TestMaskComponentSplit(unittest.TestCase):
+    def test_web_auto_inference_schema_rejects_removed_contour_mode(self):
+        for name in list(sys.modules):
+            if name == "app" or name.startswith("app."):
+                del sys.modules[name]
+        sys.path.insert(0, str(ROOT / "web-auto"))
+        try:
+            from app.schemas.inference import InferIn
+            with self.assertRaises(ValidationError):
+                InferIn(project_id='p', image_id='i', mode='text', contour_mode='split')
+        finally:
+            sys.path.pop(0)
+
     def test_split_mask_components_returns_all_disconnected_regions(self):
         utils = _load_sam3_utils()
         mask = np.zeros((20, 20), dtype=np.uint8)
@@ -80,7 +93,7 @@ class TestMaskComponentSplit(unittest.TestCase):
         self.assertEqual(len(components), 2)
         self.assertEqual([component.area for component in components], [49, 4])
 
-    def test_web_auto_fallback_splits_mask_only_remote_detection(self):
+    def test_web_auto_fallback_keeps_mask_components_in_one_instance(self):
         convert_detections = _load_web_auto_conversion()
         mask = np.zeros((20, 20), dtype=np.uint8)
         mask[2:6, 2:6] = 1
@@ -99,16 +112,13 @@ class TestMaskComponentSplit(unittest.TestCase):
             classes=["chair"],
         )
 
-        self.assertEqual([ann["id"] for ann in annotations], ["det_0007_c001", "det_0007_c002"])
-        self.assertEqual([ann["model_det_id"] for ann in annotations], ["det_0007", "det_0007"])
-        self.assertEqual([ann["contour_index"] for ann in annotations], [1, 2])
-        self.assertEqual([ann["contour_count"] for ann in annotations], [2, 2])
-        self.assertEqual(
-            [ann["bbox"] for ann in annotations],
-            [[0.0, 0.0, 20.0, 20.0], [0.0, 0.0, 20.0, 20.0]],
-        )
-        self.assertEqual([ann["area"] for ann in annotations], [16.0, 15.0])
-        self.assertEqual([_decode_mask_area(ann["mask_png_base64"]) for ann in annotations], [16, 15])
+        self.assertEqual(len(annotations), 1)
+        self.assertEqual(annotations[0]["id"], "det_0007")
+        self.assertEqual(annotations[0]["component_count"], 2)
+        self.assertEqual(len(annotations[0]["polygons"]), 2)
+        self.assertEqual(annotations[0]["bbox"], [0.0, 0.0, 20.0, 20.0])
+        self.assertEqual(annotations[0]["area"], 31.0)
+        self.assertEqual(_decode_mask_area(annotations[0]["mask_png_base64"]), 31)
 
     def test_web_auto_keeps_already_polygonized_remote_detections_without_resplitting(self):
         convert_detections = _load_web_auto_conversion()
@@ -143,7 +153,8 @@ class TestMaskComponentSplit(unittest.TestCase):
 
         self.assertEqual(len(annotations), 2)
         self.assertEqual([ann["id"] for ann in annotations], ["det_0001_c001", "det_0001_c002"])
-        self.assertEqual([ann["model_det_id"] for ann in annotations], ["det_0001", "det_0001"])
+        self.assertTrue(all('model_det_id' not in ann for ann in annotations))
+        self.assertTrue(all('contour_index' not in ann and 'contour_count' not in ann for ann in annotations))
 
 
 if __name__ == "__main__":

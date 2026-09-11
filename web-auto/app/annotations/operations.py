@@ -1,32 +1,29 @@
 from __future__ import annotations
 
+"""Operational mask and geometry algorithms built on canonical annotations.
+
+Raw annotation interpretation belongs to :mod:`app.annotations.parser`.  The
+helpers here remain private adapters for inference, cleaning and mask I/O.
+"""
+
 import base64
 import math
 import re
 from typing import Any
 
+from app.annotations.geometry import bbox_from_polygons, parse_bbox, parse_polygon, polygon_area
+from app.annotations.parser import parse_image_annotations
 from app.utils import norm_text
 
 
 def _bbox_from_polygon(polygon: list[list[float]]) -> list[float]:
-    if not isinstance(polygon, list) or len(polygon) < 3:
+    parsed, _problem = parse_polygon(polygon, field='polygon')
+    if parsed is None:
         return []
-    xs, ys = [], []
-    for p in polygon:
-        if not isinstance(p, (list, tuple)) or len(p) < 2:
-            continue
-        try:
-            xs.append(float(p[0]))
-            ys.append(float(p[1]))
-        except (TypeError, ValueError):
-            continue
-    if not xs or not ys:
+    bbox = bbox_from_polygons((parsed,))
+    if bbox is None:
         return []
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-    if x2 <= x1 or y2 <= y1:
-        return []
-    return [x1, y1, x2, y2]
+    return [bbox.x1, bbox.y1, bbox.x2, bbox.y2]
 
 
 def _mask_components_from_base64(mask_b64: str, min_contour_area: float = 1.0) -> list[dict[str, Any]]:
@@ -91,22 +88,8 @@ def _polygon_from_mask(mask_b64: str) -> list[list[float]]:
 
 
 def _norm_bbox_xyxy(raw: Any) -> list[float]:
-    if not isinstance(raw, list) or len(raw) < 4:
-        return []
-    try:
-        x1 = float(raw[0])
-        y1 = float(raw[1])
-        x2 = float(raw[2])
-        y2 = float(raw[3])
-    except (TypeError, ValueError):
-        return []
-    x_min = min(x1, x2)
-    y_min = min(y1, y2)
-    x_max = max(x1, x2)
-    y_max = max(y1, y2)
-    if x_max <= x_min or y_max <= y_min:
-        return []
-    return [x_min, y_min, x_max, y_max]
+    bbox, _problem = parse_bbox(raw, field='bbox')
+    return [bbox.x1, bbox.y1, bbox.x2, bbox.y2] if bbox else []
 
 
 def _bbox_center(bbox: list[float]) -> tuple[float, float]:
@@ -148,52 +131,24 @@ def _bbox_intersection_area(a: list[float], b: list[float]) -> float:
 
 
 def _polygon_area(poly: list[list[float]]) -> float:
-    if not isinstance(poly, list) or len(poly) < 3:
-        return 0.0
-    area = 0.0
-    pts: list[tuple[float, float]] = []
-    for p in poly:
-        if not isinstance(p, (list, tuple)) or len(p) < 2:
-            continue
-        try:
-            pts.append((float(p[0]), float(p[1])))
-        except (TypeError, ValueError):
-            continue
-    if len(pts) < 3:
-        return 0.0
-    for i in range(len(pts)):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i + 1) % len(pts)]
-        area += (x1 * y2) - (x2 * y1)
-    return abs(area) * 0.5
+    parsed, _problem = parse_polygon(poly, field='polygon')
+    return polygon_area(parsed) if parsed else 0.0
 
 
 def _ann_bbox(ann: dict[str, Any]) -> list[float]:
-    bbox = _norm_bbox_xyxy(ann.get('bbox') or [])
-    if bbox:
-        return bbox
-    return _bbox_from_polygon(ann.get('polygon') or [])
+    parsed = parse_image_annotations([ann]).instances
+    bbox = parsed[0].geometry.bbox if parsed else None
+    return [bbox.x1, bbox.y1, bbox.x2, bbox.y2] if bbox else []
 
 
 def _annotation_area_value(ann: dict[str, Any]) -> float:
-    try:
-        raw_area = float(ann.get('area') or 0.0)
-    except (TypeError, ValueError):
-        raw_area = 0.0
-    if raw_area > 0.0:
-        return raw_area
-    polygons = ann.get('polygons')
-    if isinstance(polygons, list) and polygons:
-        multi_area = sum(_polygon_area(p) for p in polygons if isinstance(p, list))
-        if multi_area > 0.0:
-            return multi_area
-    poly_area = _polygon_area(ann.get('polygon') or [])
-    if poly_area > 0.0:
-        return poly_area
-    bbox = _ann_bbox(ann)
-    if bbox:
-        return max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
-    return 0.0
+    parsed = parse_image_annotations([ann]).instances
+    if not parsed:
+        return 0.0
+    geometry = parsed[0].geometry
+    if geometry.segmentation_area_px is not None and geometry.segmentation_area_px > 0:
+        return geometry.segmentation_area_px
+    return geometry.bbox_area_px or 0.0
 
 
 def _bbox_area_value(bbox: list[float]) -> float:
@@ -213,18 +168,11 @@ def _annotation_metric_area(ann: dict[str, Any], *, area_mode: str) -> float:
 
 
 def _ann_polygon(ann: dict[str, Any]) -> list[list[float]]:
-    raw = ann.get('polygon') or []
-    out: list[list[float]] = []
-    if isinstance(raw, list):
-        for p in raw:
-            if not isinstance(p, (list, tuple)) or len(p) < 2:
-                continue
-            try:
-                out.append([float(p[0]), float(p[1])])
-            except (TypeError, ValueError):
-                continue
-    if len(out) >= 3:
-        return out
+    parsed = parse_image_annotations([ann]).instances
+    regions = parsed[0].geometry.regions if parsed else ()
+    if regions:
+        primary = max(regions, key=polygon_area)
+        return [[float(x), float(y)] for x, y in primary]
     mask_poly = _polygon_from_mask(str(ann.get('mask_png_base64') or ann.get('mask_png') or ''))
     if len(mask_poly) >= 3:
         return [[float(p[0]), float(p[1])] for p in mask_poly]
@@ -288,7 +236,8 @@ def _annotation_cover_ratio(
 
 
 def _annotation_class_name(ann: dict[str, Any]) -> str:
-    return str(ann.get('class_name') or ann.get('label') or '').strip()
+    parsed = parse_image_annotations([ann]).instances
+    return parsed[0].class_name if parsed else ''
 
 
 def _class_tokens(raw: str) -> set[str]:

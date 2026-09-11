@@ -2,609 +2,24 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Optional
+from time import perf_counter
+from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from app.annotations import parse_image_annotations
+from app.data_cleaning.artifacts import cleanup_expired_previews, preview_dir
+from app.data_cleaning.config import normalize_config
+from app.data_cleaning.engine import analyze_project, apply_change_sets, validate_change_sets
+from app.data_cleaning.rules import analyze_merge_annotations
 from app.schemas import SmartFilterIn
 from app.services.job_queue import PersistentJobQueue
-from app.services.annotation_geometry import (
-    _ann_bbox,
-    _annotation_class_name,
-    _annotation_cover_ratio,
-    _annotation_metric_area,
-)
-from app.utils import new_id, norm_text, now_ts
-
-
-def _annotation_score(ann: dict[str, Any]) -> float:
-    try:
-        return float(ann.get('score') or ann.get('confidence') or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _get_image_dimensions(image: dict[str, Any]) -> tuple[int, int]:
-    image_path = str(image.get('abs_path') or '').strip()
-    if not image_path:
-        return 0, 0
-    try:
-        from PIL import Image  # type: ignore
-
-        with Image.open(image_path) as im:
-            width, height = im.size
-        return max(0, int(width)), max(0, int(height))
-    except Exception:
-        return 0, 0
-
-
-def _annotation_has_any_class(
-    annotations: list[dict[str, Any]],
-    class_names: list[str],
-) -> bool:
-    wanted = {norm_text(x) for x in class_names if norm_text(x)}
-    if not wanted:
-        return bool(annotations)
-    for ann in annotations:
-        if norm_text(str(ann.get('class_name') or '')) in wanted:
-            return True
-    return False
-
-
-def _smart_filter_image_scope_count(
-    annotations: list[dict[str, Any]],
-    *,
-    rule_classes: list[str],
-) -> int:
-    wanted = {norm_text(x) for x in rule_classes if norm_text(x)}
-    if not wanted:
-        return len([ann for ann in annotations if _annotation_class_name(ann)])
-    count = 0
-    for ann in annotations:
-        cls_norm = norm_text(_annotation_class_name(ann))
-        if cls_norm in wanted:
-            count += 1
-    return count
-
-
-def _smart_filter_annotation_allowed(
-    ann: dict[str, Any],
-    *,
-    area_mode: str,
-    rule_classes: list[str],
-    image_width: int,
-    image_height: int,
-    small_target_enabled: bool,
-    max_area_ratio: float,
-    position_enabled: bool,
-    center_x_half_width: float,
-    center_y_half_height: float,
-    confidence_enabled: bool,
-    min_confidence: float,
-    max_confidence: float,
-    require_geometry: bool = False,
-) -> bool:
-    cls = _annotation_class_name(ann)
-    if not cls:
-        return False
-    wanted = {norm_text(x) for x in rule_classes if norm_text(x)}
-    cls_norm = norm_text(cls)
-    if wanted and cls_norm not in wanted:
-        return False
-
-    score = _annotation_score(ann)
-    if confidence_enabled and not (float(min_confidence) <= score <= float(max_confidence)):
-        return False
-
-    bbox = _ann_bbox(ann)
-    if require_geometry and not bbox:
-        return False
-
-    if small_target_enabled and image_width > 0 and image_height > 0:
-        if not bbox:
-            return False
-        image_area = float(image_width * image_height)
-        ann_area = _annotation_metric_area(ann, area_mode=area_mode)
-        if image_area > 0.0 and (ann_area / image_area) > float(max_area_ratio):
-            return False
-
-    if position_enabled and image_width > 0 and image_height > 0:
-        if not bbox:
-            return False
-        cx = ((bbox[0] + bbox[2]) / 2.0) / float(image_width)
-        cy = ((bbox[1] + bbox[3]) / 2.0) / float(image_height)
-        if abs(cx - 0.5) > float(center_x_half_width):
-            return False
-        if abs(cy - 0.5) > float(center_y_half_height):
-            return False
-
-    return True
-
-
-def _smart_filter_signature(
-    *,
-    operation_mode: str,
-    merge_mode: str,
-    spatial_mode: str,
-    coverage_threshold: float,
-    canonical_class: str,
-    source_classes: list[str],
-    area_mode: str,
-    rule_classes: list[str],
-    small_target_enabled: bool,
-    max_area_ratio: float,
-    instance_count_enabled: bool,
-    min_instances: int,
-    max_instances: int,
-    position_enabled: bool,
-    center_x_half_width: float,
-    center_y_half_height: float,
-    confidence_enabled: bool,
-    min_confidence: float,
-    max_confidence: float,
-) -> str:
-    source = sorted(str(x).strip() for x in source_classes if str(x).strip())
-    rules = sorted(str(x).strip() for x in rule_classes if str(x).strip())
-    return '|'.join(
-        [
-            str(operation_mode or 'merge').strip().lower(),
-            str(merge_mode or 'same_class').strip().lower(),
-            str(spatial_mode or 'instance_cover').strip().lower(),
-            f'{float(coverage_threshold):.6f}',
-            str(canonical_class or '').strip(),
-            ','.join(source),
-            str(area_mode or 'instance').strip().lower(),
-            ','.join(rules),
-            '1' if small_target_enabled else '0',
-            f'{float(max_area_ratio):.6f}',
-            '1' if instance_count_enabled else '0',
-            str(max(0, int(min_instances))),
-            str(max(0, int(max_instances))),
-            '1' if position_enabled else '0',
-            f'{float(center_x_half_width):.6f}',
-            f'{float(center_y_half_height):.6f}',
-            '1' if confidence_enabled else '0',
-            f'{float(min_confidence):.6f}',
-            f'{float(max_confidence):.6f}',
-        ]
-    )
+from app.utils import new_id, now_ts
 
 
 def _normalize_smart_filter_payload(payload: SmartFilterIn) -> dict[str, Any]:
-    operation_mode = str(payload.operation_mode or 'merge').strip().lower()
-    merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
-    spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
-    coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
-    canonical_class = str(payload.canonical_class or '').strip()
-    source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
-    area_mode = str(payload.area_mode or 'instance').strip().lower()
-    rule_classes = [str(x).strip() for x in payload.rule_classes if str(x).strip()]
-    small_target_enabled = bool(payload.small_target_enabled)
-    max_area_ratio = max(0.0, min(1.0, float(payload.max_area_ratio or 0.0)))
-    instance_count_enabled = bool(payload.instance_count_enabled)
-    min_instances = max(0, int(payload.min_instances or 0))
-    max_instances = max(0, int(payload.max_instances or 0))
-    position_enabled = bool(payload.position_enabled)
-    center_x_half_width = max(0.0, min(0.5, float(payload.center_x_half_width or 0.25)))
-    center_y_half_height = max(0.0, min(0.5, float(payload.center_y_half_height or 0.05)))
-    confidence_enabled = bool(payload.confidence_enabled)
-    min_confidence = max(0.0, min(1.0, float(payload.min_confidence or 0.0)))
-    max_confidence = max(0.0, min(1.0, float(payload.max_confidence if payload.max_confidence is not None else 1.0)))
-    if operation_mode == 'merge' and merge_mode == 'canonical_class' and not canonical_class:
-        raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
-    if operation_mode == 'merge' and merge_mode == 'canonical_class' and not source_classes:
-        raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
-    if instance_count_enabled and max_instances > 0 and max_instances < min_instances:
-        raise HTTPException(status_code=400, detail='max_instances must be >= min_instances')
-    if confidence_enabled and max_confidence < min_confidence:
-        raise HTTPException(status_code=400, detail='max_confidence must be >= min_confidence')
-    if operation_mode == 'rule' and not (
-        small_target_enabled
-        or instance_count_enabled
-        or position_enabled
-        or confidence_enabled
-    ):
-        raise HTTPException(status_code=400, detail='rule filter requires at least one enabled rule')
-    return {
-        'project_id': str(payload.project_id or '').strip(),
-        'operation_mode': operation_mode,
-        'merge_mode': merge_mode,
-        'spatial_mode': spatial_mode,
-        'coverage_threshold': coverage_threshold,
-        'canonical_class': canonical_class,
-        'source_classes': source_classes,
-        'area_mode': area_mode,
-        'rule_classes': rule_classes,
-        'small_target_enabled': small_target_enabled,
-        'max_area_ratio': max_area_ratio,
-        'instance_count_enabled': instance_count_enabled,
-        'min_instances': min_instances,
-        'max_instances': max_instances,
-        'position_enabled': position_enabled,
-        'center_x_half_width': center_x_half_width,
-        'center_y_half_height': center_y_half_height,
-        'confidence_enabled': confidence_enabled,
-        'min_confidence': min_confidence,
-        'max_confidence': max_confidence,
-        'preview_token': str(payload.preview_token or '').strip(),
-        'signature': _smart_filter_signature(
-            operation_mode=operation_mode,
-            merge_mode=merge_mode,
-            spatial_mode=spatial_mode,
-            coverage_threshold=coverage_threshold,
-            canonical_class=canonical_class,
-            source_classes=source_classes,
-            area_mode=area_mode,
-            rule_classes=rule_classes,
-            small_target_enabled=small_target_enabled,
-            max_area_ratio=max_area_ratio,
-            instance_count_enabled=instance_count_enabled,
-            min_instances=min_instances,
-            max_instances=max_instances,
-            position_enabled=position_enabled,
-            center_x_half_width=center_x_half_width,
-            center_y_half_height=center_y_half_height,
-            confidence_enabled=confidence_enabled,
-            min_confidence=min_confidence,
-            max_confidence=max_confidence,
-        ),
-    }
-
-
-def _analyze_smart_filter_project(
-    *,
-    project: dict[str, Any],
-    config: dict[str, Any],
-    load_annotations: Callable[[str, str], list[dict[str, Any]]],
-    progress_cb: Optional[Callable[..., None]] = None,
-) -> dict[str, Any]:
-    operation_mode = str(config.get('operation_mode') or 'merge').strip().lower()
-    if operation_mode == 'delete_unlabeled':
-        return _analyze_delete_unlabeled_filter_project(
-            project=project,
-            config=config,
-            load_annotations=load_annotations,
-            progress_cb=progress_cb,
-        )
-    if operation_mode == 'rule':
-        return _analyze_rule_filter_project(
-            project=project,
-            config=config,
-            load_annotations=load_annotations,
-            progress_cb=progress_cb,
-        )
-
-    return _analyze_merge_filter_project(
-        project=project,
-        config=config,
-        load_annotations=load_annotations,
-        progress_cb=progress_cb,
-    )
-
-
-def _analyze_delete_unlabeled_filter_project(
-    *,
-    project: dict[str, Any],
-    config: dict[str, Any],
-    load_annotations: Callable[[str, str], list[dict[str, Any]]],
-    progress_cb: Optional[Callable[..., None]] = None,
-) -> dict[str, Any]:
-    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
-    total = len(images)
-    items: list[dict[str, Any]] = []
-    apply_items: list[dict[str, Any]] = []
-
-    if progress_cb:
-        progress_cb(
-            message=f'无标注图片扫描准备中，待扫描 {total} 张',
-            progress_done=0,
-            progress_total=total,
-        )
-
-    project_id = str(config.get('project_id') or project.get('id') or '')
-    for idx, image in enumerate(images, start=1):
-        image_id = str(image.get('id') or '')
-        if not image_id:
-            continue
-        rel_path = str(image.get('rel_path') or image_id)
-        annotations = load_annotations(project_id, image_id)
-        if not annotations:
-            item = {
-                'image_id': image_id,
-                'rel_path': rel_path,
-                'candidate_count': 1,
-                'relabel_count': 0,
-                'pair_count': 0,
-            }
-            items.append(item)
-            apply_items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'removed_count': 1,
-                    'relabel_count': 0,
-                }
-            )
-
-        if progress_cb:
-            progress_cb(
-                message=f'无标注图片扫描 {idx}/{total}: {rel_path}',
-                progress_done=idx,
-                progress_total=total,
-                current_image_id=image_id,
-                current_image_rel_path=rel_path,
-            )
-
-    return {
-        'image_count': len(items),
-        'candidate_count': len(items),
-        'relabel_count': 0,
-        'items': items,
-        'apply_items': apply_items,
-    }
-
-
-def _analyze_merge_filter_project(
-    *,
-    project: dict[str, Any],
-    config: dict[str, Any],
-    load_annotations: Callable[[str, str], list[dict[str, Any]]],
-    progress_cb: Optional[Callable[..., None]] = None,
-) -> dict[str, Any]:
-    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
-    total = len(images)
-    items: list[dict[str, Any]] = []
-    apply_items: list[dict[str, Any]] = []
-    total_candidates = 0
-    total_images = 0
-    total_relabels = 0
-
-    if progress_cb:
-        progress_cb(
-            message=f'准备智能过滤分析，待扫描 {total} 张',
-            progress_done=0,
-            progress_total=total,
-        )
-
-    need_image_metrics = bool(config.get('small_target_enabled')) or bool(config.get('position_enabled'))
-
-    for idx, image in enumerate(images, start=1):
-        image_id = str(image.get('id') or '')
-        if not image_id:
-            continue
-        rel_path = str(image.get('rel_path') or image_id)
-        annotations = load_annotations(str(project.get('id') or ''), image_id)
-
-        scoped_count = _smart_filter_image_scope_count(
-            annotations,
-            rule_classes=list(config.get('rule_classes') or []),
-        )
-        if bool(config.get('instance_count_enabled')):
-            min_instances = max(0, int(config.get('min_instances') or 0))
-            max_instances = max(0, int(config.get('max_instances') or 0))
-            if scoped_count < min_instances or (max_instances > 0 and scoped_count > max_instances):
-                if progress_cb:
-                    progress_cb(
-                        message=f'分析 {idx}/{total}: {rel_path}',
-                        progress_done=idx,
-                        progress_total=total,
-                        current_image_id=image_id,
-                        current_image_rel_path=rel_path,
-                    )
-                continue
-
-        width, height = _get_image_dimensions(image) if need_image_metrics else (0, 0)
-        filtered_annotations: list[dict[str, Any]] = []
-        untouched_annotations: list[dict[str, Any]] = []
-        for ann in annotations:
-            if _smart_filter_annotation_allowed(
-                ann,
-                area_mode=str(config.get('area_mode') or 'instance'),
-                rule_classes=list(config.get('rule_classes') or []),
-                image_width=width,
-                image_height=height,
-                small_target_enabled=bool(config.get('small_target_enabled')),
-                max_area_ratio=float(config.get('max_area_ratio') or 0.0),
-                position_enabled=bool(config.get('position_enabled')),
-                center_x_half_width=float(config.get('center_x_half_width') or 0.25),
-                center_y_half_height=float(config.get('center_y_half_height') or 0.05),
-                confidence_enabled=bool(config.get('confidence_enabled')),
-                min_confidence=float(config.get('min_confidence') or 0.0),
-                max_confidence=float(config.get('max_confidence') if config.get('max_confidence') is not None else 1.0),
-                require_geometry=True,
-            ):
-                filtered_annotations.append(ann)
-            else:
-                untouched_annotations.append(ann)
-
-        analysis = _analyze_smart_merge_annotations(
-            filtered_annotations,
-            merge_mode=str(config.get('merge_mode') or 'same_class'),
-            spatial_mode=str(config.get('spatial_mode') or 'instance_cover'),
-            coverage_threshold=float(config.get('coverage_threshold') or 0.98),
-            canonical_class=str(config.get('canonical_class') or ''),
-            source_classes=list(config.get('source_classes') or []),
-            area_mode=str(config.get('area_mode') or 'instance'),
-        )
-        removed = analysis.get('removed_annotations', [])
-        pairs = analysis.get('pairs', [])
-        relabeled = analysis.get('relabeled_annotations', [])
-        kept_filtered = analysis.get('kept_annotations', filtered_annotations)
-        kept_annotations = list(untouched_annotations) + (
-            kept_filtered if isinstance(kept_filtered, list) else filtered_annotations
-        )
-        remove_count = len(removed) if isinstance(removed, list) else 0
-        relabel_count = len(relabeled) if isinstance(relabeled, list) else 0
-        if remove_count > 0 or relabel_count > 0:
-            total_candidates += remove_count
-            total_relabels += relabel_count
-            total_images += 1
-            items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'candidate_count': remove_count,
-                    'relabel_count': relabel_count,
-                    'pair_count': len(pairs) if isinstance(pairs, list) else 0,
-                    'scoped_annotation_count': len(filtered_annotations),
-                }
-            )
-            apply_items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'removed_count': remove_count,
-                    'relabel_count': relabel_count,
-                    'kept_annotations': kept_annotations,
-                }
-            )
-        if progress_cb:
-            progress_cb(
-                message=f'分析 {idx}/{total}: {rel_path}',
-                progress_done=idx,
-                progress_total=total,
-                current_image_id=image_id,
-                current_image_rel_path=rel_path,
-            )
-
-    items.sort(
-        key=lambda x: (
-            int(x.get('candidate_count') or 0),
-            int(x.get('relabel_count') or 0),
-            str(x.get('rel_path') or ''),
-        ),
-        reverse=True,
-    )
-    apply_items.sort(
-        key=lambda x: (
-            int(x.get('removed_count') or 0),
-            int(x.get('relabel_count') or 0),
-            str(x.get('rel_path') or ''),
-        ),
-        reverse=True,
-    )
-    return {
-        'image_count': total_images,
-        'candidate_count': total_candidates,
-        'relabel_count': total_relabels,
-        'items': items,
-        'apply_items': apply_items,
-    }
-
-
-def _analyze_rule_filter_project(
-    *,
-    project: dict[str, Any],
-    config: dict[str, Any],
-    load_annotations: Callable[[str, str], list[dict[str, Any]]],
-    progress_cb: Optional[Callable[..., None]] = None,
-) -> dict[str, Any]:
-    images = project.get('images', []) if isinstance(project.get('images', []), list) else []
-    total = len(images)
-    items: list[dict[str, Any]] = []
-    apply_items: list[dict[str, Any]] = []
-    total_candidates = 0
-    total_images = 0
-
-    if progress_cb:
-        progress_cb(
-            message=f'规则过滤预览准备中，待扫描 {total} 张',
-            progress_done=0,
-            progress_total=total,
-        )
-
-    need_image_metrics = bool(config.get('small_target_enabled')) or bool(config.get('position_enabled'))
-
-    for idx, image in enumerate(images, start=1):
-        image_id = str(image.get('id') or '')
-        if not image_id:
-            continue
-        rel_path = str(image.get('rel_path') or image_id)
-        annotations = load_annotations(str(project.get('id') or ''), image_id)
-
-        scoped_count = _smart_filter_image_scope_count(
-            annotations,
-            rule_classes=list(config.get('rule_classes') or []),
-        )
-        if bool(config.get('instance_count_enabled')):
-            min_instances = max(0, int(config.get('min_instances') or 0))
-            max_instances = max(0, int(config.get('max_instances') or 0))
-            if scoped_count < min_instances or (max_instances > 0 and scoped_count > max_instances):
-                if progress_cb:
-                    progress_cb(
-                        message=f'规则过滤 {idx}/{total}: {rel_path}',
-                        progress_done=idx,
-                        progress_total=total,
-                        current_image_id=image_id,
-                        current_image_rel_path=rel_path,
-                    )
-                continue
-
-        width, height = _get_image_dimensions(image) if need_image_metrics else (0, 0)
-        matched_annotations: list[dict[str, Any]] = []
-        kept_annotations: list[dict[str, Any]] = []
-        for ann in annotations:
-            if _smart_filter_annotation_allowed(
-                ann,
-                area_mode=str(config.get('area_mode') or 'instance'),
-                rule_classes=list(config.get('rule_classes') or []),
-                image_width=width,
-                image_height=height,
-                small_target_enabled=bool(config.get('small_target_enabled')),
-                max_area_ratio=float(config.get('max_area_ratio') or 0.0),
-                position_enabled=bool(config.get('position_enabled')),
-                center_x_half_width=float(config.get('center_x_half_width') or 0.25),
-                center_y_half_height=float(config.get('center_y_half_height') or 0.05),
-                confidence_enabled=bool(config.get('confidence_enabled')),
-                min_confidence=float(config.get('min_confidence') or 0.0),
-                max_confidence=float(config.get('max_confidence') if config.get('max_confidence') is not None else 1.0),
-                require_geometry=False,
-            ):
-                matched_annotations.append(ann)
-            else:
-                kept_annotations.append(ann)
-
-        matched_count = len(matched_annotations)
-        if matched_count > 0:
-            total_candidates += matched_count
-            total_images += 1
-            items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'candidate_count': matched_count,
-                    'relabel_count': 0,
-                    'pair_count': 0,
-                }
-            )
-            apply_items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'removed_count': matched_count,
-                    'relabel_count': 0,
-                    'kept_annotations': kept_annotations,
-                }
-            )
-
-        if progress_cb:
-            progress_cb(
-                message=f'规则过滤 {idx}/{total}: {rel_path}',
-                progress_done=idx,
-                progress_total=total,
-                current_image_id=image_id,
-                current_image_rel_path=rel_path,
-            )
-
-    items.sort(key=lambda x: (int(x.get('candidate_count') or 0), str(x.get('rel_path') or '')), reverse=True)
-    apply_items.sort(key=lambda x: (int(x.get('removed_count') or 0), str(x.get('rel_path') or '')), reverse=True)
-    return {
-        'image_count': total_images,
-        'candidate_count': total_candidates,
-        'relabel_count': 0,
-        'items': items,
-        'apply_items': apply_items,
-    }
+    """Compatibility export used by the existing router."""
+    return normalize_config(payload)
 
 
 def _analyze_smart_merge_annotations(
@@ -617,148 +32,49 @@ def _analyze_smart_merge_annotations(
     source_classes: list[str] | None = None,
     area_mode: str = 'instance',
 ) -> dict[str, Any]:
-    anns = [dict(a) for a in annotations if isinstance(a, dict)]
-    if not anns:
-        return {'pairs': [], 'remove_indices': set(), 'kept_annotations': [], 'removed_annotations': []}
-
-    indexed: list[dict[str, Any]] = []
-    for idx, ann in enumerate(anns):
-        bbox = _ann_bbox(ann)
-        cls = _annotation_class_name(ann)
-        area = _annotation_metric_area(ann, area_mode=area_mode)
-        if not bbox or not cls or area <= 0.0:
+    """Legacy synchronous API adapter backed by the rule plug-in."""
+    config = {
+        'merge_mode': merge_mode,
+        'spatial_mode': spatial_mode,
+        'coverage_threshold': coverage_threshold,
+        'canonical_class': canonical_class,
+        'source_classes': source_classes or [],
+        'area_mode': area_mode,
+    }
+    analysis = analyze_merge_annotations(list(parse_image_annotations(annotations).instances), config)
+    remove = set(analysis['delete_indices'])
+    relabel_by_index = {int(row['annotation_index']): str(row['class_name']) for row in analysis['relabels']}
+    kept: list[dict[str, Any]] = []
+    relabeled: list[dict[str, Any]] = []
+    for index, raw in enumerate(annotations):
+        if index in remove:
             continue
-        indexed.append({'idx': idx, 'class_name': cls, 'bbox': bbox, 'area': area})
-
-    use_canonical = str(merge_mode or 'same_class').strip().lower() == 'canonical_class'
-    canonical = str(canonical_class or '').strip()
-    selected_sources = [str(x).strip() for x in (source_classes or []) if str(x).strip()]
-    selected_source_norm = {norm_text(x) for x in selected_sources if norm_text(x)}
-    remove_indices: set[int] = set()
-    relabel_indices: set[int] = set()
-    pairs: list[dict[str, Any]] = []
-
-    if use_canonical and not canonical:
-        raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
-    if use_canonical and not selected_source_norm:
-        raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
-
-    if use_canonical:
-        canonical_norm = norm_text(canonical)
-        candidate_items = []
-        for item in indexed:
-            item_norm = norm_text(str(item['class_name']))
-            if not item_norm:
-                continue
-            if item_norm == canonical_norm or item_norm in selected_source_norm:
-                candidate_items.append(item)
-        items_sorted = sorted(candidate_items, key=lambda x: (float(x['area']), str(x['idx'])), reverse=True)
-        for i, bigger in enumerate(items_sorted):
-            keep_idx = int(bigger['idx'])
-            if keep_idx in remove_indices:
-                continue
-            for smaller in items_sorted[i + 1:]:
-                s_idx = int(smaller['idx'])
-                if s_idx in remove_indices or s_idx == keep_idx:
-                    continue
-                smaller_area = max(float(smaller['area']), 0.0)
-                if smaller_area <= 0.0:
-                    continue
-                cover = _annotation_cover_ratio(
-                    anns[keep_idx],
-                    anns[s_idx],
-                    spatial_mode=spatial_mode,
-                )
-                if cover < float(coverage_threshold):
-                    continue
-                remove_indices.add(s_idx)
-                if norm_text(str(bigger['class_name'])) != canonical_norm:
-                    relabel_indices.add(keep_idx)
-                pairs.append(
-                    {
-                        'keep_index': keep_idx,
-                        'remove_index': s_idx,
-                        'keep_class_name': str(bigger['class_name']),
-                        'remove_class_name': str(smaller['class_name']),
-                        'merged_class_name': canonical,
-                        'coverage': round(cover, 6),
-                        'kept_area': round(float(bigger['area']), 3),
-                        'removed_area': round(smaller_area, 3),
-                    }
-                )
-    else:
-        by_class: dict[str, list[dict[str, Any]]] = {}
-        for item in indexed:
-            by_class.setdefault(norm_text(item['class_name']), []).append(item)
-
-        for items in by_class.values():
-            items_sorted = sorted(items, key=lambda x: (float(x['area']), str(x['idx'])), reverse=True)
-            for i, bigger in enumerate(items_sorted):
-                if int(bigger['idx']) in remove_indices:
-                    continue
-                for smaller in items_sorted[i + 1:]:
-                    s_idx = int(smaller['idx'])
-                    if s_idx in remove_indices:
-                        continue
-                    smaller_area = max(float(smaller['area']), 0.0)
-                    if smaller_area <= 0.0:
-                        continue
-                    cover = _annotation_cover_ratio(
-                        anns[int(bigger['idx'])],
-                        anns[s_idx],
-                        spatial_mode=spatial_mode,
-                    )
-                    if cover < float(coverage_threshold):
-                        continue
-                    remove_indices.add(s_idx)
-                    pairs.append(
-                        {
-                            'keep_index': int(bigger['idx']),
-                            'remove_index': s_idx,
-                            'keep_class_name': str(bigger['class_name']),
-                            'remove_class_name': str(smaller['class_name']),
-                            'merged_class_name': str(bigger['class_name']),
-                            'coverage': round(cover, 6),
-                            'kept_area': round(float(bigger['area']), 3),
-                            'removed_area': round(smaller_area, 3),
-                        }
-                    )
-
-    kept_annotations: list[dict[str, Any]] = []
-    relabeled_annotations: list[dict[str, Any]] = []
-    for idx, ann in enumerate(anns):
-        if idx in remove_indices:
-            continue
-        item = dict(ann)
-        if use_canonical and idx in relabel_indices:
-            item['class_name'] = canonical
-            relabeled_annotations.append(dict(item))
-        kept_annotations.append(item)
-    removed_annotations = [ann for idx, ann in enumerate(anns) if idx in remove_indices]
+        item = dict(raw)
+        if index in relabel_by_index:
+            item['class_name'] = relabel_by_index[index]
+            relabeled.append(dict(item))
+        kept.append(item)
     return {
-        'pairs': pairs,
-        'remove_indices': remove_indices,
-        'kept_annotations': kept_annotations,
-        'removed_annotations': removed_annotations,
-        'relabel_indices': relabel_indices,
-        'relabeled_annotations': relabeled_annotations,
+        'pairs': analysis['pairs'],
+        'remove_indices': remove,
+        'kept_annotations': kept,
+        'removed_annotations': [ann for index, ann in enumerate(annotations) if index in remove],
+        'relabel_indices': set(relabel_by_index),
+        'relabeled_annotations': relabeled,
     }
 
 
 class SmartFilterJobService:
-    def __init__(
-        self,
-        *,
-        get_storage: Callable[[], Any],
-        logger: logging.Logger,
-        queue: PersistentJobQueue,
-    ) -> None:
+    """Thin job/API adapter around :mod:`app.data_cleaning`."""
+
+    def __init__(self, *, get_storage: Callable[[], Any], logger: logging.Logger, queue: PersistentJobQueue) -> None:
         self._get_storage = get_storage
         self._logger = logger
         self._lock = threading.Lock()
         self.queue = queue
 
-    def _state_default(self, *, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
+    @staticmethod
+    def _state_default(*, job_id: str, project_id: str, job_type: str) -> dict[str, Any]:
         return {
             'job_id': job_id,
             'project_id': project_id,
@@ -780,9 +96,6 @@ class SmartFilterJobService:
             'result': {},
         }
 
-    def _update_job_state(self, job_id: str, **updates: Any) -> None:
-        self.queue.update(job_id, **updates)
-
     def get_job_state_or_404(self, job_id: str) -> dict[str, Any]:
         state = self.queue.get(job_id)
         if not state or not str(state.get('job_type') or '').startswith('smart_filter:'):
@@ -796,9 +109,37 @@ class SmartFilterJobService:
             state['job_type'] = str(state['job_type']).split(':', 1)[1]
         return state
 
+    @staticmethod
+    def _public_rule(config: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'schema_version': 2,
+            'task_type': config['task_type'],
+            'class_scope': dict(config['class_scope']),
+            'params': dict(config['params']),
+        }
+
+    @staticmethod
+    def _parse_payload(payload_dict: dict[str, Any]) -> SmartFilterIn:
+        return SmartFilterIn(**{key: value for key, value in payload_dict.items() if not key.startswith('_')})
+
+    @staticmethod
+    def _summary(task: str, values: dict[str, Any], *, applied: bool = False) -> dict[str, Any]:
+        affected = int(values.get('changed_images' if applied else 'image_count') or 0)
+        if task == 'delete_unlabeled_images':
+            return {'affected_images': affected, 'deleted_images': int(values.get('deleted_images' if applied else 'candidate_count') or 0)}
+        if task == 'normalize_classes':
+            return {'affected_images': affected, 'relabeled_annotations': int(values.get('relabeled_annotations' if applied else 'relabel_count') or 0), 'deleted_annotations': 0}
+        if task in {'remove_small_components', 'remove_edge_spurs', 'shortest_bridge', 'morph_close', 'fill_small_holes'}:
+            result = {
+                'affected_images': affected,
+                'modified_annotations': int(values.get('modified_annotations') or 0),
+                'removed_pixels': int(values.get('removed_pixels') or 0),
+                'added_pixels': int(values.get('bridge_pixels') or 0) + int(values.get('filled_pixels') or 0),
+            }
+        return {'affected_images': affected, 'deleted_annotations': int(values.get('removed_annotations' if applied else 'candidate_count') or 0)}
+
     def run_preview_job(self, payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
-        payload = SmartFilterIn(**payload_dict)
-        config = _normalize_smart_filter_payload(payload)
+        config = normalize_config(self._parse_payload(payload_dict))
         storage = self._get_storage()
         project = storage.get_project(config['project_id'], enrich=False, include_images=True)
         if not project:
@@ -806,297 +147,223 @@ class SmartFilterJobService:
         if project.get('project_type') != 'image':
             raise RuntimeError('only image project is supported')
 
-        analysis = _analyze_smart_filter_project(
+        cleanup_expired_previews(storage.base_dir)
+        token = new_id('sfp_')
+        analysis = analyze_project(
+            base_dir=storage.base_dir,
+            preview_token=token,
             project=project,
             config=config,
             load_annotations=storage.load_annotations,
             progress_cb=progress_cb,
         )
-        preview_token = new_id('sfp_')
         project_rev = int(project.get('content_rev', 1) or 1)
-        operation_mode = str(config.get('operation_mode') or 'merge')
-        preview_entry = {
-            'preview_token': preview_token,
+        entry = {
+            'preview_token': token,
             'project_id': config['project_id'],
             'project_content_rev': project_rev,
-            'signature': str(config['signature']),
-            'config': {
-                'operation_mode': operation_mode,
-                'merge_mode': config['merge_mode'],
-                'spatial_mode': config['spatial_mode'],
-                'coverage_threshold': float(config['coverage_threshold']),
-                'canonical_class': config['canonical_class'],
-                'source_classes': list(config['source_classes']),
-                'area_mode': config['area_mode'],
-                'rule_classes': list(config['rule_classes']),
-                'small_target_enabled': bool(config['small_target_enabled']),
-                'max_area_ratio': float(config['max_area_ratio']),
-                'instance_count_enabled': bool(config['instance_count_enabled']),
-                'min_instances': int(config['min_instances']),
-                'max_instances': int(config['max_instances']),
-                'position_enabled': bool(config['position_enabled']),
-                'center_x_half_width': float(config['center_x_half_width']),
-                'center_y_half_height': float(config['center_y_half_height']),
-                'confidence_enabled': bool(config['confidence_enabled']),
-                'min_confidence': float(config['min_confidence']),
-                'max_confidence': float(config['max_confidence']),
-            },
-            'result': analysis,
+            'signature': config['signature'],
+            'config': self._public_rule(config),
+            'change_sets': analysis.get('change_sets', []),
+            'preview_artwork': dict(analysis.get('preview_artwork') or {}),
         }
-        candidate_count = int(analysis.get('candidate_count') or 0)
-        relabel_count = int(analysis.get('relabel_count') or 0)
-        if operation_mode == 'delete_unlabeled':
-            preview_message = (
-                f'无标注图片预览完成：命中 {candidate_count} 张待删除图片'
-                if candidate_count > 0
-                else '无标注图片预览完成：没有命中待删除图片'
+        operation = str(config['operation_mode'])
+        task = str(config['task_type'])
+        if operation == 'component_noise':
+            message = (
+                f'实例内噪点预览完成：修改 {analysis["modified_annotations"]} 个实例，'
+                f'删除 {analysis["removed_components"]} 个分量 / {analysis["removed_pixels"]} 像素'
             )
-        elif operation_mode == 'merge':
-            preview_message = (
-                f'合并过滤预览完成：可删除 {candidate_count} 个标注'
-                + (f'，可改类 {relabel_count} 个标注' if relabel_count > 0 else '')
-                if candidate_count > 0 or relabel_count > 0
-                else '合并过滤预览完成：没有命中可处理标注'
-            )
+        elif operation == 'delete_unlabeled':
+            message = f'无标注图片预览完成：命中 {analysis["candidate_count"]} 张待删除图片'
+        elif operation == 'merge':
+            message = f'合并预览完成：删除 {analysis["candidate_count"]} 个标注，改类 {analysis["relabel_count"]} 个标注'
         else:
-            preview_message = (
-                f'规则过滤预览完成：命中 {candidate_count} 个待删除标注'
-                if candidate_count > 0
-                else '规则过滤预览完成：没有命中标注'
-            )
+            message = f'实例清理预览完成：命中 {analysis["candidate_count"]} 个待删除标注'
         return {
-            '_preview_entry': preview_entry,
+            '_preview_entry': entry,
             'project_id': config['project_id'],
-            'operation_mode': operation_mode,
-            'preview_token': preview_token,
+            'schema_version': 2,
+            'task_type': task,
+            'effect_type': str(config['effect_type']),
+            'operation_mode': operation,
+            'preview_token': token,
             'project_content_rev': project_rev,
             'image_count': int(analysis.get('image_count') or 0),
-            'candidate_count': candidate_count,
-            'relabel_count': relabel_count,
+            'candidate_count': int(analysis.get('candidate_count') or 0),
+            'relabel_count': int(analysis.get('relabel_count') or 0),
+            'modified_annotations': int(analysis.get('modified_annotations') or 0),
+            'removed_components': int(analysis.get('removed_components') or 0),
+            'removed_pixels': int(analysis.get('removed_pixels') or 0),
+            'opening_removed_pixels': int(analysis.get('opening_removed_pixels') or 0),
+            'bridges_added': int(analysis.get('bridges_added') or 0),
+            'bridge_pixels': int(analysis.get('bridge_pixels') or 0),
+            'filled_holes': int(analysis.get('filled_holes') or 0),
+            'filled_pixels': int(analysis.get('filled_pixels') or 0),
+            'collision_rejected_bridges': int(analysis.get('collision_rejected_bridges') or 0),
+            'morphology_skipped_annotations': int(analysis.get('morphology_skipped_annotations') or 0),
+            'incomplete_collision_checks': int(analysis.get('incomplete_collision_checks') or 0),
+            'skipped_annotations': int(analysis.get('skipped_annotations') or 0),
+            'sample_urls': list(analysis.get('sample_urls') or [])[:1],
+            # Typical, high-impact and low-impact samples, bounded to three images.
+            'preview_samples': list(analysis.get('preview_samples') or [])[:3],
+            'preview_artwork': dict(analysis.get('preview_artwork') or {'version': 1, 'status': 'not_needed'}),
             'items': analysis.get('items', []),
-            'rule': {
-                'operation_mode': operation_mode,
-                'merge_mode': config['merge_mode'],
-                'spatial_mode': config['spatial_mode'],
-                'same_class': config['merge_mode'] == 'same_class',
-                'canonical_class': config['canonical_class'],
-                'source_classes': list(config['source_classes']),
-                'area_mode': config['area_mode'],
-                'rule_classes': list(config['rule_classes']),
-                'small_target_enabled': bool(config['small_target_enabled']),
-                'max_area_ratio': float(config['max_area_ratio']),
-                'instance_count_enabled': bool(config['instance_count_enabled']),
-                'min_instances': int(config['min_instances']),
-                'max_instances': int(config['max_instances']),
-                'position_enabled': bool(config['position_enabled']),
-                'center_x_half_width': float(config['center_x_half_width']),
-                'center_y_half_height': float(config['center_y_half_height']),
-                'confidence_enabled': bool(config['confidence_enabled']),
-                'min_confidence': float(config['min_confidence']),
-                'max_confidence': float(config['max_confidence']),
-                'small_box_covered_by_large_gte': float(config['coverage_threshold']),
-                'keep': 'larger_area',
-            },
-            'message': preview_message,
+            'hits': analysis.get('items', []),
+            'warnings': list(analysis.get('warnings') or []),
+            'summary': self._summary(task, analysis),
+            'rule': self._public_rule(config),
+            'message': message,
         }
 
-    def run_apply_job(self, payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
-        payload = SmartFilterIn(**payload_dict)
-        config = _normalize_smart_filter_payload(payload)
-        job_id = str(payload_dict.get('_job_id') or '').strip()
-        preview_token = str(config.get('preview_token') or '').strip()
-        if not preview_token:
-            raise RuntimeError('preview_token is required; please run preview first')
+    def _find_preview(self, project_id: str, token: str) -> dict[str, Any]:
+        for queued_job in self.queue.list_jobs(project_id, limit=100):
+            candidate = queued_job.get('preview_entry')
+            if isinstance(candidate, dict) and str(candidate.get('preview_token') or '') == token:
+                return dict(candidate)
+            if str(queued_job.get('preview_token') or '') != token:
+                continue
+            detailed = self.queue.get(str(queued_job.get('job_id') or '')) or {}
+            candidate = detailed.get('preview_entry')
+            if isinstance(candidate, dict) and str(candidate.get('preview_token') or '') == token:
+                return dict(candidate)
+        raise RuntimeError('preview cache is missing; please rerun preview')
 
+    def run_sync_preview(self, payload: SmartFilterIn) -> dict[str, Any]:
+        """Compatibility endpoint using the same engine and preview cache."""
+        payload_dict = payload.model_dump(exclude_unset=True)
+        result = self.run_preview_job(payload_dict, lambda **_updates: None)
+        entry = result.pop('_preview_entry')
+        cached = self.queue.enqueue(
+            project_id=payload.project_id,
+            job_type='smart_filter:preview',
+            resource_class='cpu',
+            payload=payload_dict,
+            state={'status': 'done', 'running': False, 'message': 'synchronous preview'},
+            priority=100,
+        )
+        self.queue.update(str(cached['job_id']), preview_entry=entry, status='done', running=False, result=result)
+        return result
+
+    def run_sync_apply(self, payload: SmartFilterIn) -> dict[str, Any]:
+        payload_dict = payload.model_dump(exclude_unset=True)
+        if not str(payload.preview_token or '').strip():
+            preview = self.run_sync_preview(payload)
+            payload_dict['preview_token'] = str(preview.get('preview_token') or '')
+        return self.run_apply_job(payload_dict, lambda **_updates: None)
+
+    def run_apply_job(self, payload_dict: dict[str, Any], progress_cb: Callable[..., None]) -> dict[str, Any]:
+        config = normalize_config(self._parse_payload(payload_dict))
+        token = str(config.get('preview_token') or '')
+        if not token:
+            raise RuntimeError('preview_token is required; please run preview first')
         storage = self._get_storage()
         project = storage.get_project(config['project_id'], enrich=False, include_images=False)
         if not project:
             raise RuntimeError('project not found')
-        if project.get('project_type') != 'image':
-            raise RuntimeError('only image project is supported')
-        current_rev = int(project.get('content_rev', 1) or 1)
-
-        preview_entry: dict[str, Any] = {}
-        for queued_job in self.queue.list_jobs(config['project_id'], limit=100):
-            candidate = queued_job.get('preview_entry')
-            if isinstance(candidate, dict) and str(candidate.get('preview_token') or '') == preview_token:
-                preview_entry = dict(candidate)
-                break
-        if not preview_entry:
-            raise RuntimeError('preview cache is missing; please rerun preview')
-        if str(preview_entry.get('preview_token') or '') != preview_token:
-            raise RuntimeError('preview token is stale; please rerun preview')
-        if int(preview_entry.get('project_content_rev') or 0) != current_rev:
+        entry = self._find_preview(config['project_id'], token)
+        if int(entry.get('project_content_rev') or 0) != int(project.get('content_rev', 1) or 1):
             raise RuntimeError('project annotations changed after preview; please rerun preview')
-        if str(preview_entry.get('signature') or '') != str(config.get('signature') or ''):
+        if str(entry.get('signature') or '') != str(config.get('signature') or ''):
             raise RuntimeError('filter config changed after preview; please rerun preview')
+        artwork = dict(entry.get('preview_artwork') or {})
+        if artwork.get('status') == 'failed' and not config.get('confirm_preview_failure'):
+            raise RuntimeError('preview artwork failed; explicit confirmation is required before apply')
+        change_sets = list(entry.get('change_sets') or [])
+        operation = str(config['operation_mode'])
 
-        cached_result = preview_entry.get('result', {}) if isinstance(preview_entry.get('result', {}), dict) else {}
-        apply_items = list(cached_result.get('apply_items', [])) if isinstance(cached_result.get('apply_items', []), list) else []
-        total = len(apply_items)
-        operation_mode = str(config.get('operation_mode') or 'merge')
-
-        def clear_preview_cache() -> None:
-            return None
-
-        if operation_mode == 'delete_unlabeled':
-            if progress_cb:
-                progress_cb(
-                    message=f'准备删除无标注图片，待删除 {total} 张',
-                    progress_done=0,
-                    progress_total=total,
-                )
-            image_ids = [
-                str(item.get('image_id') or '').strip()
-                for item in apply_items
-                if str(item.get('image_id') or '').strip()
-            ]
-            delete_result = storage.delete_project_images(config['project_id'], image_ids)
-            deleted_images = int(delete_result.get('deleted_images') or 0)
-            failed_deletes = delete_result.get('failed_deletes', [])
-            if progress_cb:
-                progress_cb(
-                    message=f'无标注图片删除完成：删除 {deleted_images} 张',
-                    progress_done=total,
-                    progress_total=total,
-                )
-            clear_preview_cache()
-            result_items = []
-            for item in delete_result.get('items', []):
-                if not isinstance(item, dict):
-                    continue
-                result_items.append(
-                    {
-                        **item,
-                        'removed_count': 1,
-                        'relabel_count': 0,
-                    }
-                )
-            return {
+        if operation == 'delete_unlabeled':
+            image_ids = [str(change.get('image_id') or '') for change in change_sets if change.get('image_id')]
+            deleted = storage.delete_project_images(config['project_id'], image_ids)
+            result = {
                 'project_id': config['project_id'],
-                'operation_mode': operation_mode,
+                'schema_version': 2,
+                'task_type': config['task_type'],
+                'effect_type': config['effect_type'],
+                'operation_mode': operation,
+                'analysis_reused': True,
+                'preview_token': token,
                 'rollback_run_id': '',
-                'changed_images': deleted_images,
-                'deleted_images': deleted_images,
-                'deleted_annotation_files': int(delete_result.get('deleted_annotation_files') or 0),
-                'deleted_image_files': int(delete_result.get('deleted_image_files') or 0),
-                'failed_deletes': failed_deletes if isinstance(failed_deletes, list) else [],
-                'removed_annotations': 0,
-                'relabeled_annotations': 0,
-                'items': result_items,
-                'message': (
-                    f'无标注图片删除完成：删除 {deleted_images} 张图片'
-                    + (
-                        f'，{len(failed_deletes)} 个文件删除失败'
-                        if isinstance(failed_deletes, list) and failed_deletes
-                        else ''
-                    )
-                ),
+                'changed_images': int(deleted.get('deleted_images') or 0),
+                'deleted_images': int(deleted.get('deleted_images') or 0),
+                'deleted_annotation_files': int(deleted.get('deleted_annotation_files') or 0),
+                'deleted_image_files': int(deleted.get('deleted_image_files') or 0),
+                'failed_deletes': deleted.get('failed_deletes', []),
+                'items': deleted.get('items', []),
+                'message': f'无标注图片删除完成：删除 {int(deleted.get("deleted_images") or 0)} 张图片',
             }
+            result['summary'] = self._summary(str(config['task_type']), result, applied=True)
+            return result
 
-        changed_images = 0
-        removed_annotations = 0
-        relabeled_annotations = 0
-        items: list[dict[str, Any]] = []
-        rollback_run_id = ''
-        if total > 0:
-            rollback_run_id = storage.begin_smart_filter_run(
+        job_id = str(payload_dict.get('_job_id') or '')
+        run_id = ''
+        started = perf_counter()
+        timings = {'validation_seconds': 0.0, 'snapshot_seconds': 0.0, 'persistence_seconds': 0.0}
+        with self._lock:
+            progress_cb(message='校验预览变更集', progress_done=0, progress_total=len(change_sets))
+            validate_change_sets(
+                storage=storage,
                 project_id=config['project_id'],
-                job_id=job_id,
-                operation_mode=operation_mode,
-                rule=dict(preview_entry.get('config') or {}),
+                artifact_dir=preview_dir(storage.base_dir, token),
+                change_sets=change_sets,
             )
+            timings['validation_seconds'] = perf_counter() - started
+            if change_sets:
+                run_id = storage.begin_smart_filter_run(
+                    project_id=config['project_id'], job_id=job_id, operation_mode=operation, rule=dict(entry.get('config') or {})
+                )
 
-        if progress_cb:
-            progress_cb(
-                message=(
-                    f'准备执行合并过滤，待写回 {total} 张'
-                    if operation_mode == 'merge'
-                    else f'准备执行规则过滤删除，待写回 {total} 张'
-                ),
-                progress_done=0,
-                progress_total=total,
-            )
+            def snapshot(image_id: str, annotations: list[dict[str, Any]]) -> None:
+                snapshot_started = perf_counter()
+                if run_id:
+                    storage.add_smart_filter_snapshot(
+                        run_id=run_id, project_id=config['project_id'], image_id=image_id, annotations=annotations
+                    )
+                timings['snapshot_seconds'] += perf_counter() - snapshot_started
 
-        for idx, item in enumerate(apply_items, start=1):
-            image_id = str(item.get('image_id') or '')
-            rel_path = str(item.get('rel_path') or image_id)
-            kept_annotations = item.get('kept_annotations', [])
-            original_annotations = storage.load_annotations(config['project_id'], image_id)
-            if rollback_run_id:
-                storage.add_smart_filter_snapshot(
-                    run_id=rollback_run_id,
+            def save_batch(rows: list[tuple[str, list[dict[str, Any]]]]) -> None:
+                save_started = perf_counter()
+                storage.save_annotations_batch(config['project_id'], rows)
+                timings['persistence_seconds'] += perf_counter() - save_started
+
+            try:
+                applied = apply_change_sets(
+                    storage=storage,
                     project_id=config['project_id'],
-                    image_id=image_id,
-                    annotations=original_annotations,
+                    artifact_dir=preview_dir(storage.base_dir, token),
+                    change_sets=change_sets,
+                    snapshot_cb=snapshot,
+                    progress_cb=progress_cb,
+                    batch_save=save_batch if hasattr(storage, 'save_annotations_batch') else None,
                 )
-            storage.save_annotations(
-                config['project_id'],
-                image_id,
-                kept_annotations if isinstance(kept_annotations, list) else [],
-            )
-            remove_count = int(item.get('removed_count') or 0)
-            relabel_count = int(item.get('relabel_count') or 0)
-            changed_images += 1
-            removed_annotations += remove_count
-            relabeled_annotations += relabel_count
-            items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': rel_path,
-                    'removed_count': remove_count,
-                    'relabel_count': relabel_count,
-                }
-            )
-            if progress_cb:
-                progress_cb(
-                    message=(
-                        f'合并过滤写回 {idx}/{total}: {rel_path}'
-                        if operation_mode == 'merge'
-                        else f'规则过滤删除 {idx}/{total}: {rel_path}'
-                    ),
-                    progress_done=idx,
-                    progress_total=total,
-                    current_image_id=image_id,
-                    current_image_rel_path=rel_path,
-                )
-
-        clear_preview_cache()
-
-        items.sort(
-            key=lambda x: (
-                int(x.get('removed_count') or 0),
-                int(x.get('relabel_count') or 0),
-                str(x.get('rel_path') or ''),
-            ),
-            reverse=True,
-        )
+            except Exception:
+                if run_id:
+                    rollback = storage.rollback_smart_filter_run(project_id=config['project_id'], run_id=run_id)
+                    if int(rollback.get('skipped_images') or 0) == 0:
+                        storage.abort_smart_filter_run(project_id=config['project_id'], run_id=run_id)
+                raise
         result = {
             'project_id': config['project_id'],
-            'operation_mode': operation_mode,
-            'rollback_run_id': rollback_run_id,
-            'changed_images': changed_images,
-            'removed_annotations': removed_annotations,
-            'relabeled_annotations': relabeled_annotations,
-            'rule': {
-                'operation_mode': operation_mode,
-                'merge_mode': config['merge_mode'],
-                'spatial_mode': config['spatial_mode'],
-                'canonical_class': config['canonical_class'],
-                'source_classes': list(config['source_classes']),
-                'area_mode': config['area_mode'],
-                'small_box_covered_by_large_gte': float(config['coverage_threshold']),
-            },
-            'items': items,
+            'schema_version': 2,
+            'task_type': config['task_type'],
+            'effect_type': config['effect_type'],
+            'operation_mode': operation,
+            'analysis_reused': True,
+            'preview_token': token,
+            'timings': {**timings, 'total_seconds': perf_counter() - started},
+            'rollback_run_id': run_id,
+            **applied,
+            'rule': self._public_rule(config),
             'message': (
-                f'合并过滤已应用：修改 {changed_images} 张图片，删除 {removed_annotations} 个标注'
-                + (f'，改类 {relabeled_annotations} 个标注' if relabeled_annotations > 0 else '')
-                if operation_mode == 'merge'
-                else f'规则过滤已应用：修改 {changed_images} 张图片，删除 {removed_annotations} 个命中标注'
+                f'实例内噪点已应用：修改 {applied["modified_annotations"]} 个实例，'
+                f'删除 {applied["removed_components"]} 个分量 / {applied["removed_pixels"]} 像素'
+                if operation == 'component_noise'
+                else f'数据清洗已应用：修改 {applied["changed_images"]} 张图片，删除 {applied["removed_annotations"]} 个标注'
             ),
+            'summary': self._summary(str(config['task_type']), applied, applied=True),
         }
-        if rollback_run_id:
-            storage.finish_smart_filter_run(run_id=rollback_run_id, summary=result)
+        if run_id:
+            storage.finish_smart_filter_run(run_id=run_id, summary=result)
         return result
 
     def spawn_job(
@@ -1109,13 +376,15 @@ class SmartFilterJobService:
     ) -> dict[str, Any]:
         del worker
         state = self._state_default(job_id='', project_id=project_id, job_type=job_type)
-        operation_mode = str(payload_dict.get('operation_mode') or 'merge').strip().lower()
-        if operation_mode == 'delete_unlabeled':
-            mode_label = '无标注图片删除预览' if job_type == 'preview' else '无标注图片确认删除'
-        else:
-            mode_label = '智能过滤分析预览' if job_type == 'preview' else '智能过滤确认合并'
+        operation = str(payload_dict.get('task_type') or payload_dict.get('operation_mode') or 'merge')
+        labels = {
+            'component_noise': '实例内噪点过滤',
+            'rule': '小实例/规则清理',
+            'merge': '重复/类别合并',
+            'delete_unlabeled': '无标注图片删除',
+        }
         state['payload_dict'] = dict(payload_dict)
-        state['params'] = {'mode_label': mode_label, 'scope_label': '全部图片'}
+        state['params'] = {'mode_label': f'{labels.get(operation, operation)} {job_type}', 'scope_label': '全部图片'}
         job = self.queue.enqueue(
             project_id=project_id,
             job_type=f'smart_filter:{job_type}',
@@ -1126,7 +395,6 @@ class SmartFilterJobService:
         )
         payload_with_id = dict(payload_dict)
         payload_with_id['_job_id'] = str(job.get('job_id') or '')
-        # Persist the generated job id for rollback audit records.
         self.queue.update_payload(str(job.get('job_id') or ''), payload_with_id)
         return job
 

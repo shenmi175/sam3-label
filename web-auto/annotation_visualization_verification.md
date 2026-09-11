@@ -34,7 +34,7 @@ OpenSeadragon 视口坐标系中，X 和 Y **都以图像宽度归一化**（图
 
 ## 截图
 
-保存于 `/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b1/zmb_datas/0-qoder/`：
+保存于通用输出目录 `/mnt/datasets/visualization-output/`：
 
 - `fixed_01_home_aligned.png` — home 视图，标注与家具对齐
 - `fixed_02_zoomed_aligned.png` — 放大后仍对齐

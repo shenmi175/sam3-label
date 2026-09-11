@@ -60,16 +60,8 @@ export function useReviewFlow() {
         return;
       }
       try {
-        const store = useAnnotationStore.getState();
-        if (store.dirty) {
-          const saved = await store.flushSave('review-save-next');
-          if (!saved) return;
-        } else {
-          const saved = await useAnnotationStore.getState().saveCurrent();
-          if (!saved) return;
-          toast(t('save_success'), 'success');
-        }
-        if (useAnnotationStore.getState().dirty) {
+        const ready = await useAnnotationStore.getState().prepareForNavigation();
+        if (!ready || useAnnotationStore.getState().dirty) {
           toast(t('review_unsaved_block'), 'error');
           return;
         }

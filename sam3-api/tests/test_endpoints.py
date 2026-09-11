@@ -7,8 +7,10 @@ skipped on machines without it, which is not treated as a failure.
 from __future__ import annotations
 
 import os
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 pytest.importorskip("ultralytics")
 
@@ -41,6 +43,69 @@ def test_health_reports_lazy_not_loaded(client) -> None:
     # Existing web-auto-facing fields stay present.
     assert body["sam3_pin_sha"]
     assert "device" in body and "checkpoint_path" in body
+    assert body["instance_interactivity_enabled"] is True
+    assert body["feature_gpu_cache_count"] == 0
+    assert body["feature_gpu_cache_bytes"] == 0
+
+
+def test_openapi_exposes_interactive_session_routes(client) -> None:
+    paths = client.get('/openapi.json').json()['paths']
+    assert '/v1/interactive/session/open' in paths
+    assert '/v1/interactive/predict' in paths
+    assert '/v1/interactive/reset' in paths
+    assert '/v1/interactive/prompts/undo' in paths
+    assert '/v1/interactive/prompts/redo' in paths
+    assert '/v1/interactive/close' in paths
+    assert '/v1/interactive/project/clear' in paths
+    assert '/v1/features/writes/wait' in paths
+
+
+def test_single_text_file_with_feature_save_uses_regular_infer_path(client, monkeypatch) -> None:
+    engine = client.app.state.engine
+    calls = []
+
+    def fake_infer(**kwargs):
+        calls.append(kwargs)
+        return {
+            'device': 'cpu',
+            'mode': 'text',
+            'prompt': 'chair',
+            'threshold': 0.5,
+            'image': {'width': 8, 'height': 8, 'input_size': 1008},
+            'num_detections': 0,
+            'detections': [],
+            'latency_ms': 1.0,
+            '_feature': {
+                'feature_status': 'queued',
+                'feature_write_id': 'write-1',
+            },
+        }
+
+    monkeypatch.setattr(engine, 'infer', fake_infer)
+    monkeypatch.setattr(
+        engine,
+        'infer_text_batch',
+        lambda **_kwargs: pytest.fail('single-file save must not use batch text inference'),
+    )
+    raw = BytesIO()
+    Image.new('RGB', (8, 8), 'white').save(raw, format='PNG')
+
+    response = client.post(
+        '/v1/infer_batch',
+        data={
+            'mode': 'text',
+            'prompt': 'chair',
+            'save_ai_features': 'true',
+            'feature_root': '/tmp/project/feature',
+        },
+        files={'files': ('one.png', raw.getvalue(), 'image/png')},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1
+    assert calls[0]['save_ai_features'] is True
+    assert calls[0]['image_digest']
+    assert response.json()['items'][0]['feature_write_id'] == 'write-1'
 
 
 def test_health_reports_load_failed_status(client) -> None:

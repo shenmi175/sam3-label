@@ -15,7 +15,7 @@
 - 适用:
   - 文本检索式单图分割
   - 点提示单图修正
-  - 框提示单图修正
+  - LA 检测框转蒙板的内部图像推理
 
 2. Ultralytics 视频语义跟踪
 - 实现: `app/video_semantic_engine.py`
@@ -92,17 +92,6 @@ curl http://127.0.0.1:8001/health
 - 对非默认 `input_size` 的请求会收敛到默认值，不再先报错再回退。
 - `contour_mode=split`（默认）: 每个实例 mask 按外轮廓拆成多条 detection（id 形如 `det_0001_c001`）。
 - `contour_mode=merged`: 每个实例只输出一条 detection，`polygon` 为最大轮廓，新增 `polygons` 字段包含全部轮廓，`mask_png_base64` 为整张实例 mask，`contour_index=null`、`contour_count` 为轮廓数。`/v1/infer_batch` 同样支持该参数。
-
-### `POST /v1/semantic/infer`
-
-当前图官方纯视觉框提示推理，内部与 `/v1/infer mode=boxes` 使用同一个 `Sam3Processor`。
-
-必需条件:
-
-- `boxes` 非空
-- 至少一个正框
-
-跨图片范例传播接口已移除。
 
 ## 4. 视频语义会话接口
 

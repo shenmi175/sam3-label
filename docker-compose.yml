@@ -1,34 +1,22 @@
 name: sam3-auto-label
 
-services:
-  caddy:
-    image: caddy:${CADDY_IMAGE_TAG:-2.11.2-alpine}
-    profiles:
-      - proxy
-    restart: unless-stopped
-    depends_on:
-      web-auto:
-        condition: service_healthy
-    ports:
-      - "${CADDY_HTTP_BIND:-0.0.0.0}:${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443"
-      - "${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443/udp"
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@example.org}
-    volumes:
-      - ./docker/caddy:/etc/caddy:ro
-      - caddy_data:/data
-      - caddy_config:/config
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "3"
 
+services:
   sam3-api:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/sam3-api.Dockerfile
       args:
         SAM3_API_BASE_IMAGE: ${SAM3_API_BASE_IMAGE:-pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime}
     image: sam3-api:local
+    profiles:
+      - sam3
     restart: unless-stopped
     shm_size: ${SAM3_API_SHM_SIZE:-8gb}
     environment:
@@ -45,6 +33,12 @@ services:
       SAM3_API_VIDEO_UPLOAD_DIR: /app/sam3-api/data/uploads
       SAM3_API_CORS_ORIGINS: ${SAM3_API_CORS_ORIGINS:-*}
       SAM3_API_TOKEN: ${SAM3_API_TOKEN:?Set SAM3_API_TOKEN in .env}
+      SAM3_API_ENABLE_INSTANCE_INTERACTIVITY: ${SAM3_API_ENABLE_INSTANCE_INTERACTIVITY:-1}
+      SAM3_API_FEATURE_GPU_LRU_SIZE: ${SAM3_API_FEATURE_GPU_LRU_SIZE:-5}
+      SAM3_API_FEATURE_WRITE_WORKERS: ${SAM3_API_FEATURE_WRITE_WORKERS:-2}
+      SAM3_API_FEATURE_WRITE_MAX_PENDING: ${SAM3_API_FEATURE_WRITE_MAX_PENDING:-32}
+      SAM3_API_FEATURE_FORMAT_VERSION: ${SAM3_API_FEATURE_FORMAT_VERSION:-sam3-inst-v1}
+      SAM3_API_FEATURE_ALLOWED_ROOTS: ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}
       HF_HOME: /cache/huggingface
       TORCH_HOME: /cache/torch
     expose:
@@ -52,6 +46,7 @@ services:
     volumes:
       - ${SAM3_CHECKPOINT_DIR:-./sam3_checkpoints}:/models:ro
       - ${SAM3_API_DATA_DIR:-./sam3-api/data}:/app/sam3-api/data
+      - ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:rw
       - sam3_hf_cache:/cache/huggingface
       - sam3_torch_cache:/cache/torch
     healthcheck:
@@ -62,6 +57,7 @@ services:
       start_period: 120s
 
   sapiens-api:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/sapiens-api.Dockerfile
@@ -101,6 +97,7 @@ services:
       start_period: 300s
 
   locate-anything-api:
+    logging: *default-logging
     build:
       context: .
       dockerfile: locate-anything-api/Dockerfile
@@ -134,6 +131,7 @@ services:
       start_period: 300s
 
   ops-api:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/ops-api.Dockerfile
@@ -143,11 +141,13 @@ services:
       OPS_API_HOST: 0.0.0.0
       OPS_API_PORT: 8020
       OPS_API_TOKEN: ${OPS_API_TOKEN:?Set OPS_API_TOKEN in .env}
-      OPS_ALLOWED_SERVICES: ${OPS_ALLOWED_SERVICES:-sam3-api,locate-anything-api,sapiens-api,caddy}
+      OPS_ALLOWED_SERVICES: ${OPS_ALLOWED_SERVICES:-sam3-api,locate-anything-api,sapiens-api}
+      OPS_CONTROLLABLE_SERVICES: ${OPS_CONTROLLABLE_SERVICES:-sam3-api,locate-anything-api,sapiens-api}
+      OPS_LOGGABLE_SERVICES: ${OPS_LOGGABLE_SERVICES:-ops-api,web-auto,task-worker,sam3-api,locate-anything-api,sapiens-api}
+      OPS_SHARED_LOG_DIR: /logs/web-auto
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-sam3-auto-label}
       OPS_PROJECT_ROOT: /workspace
       OPS_HOST_PROJECT_ROOT: ${OPS_HOST_PROJECT_ROOT:-.}
-      SAM3_ACCESS_MODE: ${SAM3_ACCESS_MODE:-direct}
       SAPIENS_ENABLED: ${SAPIENS_ENABLED:-0}
       SAPIENS_API_TOKEN: ${SAPIENS_API_TOKEN:?Set SAPIENS_API_TOKEN in .env}
       SAPIENS_API_BASE_IMAGE: ${SAPIENS_API_BASE_IMAGE:-pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime}
@@ -155,6 +155,8 @@ services:
       SAPIENS_API_SHM_SIZE: ${SAPIENS_API_SHM_SIZE:-8gb}
       SAPIENS_CHECKPOINT_ROOT: ${SAPIENS_CHECKPOINT_ROOT:-./sapiens_checkpoints}
       SAPIENS_DEVICE: ${SAPIENS_DEVICE:-cpu}
+      SAPIENS_EAGER_LOAD: ${SAPIENS_EAGER_LOAD:-0}
+      SAPIENS_GPU_DEVICE_ID: ${SAPIENS_GPU_DEVICE_ID:-0}
       SAPIENS_MODEL_NAME: ${SAPIENS_MODEL_NAME:-sapiens2_5b}
       WEB_AUTO_HOST_DATA_ROOT: ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}
       WEB_AUTO_ALLOWED_DATA_ROOTS: ${WEB_AUTO_ALLOWED_DATA_ROOTS:-}
@@ -165,6 +167,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${OPS_HOST_PROJECT_ROOT:-.}:/workspace:rw
+      - ${WEB_AUTO_DATA_DIR:-./web-auto/data}/logs:/logs/web-auto:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health', timeout=5).read()\""]
       interval: 30s
@@ -173,6 +176,7 @@ services:
       start_period: 10s
 
   web-auto:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/web-auto.Dockerfile
@@ -180,8 +184,6 @@ services:
     restart: unless-stopped
     user: "${WEB_AUTO_UID:-1000}:${WEB_AUTO_GID:-1000}"
     depends_on:
-      sam3-api:
-        condition: service_healthy
       ops-api:
         condition: service_healthy
     environment:
@@ -207,12 +209,25 @@ services:
       WEB_AUTO_ADMIN_USERNAME: ${WEB_AUTO_ADMIN_USERNAME:-admin}
       WEB_AUTO_ADMIN_PASSWORD: ${WEB_AUTO_ADMIN_PASSWORD:?Set WEB_AUTO_ADMIN_PASSWORD in .env}
       WEB_AUTO_SAM3_MAX_BATCH_FILES: ${WEB_AUTO_SAM3_MAX_BATCH_FILES:-32}
+      WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS: ${WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS:-10}
+      WEB_AUTO_SMART_FILTER_RETENTION_DAYS: ${WEB_AUTO_SMART_FILTER_RETENTION_DAYS:-30}
+      WEB_AUTO_LOG_MAX_BYTES: ${WEB_AUTO_LOG_MAX_BYTES:-5242880}
+      WEB_AUTO_LOG_FILE_COUNT: ${WEB_AUTO_LOG_FILE_COUNT:-3}
+      WEB_AUTO_EVENT_LOG_MAX_BYTES: ${WEB_AUTO_EVENT_LOG_MAX_BYTES:-5242880}
+      WEB_AUTO_EVENT_LOG_FILE_COUNT: ${WEB_AUTO_EVENT_LOG_FILE_COUNT:-3}
+      WEB_AUTO_SERVICE_NAME: web-auto
+      WEB_AUTO_MODEL_WARMUP_IMAGE: /app/example/model_warmup.jpg
+      WEB_AUTO_GPU_DEPLOYMENT: ${WEB_AUTO_GPU_DEPLOYMENT:-0}
+      WEB_AUTO_SAM3_GPU_DEVICE_ID: ${SAM3_GPU_DEVICE_ID:-0}
+      WEB_AUTO_SAPIENS_GPU_DEVICE_ID: ${SAPIENS_GPU_DEVICE_ID:-0}
+      WEB_AUTO_LOCATE_GPU_DEVICE_ID: ${LOCATE_GPU_DEVICE_ID:-2}
     expose:
       - "8000"
     ports:
       - "${WEB_AUTO_HTTP_BIND:-0.0.0.0}:${WEB_AUTO_HTTP_PORT:-8000}:8000"
     volumes:
       - ./web-auto:/app/web-auto
+      - ./example:/app/example:ro
       - ${WEB_AUTO_DATA_DIR:-./web-auto/data}:/data/web-auto
       - ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}:rw
     healthcheck:
@@ -223,13 +238,11 @@ services:
       start_period: 10s
 
   task-worker:
+    logging: *default-logging
     image: web-auto:local
     restart: unless-stopped
     user: "${WEB_AUTO_UID:-1000}:${WEB_AUTO_GID:-1000}"
     command: ["python", "-m", "app.worker"]
-    depends_on:
-      sam3-api:
-        condition: service_healthy
     environment:
       WEB_AUTO_DATA_DIR: /data/web-auto
       WEB_AUTO_HOST_DATA_ROOT: ${WEB_AUTO_HOST_DATA_ROOT:-/opt/sam3/project-data}
@@ -248,6 +261,13 @@ services:
       WEB_AUTO_WORKER_RESOURCE: all
       WEB_AUTO_WORKER_BATCH_SLICE: ${WEB_AUTO_WORKER_BATCH_SLICE:-4}
       WEB_AUTO_SAM3_MAX_BATCH_FILES: ${WEB_AUTO_SAM3_MAX_BATCH_FILES:-32}
+      WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS: ${WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS:-10}
+      WEB_AUTO_SMART_FILTER_RETENTION_DAYS: ${WEB_AUTO_SMART_FILTER_RETENTION_DAYS:-30}
+      WEB_AUTO_LOG_MAX_BYTES: ${WEB_AUTO_LOG_MAX_BYTES:-5242880}
+      WEB_AUTO_LOG_FILE_COUNT: ${WEB_AUTO_LOG_FILE_COUNT:-3}
+      WEB_AUTO_EVENT_LOG_MAX_BYTES: ${WEB_AUTO_EVENT_LOG_MAX_BYTES:-5242880}
+      WEB_AUTO_EVENT_LOG_FILE_COUNT: ${WEB_AUTO_EVENT_LOG_FILE_COUNT:-3}
+      WEB_AUTO_SERVICE_NAME: task-worker
       WEB_AUTO_AUTH_ENABLED: ${WEB_AUTO_AUTH_ENABLED:-0}
       WEB_AUTO_SESSION_TTL_SECONDS: ${WEB_AUTO_SESSION_TTL_SECONDS:-43200}
     volumes:
@@ -262,8 +282,6 @@ services:
       start_period: 10s
 
 volumes:
-  caddy_data:
-  caddy_config:
   sam3_hf_cache:
   sam3_torch_cache:
   sapiens_hf_cache:

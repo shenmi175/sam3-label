@@ -21,3 +21,4 @@ huggingface_hub
 einops
 psutil
 pycocotools
+safetensors>=0.4.5

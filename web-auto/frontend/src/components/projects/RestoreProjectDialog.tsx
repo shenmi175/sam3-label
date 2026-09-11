@@ -155,7 +155,7 @@ export function RestoreProjectDialog({ open, defaultScanRoot, onClose, onImporte
                 fullWidth
                 value={scanRoot}
                 onChange={(e) => setScanRoot(e.target.value)}
-                placeholder="/media/.../zmb_datas/openimg"
+                placeholder="/mnt/datasets/openimg"
               />
               <Typography sx={hintSx}>{t('scan_root_hint')}</Typography>
             </Box>

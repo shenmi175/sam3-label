@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,17 +18,22 @@
     "i18next": "^25.3.2",
     "openseadragon": "6.0.2",
     "react": "^19.1.1",
+    "react-compare-slider": "^3.1.0",
     "react-dom": "^19.1.1",
     "react-i18next": "^15.6.1",
     "react-router-dom": "^7.8.0",
     "zustand": "^5.0.7"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/openseadragon": "^5.0.0",
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^29.1.1",
     "typescript": "~5.8.3",
-    "vite": "^7.1.1"
+    "vite": "^7.1.1",
+    "vitest": "^4.1.10"
   }
 }

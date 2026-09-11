@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.annotation_geometry import _bbox_from_polygon, _mask_components_from_base64
+from app.annotations import normalize_source, parse_image_annotations
+from app.annotations.operations import _bbox_from_polygon, _mask_components_from_base64
 from app.utils import norm_text
 
 
@@ -58,11 +59,6 @@ def _convert_detections(
             bbox = []
 
         class_name = forced_class or _resolve_class_for_detection(det, classes)
-        metadata: dict[str, Any] = {}
-        for key in ('model_det_id', 'contour_index', 'contour_count'):
-            if det.get(key) is not None:
-                metadata[key] = det.get(key)
-
         polygon = det.get('polygon') if isinstance(det.get('polygon'), list) else []
 
         # merged contour mode: detection carries all contours of one instance
@@ -87,7 +83,7 @@ def _convert_detections(
                     'area': float(det.get('area') or 0.0),
                     'mask_png_base64': det.get('mask_png_base64') or '',
                     'source_model': source_model,
-                    **metadata,
+                    'component_count': len(polygons),
                 }
             )
             continue
@@ -110,7 +106,7 @@ def _convert_detections(
                     'area': float(det.get('area') or 0.0),
                     'mask_png_base64': det.get('mask_png_base64') or '',
                     'source_model': source_model,
-                    **metadata,
+                    'component_count': 1,
                 }
             )
             continue
@@ -120,35 +116,35 @@ def _convert_detections(
             components = _mask_components_from_base64(mask_b64)
             if not components:
                 continue
-            model_det_id = str(det.get('model_det_id') or det.get('id') or f'det_{i:04d}')
-            contour_count = len(components)
-            for contour_idx, component in enumerate(components, start=1):
-                component_polygon = component.get('polygon') if isinstance(component, dict) else []
-                if not isinstance(component_polygon, list) or len(component_polygon) < 3:
-                    continue
-                component_bbox = bbox
-                if not component_bbox:
-                    component_bbox = _bbox_from_polygon(component_polygon)
-                if not component_bbox:
-                    continue
-                component_metadata = dict(metadata)
-                component_metadata.setdefault('model_det_id', model_det_id)
-                component_metadata['contour_index'] = contour_idx
-                component_metadata['contour_count'] = contour_count
-                out.append(
-                    {
-                        'id': f'{model_det_id}_c{contour_idx:03d}',
-                        'class_name': class_name,
-                        'raw_label': str(det.get('label') or ''),
-                        'score': float(det.get('score') or 0.0),
-                        'bbox': [float(v) for v in component_bbox] if component_bbox else [],
-                        'polygon': component_polygon,
-                        'area': float(component.get('area') or 0.0),
-                        'mask_png_base64': component.get('mask_png_base64') or '',
-                        'source_model': source_model,
-                        **component_metadata,
-                    }
-                )
+            polygons = [
+                component.get('polygon')
+                for component in components
+                if isinstance(component, dict)
+                and isinstance(component.get('polygon'), list)
+                and len(component.get('polygon') or []) >= 3
+            ]
+            if not polygons:
+                continue
+            main_polygon = max(polygons, key=len)
+            if not bbox:
+                xs = [float(point[0]) for region in polygons for point in region]
+                ys = [float(point[1]) for region in polygons for point in region]
+                bbox = [min(xs), min(ys), max(xs), max(ys)] if xs and ys else []
+            if not bbox:
+                continue
+            out.append({
+                'id': str(det.get('id') or f'det_{i:04d}'),
+                'class_name': class_name,
+                'raw_label': str(det.get('label') or ''),
+                'score': float(det.get('score') or 0.0),
+                'bbox': [float(v) for v in bbox],
+                'polygon': main_polygon,
+                'polygons': polygons,
+                'area': sum(float(component.get('area') or 0.0) for component in components),
+                'mask_png_base64': mask_b64,
+                'source_model': source_model,
+                'component_count': len(polygons),
+            })
             continue
 
         # bbox-only branch: polygon < 3 points AND no mask, but a valid bbox is
@@ -167,7 +163,6 @@ def _convert_detections(
                         or max(0.0, (float(bbox[2]) - float(bbox[0])) * (float(bbox[3]) - float(bbox[1]))),
                     'mask_png_base64': '',
                     'source_model': source_model,
-                    **metadata,
                 }
             )
             continue
@@ -186,7 +181,6 @@ def _convert_detections(
                 'area': float(det.get('area') or 0.0),
                 'mask_png_base64': det.get('mask_png_base64') or '',
                 'source_model': source_model,
-                **metadata,
             }
         )
     return out
@@ -211,17 +205,17 @@ def _replace_by_classes(
     if not impacted_norm:
         return new_annotations
 
+    parsed = parse_image_annotations(old_annotations)
+    source_id = normalize_source(source_model).source_id
     kept: list[dict[str, Any]] = []
-    for a in old_annotations:
-        cls = str(a.get('class_name') or '').strip()
-        cls_norm = norm_text(cls)
+    for raw, instance in zip(old_annotations, parsed.instances):
+        cls_norm = norm_text(instance.class_name)
         if not cls_norm:
-            kept.append(a)
+            kept.append(raw)
             continue
-        ann_source = str(a.get('source_model') or '').strip()
-        if cls_norm in impacted_norm and (not ann_source or ann_source == source_model):
+        if cls_norm in impacted_norm and instance.provenance.producer.source_id == source_id:
             continue
-        kept.append(a)
+        kept.append(raw)
 
     kept.extend(new_annotations)
     return kept

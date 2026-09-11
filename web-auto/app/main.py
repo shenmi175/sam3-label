@@ -1,11 +1,11 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.routers.annotations import create_annotations_router
+from app.routers.audit_events import create_audit_events_router
+from app.routers.ai_assistant import create_ai_assistant_router
+from app.routers.analytics import create_analytics_router
 from app.routers.auth import create_auth_router
+from app.routers.cache import create_cache_router
 from app.routers.classes import create_classes_router
 from app.routers.config import create_config_router
 from app.routers.export import create_export_router
@@ -31,13 +35,20 @@ from app.routers.ui_state import create_ui_state_router
 from app.routers.uploads import create_uploads_router
 from app.sam3_client import Sam3Client
 from app.locate_anything_client import LocateAnythingClient
+from app.logging_config import configure_web_auto_logging
+from app.audit import AuditLogger, reset_audit_context, set_audit_context
 from app.services.auth_http import AuthHttp
 from app.services.auth_service import AuthStore
+from app.services.analytics_service import AnalyticsService
+from app.services.ai_assistant_service import AiAssistantService
+from app.services.cache_gate import CACHE_MAINTENANCE_LOCK
+from app.services.cache_maintenance import CacheMaintenanceService
 from app.services.config_service import AppConfigStore, parse_allowed_data_roots, parse_positive_int_env
 from app.services.inference_jobs import InferenceJobService
 from app.services.inference_service import InferenceService
 from app.services.job_queue import PersistentJobQueue
 from app.services.integration_clients import OpsClient, SapiensClient
+from app.services.model_load_jobs import ModelLoadJobManager
 from app.services.image_previews import ImagePreviewService
 from app.services.image_tiles import ImageTileService
 from app.services.smart_filter_service import (
@@ -59,6 +70,10 @@ APP_CONFIG_FILE = DATA_DIR / 'global_config.json'
 DEFAULT_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAM3_API_BASE_URL', 'http://127.0.0.1:8001').strip() or 'http://127.0.0.1:8001'
 DEFAULT_LOCATE_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_LOCATE_API_BASE_URL', 'http://127.0.0.1:8004').strip() or 'http://127.0.0.1:8004'
 DEFAULT_SAPIENS_API_BASE_URL = os.getenv('WEB_AUTO_DEFAULT_SAPIENS_API_BASE_URL', 'http://sapiens-api:8010').strip() or 'http://sapiens-api:8010'
+MODEL_WARMUP_IMAGE = Path(
+    os.getenv('WEB_AUTO_MODEL_WARMUP_IMAGE', str(BASE_DIR.parent / 'example' / 'model_warmup.jpg'))
+).expanduser().resolve()
+GPU_DEPLOYMENT = os.getenv('WEB_AUTO_GPU_DEPLOYMENT', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 SAPIENS_API_TOKEN = os.getenv('WEB_AUTO_SAPIENS_API_TOKEN', '').strip()
 OPS_API_BASE_URL = os.getenv('WEB_AUTO_OPS_API_BASE_URL', 'http://ops-api:8020').strip().rstrip('/')
 OPS_API_TOKEN = os.getenv('WEB_AUTO_OPS_API_TOKEN', '').strip()
@@ -73,20 +88,15 @@ ALLOWED_DATA_ROOTS = parse_allowed_data_roots(HOST_DATA_ROOT)
 APP_CONFIG = AppConfigStore(APP_CONFIG_FILE)
 
 
-logger = logging.getLogger('web_auto')
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    fmt = logging.Formatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s')
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
+logger = configure_web_auto_logging(DATA_DIR)
+AUDIT_LOGGER = AuditLogger(DATA_DIR)
 
 
 storage = Storage(APP_CONFIG.initial_storage_dir(DATA_DIR))
 _job_db_path = storage.index_db_file
 if _job_db_path.exists() and not os.access(_job_db_path, os.W_OK):
     _job_db_path = Path(tempfile.gettempdir()) / f'web_auto_jobs_{os.getuid()}.sqlite3'
-JOB_QUEUE = PersistentJobQueue(_job_db_path)
+JOB_QUEUE = PersistentJobQueue(_job_db_path, audit=AUDIT_LOGGER)
 sam3 = Sam3Client(timeout_sec=180)
 locate = LocateAnythingClient(timeout_sec=600)
 OPS_CLIENT = OpsClient(OPS_API_BASE_URL, OPS_API_TOKEN)
@@ -96,6 +106,23 @@ CURRENT_DATA_DIR = Path(storage.base_dir)
 
 def _current_storage() -> Storage:
     return storage
+
+
+MODEL_LOAD_JOBS = ModelLoadJobManager(
+    sam3=sam3,
+    locate=locate,
+    sapiens=SAPIENS_CLIENT,
+    ops=OPS_CLIENT,
+    example_image=MODEL_WARMUP_IMAGE,
+    sam3_api_base_url=lambda: _effective_sam3_api_base_url(),
+    locate_api_base_url=lambda: _effective_locate_api_base_url(),
+    gpu_deployment=GPU_DEPLOYMENT,
+    gpu_devices={
+        'sam3-api': os.getenv('WEB_AUTO_SAM3_GPU_DEVICE_ID', '').strip(),
+        'locate-anything-api': os.getenv('WEB_AUTO_LOCATE_GPU_DEVICE_ID', '').strip(),
+        'sapiens-api': os.getenv('WEB_AUTO_SAPIENS_GPU_DEVICE_ID', '').strip(),
+    },
+)
 
 
 INFER_JOBS = InferenceJobService(
@@ -113,19 +140,29 @@ INFERENCE_SERVICE = InferenceService(
     max_batch_files=SAM3_MAX_BATCH_FILES,
     max_pending_image_ids=MAX_PENDING_IMAGE_IDS_IN_JOB_STATE,
 )
+AI_ASSISTANT_SERVICE = AiAssistantService(
+    get_storage=_current_storage,
+    sam3=sam3,
+    acquire_gpu=JOB_QUEUE.acquire_interactive_gpu,
+    release_gpu=JOB_QUEUE.release_interactive_gpu,
+    active_infer_job=INFER_JOBS.get_active_job_for_project,
+)
 SMART_FILTER_JOBS = SmartFilterJobService(get_storage=_current_storage, logger=logger, queue=JOB_QUEUE)
+ANALYTICS_SERVICE = AnalyticsService(get_storage=_current_storage, queue=JOB_QUEUE)
 CONFIG_LOCK = threading.Lock()
 PROJECT_DISCOVERY_LOCK = threading.Lock()
 IMAGE_TILE_SERVICE = ImageTileService(
     get_current_data_dir=lambda: CURRENT_DATA_DIR,
     max_workers=MAX_TILE_WORKERS,
     logger=logger,
+    maintenance_lock=CACHE_MAINTENANCE_LOCK,
 )
 IMAGE_PREVIEW_SERVICE = ImagePreviewService(
     get_current_data_dir=lambda: CURRENT_DATA_DIR,
     preview_max_edge=PREVIEW_MAX_EDGE,
     thumbnail_max_edge=THUMBNAIL_MAX_EDGE,
     logger=logger,
+    maintenance_lock=CACHE_MAINTENANCE_LOCK,
 )
 PROJECT_DISCOVERY_LAST_SCAN = 0.0
 PROJECT_DISCOVERY_INTERVAL_SECONDS = 60.0
@@ -177,24 +214,39 @@ app.add_middleware(
 
 @app.middleware('http')
 async def require_web_auto_session(request: Request, call_next):
-    if not AUTH_ENABLED or request.method.upper() == 'OPTIONS' or AUTH_HTTP.public_path(request.url.path):
-        return await call_next(request)
-
-    admin_missing = not AUTH_STORE.has_admin()
-    if admin_missing:
-        if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
-            return JSONResponse(status_code=503, content={'detail': 'admin credentials are not configured', 'code': 'admin_not_configured'})
-        return RedirectResponse('/login', status_code=303)
-
-    if not AUTH_HTTP.request_username(request):
-        if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
-            return JSONResponse(status_code=401, content={'detail': 'login required', 'code': 'login_required'})
-        return RedirectResponse('/login', status_code=303)
-
-    return await call_next(request)
+    request_id = str(uuid.uuid4())
+    actor = 'anonymous'
+    username = AUTH_HTTP.request_username(request) if AUTH_ENABLED else None
+    if username:
+        actor = username
+    request.state.request_id = request_id
+    request.state.actor = actor
+    tokens = set_audit_context(request_id, actor)
+    try:
+        if AUTH_ENABLED and request.method.upper() != 'OPTIONS' and not AUTH_HTTP.public_path(request.url.path):
+            admin_missing = not AUTH_STORE.has_admin()
+            if admin_missing:
+                if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
+                    response = JSONResponse(status_code=503, content={'detail': 'admin credentials are not configured', 'code': 'admin_not_configured'})
+                else:
+                    response = RedirectResponse('/login', status_code=303)
+            elif not username:
+                if request.url.path.startswith('/api/') or request.url.path in {'/docs', '/redoc', '/openapi.json'}:
+                    response = JSONResponse(status_code=401, content={'detail': 'login required', 'code': 'login_required'})
+                else:
+                    response = RedirectResponse('/login', status_code=303)
+            else:
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        response.headers['X-Request-ID'] = request_id
+        return response
+    finally:
+        reset_audit_context(tokens)
 
 
 app.include_router(create_auth_router(AUTH_HTTP))
+app.include_router(create_audit_events_router(audit=AUDIT_LOGGER))
 app.include_router(
     create_services_router(
         sam3=sam3,
@@ -205,12 +257,15 @@ app.include_router(
         effective_sam3_api_base_url=lambda: _effective_sam3_api_base_url(),
         default_locate_api_base_url=DEFAULT_LOCATE_API_BASE_URL,
         default_sapiens_api_base_url=DEFAULT_SAPIENS_API_BASE_URL,
+        model_load_jobs=MODEL_LOAD_JOBS,
+        audit=AUDIT_LOGGER,
     )
 )
 app.include_router(create_pose_router(get_storage=_current_storage, sapiens_client=SAPIENS_CLIENT))
+app.include_router(create_ai_assistant_router(AI_ASSISTANT_SERVICE))
 app.include_router(create_ui_state_router(get_storage=_current_storage))
-app.include_router(create_export_router(get_storage=_current_storage))
-app.include_router(create_annotations_router(get_storage=_current_storage))
+app.include_router(create_export_router(get_storage=_current_storage, audit=AUDIT_LOGGER))
+app.include_router(create_annotations_router(get_storage=_current_storage, audit=AUDIT_LOGGER))
 app.include_router(create_classes_router(get_storage=_current_storage))
 app.include_router(
     create_image_files_router(
@@ -219,8 +274,9 @@ app.include_router(
         preview_service=IMAGE_PREVIEW_SERVICE,
     )
 )
-app.include_router(create_project_images_router(get_storage=_current_storage))
+app.include_router(create_project_images_router(get_storage=_current_storage, audit=AUDIT_LOGGER))
 app.include_router(create_jobs_router(queue=JOB_QUEUE))
+app.include_router(create_analytics_router(service=ANALYTICS_SERVICE))
 
 
 def _get_project_or_404(project_id: str, *, enrich: bool = False, include_images: bool = True) -> dict[str, Any]:
@@ -284,6 +340,14 @@ def _ensure_no_active_jobs_for_config_change() -> None:
     active = _count_running_infer_jobs() + _count_running_smart_filter_jobs()
     if active > 0:
         raise HTTPException(status_code=409, detail='cannot change configuration while background jobs are running')
+
+
+CACHE_MAINTENANCE_SERVICE = CacheMaintenanceService(
+    get_current_data_dir=lambda: CURRENT_DATA_DIR,
+    ensure_no_active_jobs=_ensure_no_active_jobs_for_config_change,
+    has_active_tile_jobs=IMAGE_TILE_SERVICE.has_active_jobs,
+    maintenance_lock=CACHE_MAINTENANCE_LOCK,
+)
 
 
 def _set_storage_data_dir(path_text: str) -> Path:
@@ -426,6 +490,7 @@ def _global_config_info() -> dict[str, Any]:
 @app.on_event('startup')
 def on_startup() -> None:
     AUTH_STORE.ensure_admin_from_env()
+    AI_ASSISTANT_SERVICE.cleanup_transient_features()
     return None
 
 
@@ -450,6 +515,7 @@ app.include_router(
         queue_health=JOB_QUEUE.health_summary,
     )
 )
+app.include_router(create_cache_router(service=CACHE_MAINTENANCE_SERVICE))
 app.include_router(
     create_uploads_router(
         host_data_root=HOST_DATA_ROOT,
@@ -468,6 +534,9 @@ app.include_router(
         auto_import_project_manifests=_auto_import_project_manifests,
         resolve_project_discovery_roots=_resolve_project_discovery_roots,
         project_discovery_root_info=_project_discovery_root_info,
+        close_ai_project=lambda project_id: AI_ASSISTANT_SERVICE.close_project(project_id, DEFAULT_API_BASE_URL),
+        active_project_job=lambda project_id: JOB_QUEUE.active(project_id),
+        audit=AUDIT_LOGGER,
     )
 )
 
@@ -488,6 +557,7 @@ app.include_router(
         resume_infer_job=INFERENCE_SERVICE.resume_infer_job,
         acquire_interactive_gpu=JOB_QUEUE.acquire_interactive_gpu,
         release_interactive_gpu=JOB_QUEUE.release_interactive_gpu,
+        audit=AUDIT_LOGGER,
     )
 )
 
@@ -501,8 +571,11 @@ app.include_router(
         spawn_smart_filter_job=SMART_FILTER_JOBS.spawn_job,
         run_smart_filter_preview_job=SMART_FILTER_JOBS.run_preview_job,
         run_smart_filter_apply_job=SMART_FILTER_JOBS.run_apply_job,
+        run_smart_filter_sync_preview=SMART_FILTER_JOBS.run_sync_preview,
+        run_smart_filter_sync_apply=SMART_FILTER_JOBS.run_sync_apply,
         get_active_smart_filter_job_for_project=SMART_FILTER_JOBS.get_active_job_for_project,
         get_smart_filter_job_state_or_404=SMART_FILTER_JOBS.get_job_state_or_404,
+        audit=AUDIT_LOGGER,
     )
 )
 

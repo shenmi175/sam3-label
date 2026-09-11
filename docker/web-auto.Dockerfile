@@ -19,6 +19,7 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/web-auto-requirements.txt
 
 COPY web-auto /app/web-auto
+COPY example /app/example
 
 RUN mkdir -p /data/web-auto
 

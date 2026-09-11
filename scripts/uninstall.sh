@@ -59,8 +59,6 @@ done
 cd "$ROOT_DIR"
 select_docker
 
-export PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-uninstall.local}"
-export ACME_EMAIL="${ACME_EMAIL:-uninstall@example.org}"
 export SAM3_API_TOKEN="${SAM3_API_TOKEN:-uninstall-token}"
 export WEB_AUTO_ADMIN_PASSWORD="${WEB_AUTO_ADMIN_PASSWORD:-uninstall-password}"
 

@@ -11,7 +11,8 @@ from typing import Any
 from fastapi import HTTPException
 from PIL import Image, ImageChops, ImageDraw
 
-from app.services.annotation_geometry import _bbox_from_polygon, _mask_components_from_base64
+from app.annotations import parse_image_annotations
+from app.annotations.operations import _mask_components_from_base64
 from app.utils import ensure_dir
 
 
@@ -69,22 +70,34 @@ def _write_mask_sidecar(base_dir: Path, project_id: str, image_id: str, annotati
 
 
 def _fill_polygon_fallback(item: dict[str, Any], mask_b64: str) -> None:
-    if isinstance(item.get('polygon'), list) and len(item.get('polygon') or []) >= 3:
+    if (
+        isinstance(item.get('polygons'), list) and item.get('polygons')
+    ) or (isinstance(item.get('polygon'), list) and len(item.get('polygon') or []) >= 3):
         return
     components = _mask_components_from_base64(mask_b64)
     if not components:
         return
     component = max(components, key=lambda x: float(x.get('area') or 0.0))
+    polygons = [
+        candidate.get('polygon')
+        for candidate in components
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get('polygon'), list)
+        and len(candidate.get('polygon') or []) >= 3
+    ]
     polygon = component.get('polygon') if isinstance(component, dict) else []
     if isinstance(polygon, list) and len(polygon) >= 3:
         item['polygon'] = polygon
-        if not item.get('bbox'):
-            bbox = _bbox_from_polygon(polygon)
-            if bbox:
-                item['bbox'] = bbox
+        item['polygons'] = polygons
+        item['component_count'] = len(polygons)
+        if not item.get('bbox') and polygons:
+            xs = [float(point[0]) for region in polygons for point in region]
+            ys = [float(point[1]) for region in polygons for point in region]
+            if xs and ys:
+                item['bbox'] = [min(xs), min(ys), max(xs), max(ys)]
     if not item.get('area'):
         try:
-            item['area'] = float(component.get('area') or 0.0)
+            item['area'] = sum(float(candidate.get('area') or 0.0) for candidate in components)
         except Exception:
             pass
 
@@ -103,12 +116,23 @@ def normalize_annotation_masks(
             continue
         item = dict(raw)
         ann_id = _safe_name(str(item.get('id') or f'ann_{idx + 1:04d}'))
+        invalidate_mask = bool(item.pop('__invalidate_mask', False))
+        sidecar_path = annotation_mask_path(base_dir, project_id, image_id, ann_id)
+        if invalidate_mask:
+            item['mask_url'] = ''
+            if materialize:
+                sidecar_path.unlink(missing_ok=True)
         mask_b64 = str(item.get('mask_png_base64') or item.get('mask_png') or '').strip()
-        if mask_b64:
+        if mask_b64 and not invalidate_mask:
             _fill_polygon_fallback(item, mask_b64)
             if materialize and _write_mask_sidecar(base_dir, project_id, image_id, ann_id, mask_b64):
                 item['mask_url'] = annotation_mask_url(project_id, image_id, ann_id)
-        elif not item.get('mask_url') and annotation_mask_path(base_dir, project_id, image_id, ann_id).is_file():
+        elif (
+            not invalidate_mask
+            and int(item.get('schema_version') or 0) < 3
+            and not item.get('mask_url')
+            and sidecar_path.is_file()
+        ):
             item['mask_url'] = annotation_mask_url(project_id, image_id, ann_id)
 
         item['overlay_url'] = overlay_url(project_id, image_id)
@@ -128,21 +152,11 @@ def mask_file_or_404(base_dir: Path, project_id: str, image_id: str, annotation_
 def _image_size_from_annotations(annotations: list[dict[str, Any]]) -> tuple[int, int] | None:
     max_x = 0.0
     max_y = 0.0
-    for ann in annotations:
-        for p in ann.get('polygon') or []:
-            if isinstance(p, (list, tuple)) and len(p) >= 2:
-                try:
-                    max_x = max(max_x, float(p[0]))
-                    max_y = max(max_y, float(p[1]))
-                except Exception:
-                    pass
-        bbox = ann.get('bbox') or []
-        if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
-            try:
-                max_x = max(max_x, float(bbox[2]))
-                max_y = max(max_y, float(bbox[3]))
-            except Exception:
-                pass
+    for instance in parse_image_annotations(annotations).instances:
+        bbox = instance.geometry.bbox
+        if bbox:
+            max_x = max(max_x, bbox.x2)
+            max_y = max(max_y, bbox.y2)
     if max_x <= 0 or max_y <= 0:
         return None
     return max(1, int(max_x + 1)), max(1, int(max_y + 1))
@@ -151,15 +165,17 @@ def _image_size_from_annotations(annotations: list[dict[str, Any]]) -> tuple[int
 def _annotation_signature(annotations: list[dict[str, Any]]) -> str:
     payload = [
         {
-            'id': ann.get('id'),
-            'polygon': ann.get('polygon'),
-            'bbox': ann.get('bbox'),
-            'class_name': ann.get('class_name'),
-            'area': ann.get('area'),
-            'mask_url': ann.get('mask_url'),
+            'id': instance.instance_id,
+            'regions': instance.geometry.regions,
+            'bbox': (
+                [instance.geometry.bbox.x1, instance.geometry.bbox.y1, instance.geometry.bbox.x2, instance.geometry.bbox.y2]
+                if instance.geometry.bbox else None
+            ),
+            'class_name': instance.class_name,
+            'area': instance.geometry.segmentation_area_px,
+            'mask_refs': instance.geometry.mask_refs,
         }
-        for ann in annotations
-        if isinstance(ann, dict)
+        for instance in parse_image_annotations(annotations).instances
     ]
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
@@ -187,10 +203,12 @@ def build_semantic_mask(
         return semantic_path
     mask = Image.new('L', size, 0)
     draw = ImageDraw.Draw(mask)
-    for ann in annotations:
-        ann_id = str(ann.get('id') or '').strip()
+    parsed = parse_image_annotations(annotations)
+    for instance in parsed.instances:
+        ann_id = instance.source_annotation_ids[0] if len(instance.source_annotation_ids) == 1 else ''
         sidecar = annotation_mask_path(base_dir, project_id, image_id, ann_id) if ann_id else None
-        if sidecar and sidecar.is_file():
+        schema_version = int(instance.attributes.get('schema_version') or 0)
+        if (instance.geometry.mask_refs or schema_version < 3) and sidecar and sidecar.is_file():
             try:
                 with Image.open(sidecar) as im:
                     component = im.convert('L').resize(size) if im.size != size else im.convert('L')
@@ -199,17 +217,8 @@ def build_semantic_mask(
                     continue
             except Exception:
                 pass
-        polygon = ann.get('polygon') or []
-        if isinstance(polygon, list) and len(polygon) >= 3:
-            points: list[tuple[float, float]] = []
-            for p in polygon:
-                if isinstance(p, (list, tuple)) and len(p) >= 2:
-                    try:
-                        points.append((float(p[0]), float(p[1])))
-                    except Exception:
-                        pass
-            if len(points) >= 3:
-                draw.polygon(points, fill=255)
+        for polygon in instance.geometry.regions:
+            draw.polygon(list(polygon), fill=255)
     mask.save(semantic_path, format='PNG')
     return semantic_path
 

@@ -1,15 +1,23 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, LinearProgress, Paper, Typography } from '@mui/material';
 import type {
   SapiensStatusResponse,
+  ModelLoadJob,
   ServiceInfo,
   ServiceOperation,
   ServicesStatusResponse,
 } from '../../api/system';
 import { formatBytes } from './utils';
 import { useToast } from '../common/ToastProvider';
+import {
+  downloadLogs,
+  getLatestModelLoadJob,
+  getModelLoadJob,
+  startModelLoadJob,
+} from '../../api/system';
 
-const SERVICE_NAMES = ['sam3-api', 'locate-anything-api', 'sapiens-api', 'caddy'];
+const SERVICE_NAMES = ['sam3-api', 'locate-anything-api', 'sapiens-api'];
 
 interface ServicesPanelProps {
   servicesStatus: ServicesStatusResponse | null;
@@ -28,8 +36,99 @@ export function ServicesPanel({
 }: ServicesPanelProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const [preparingLogs, setPreparingLogs] = useState(false);
+  const [modelLoadJobs, setModelLoadJobs] = useState<Record<string, ModelLoadJob | null>>({});
+  const reportedJobsRef = useRef(new Set<string>());
 
   const loaded = servicesStatus !== null || sapiensStatus !== null;
+  const activeModelLoadJobIds = useMemo(
+    () => Object.values(modelLoadJobs)
+      .filter((job): job is ModelLoadJob => Boolean(
+        job && ['queued', 'running'].includes(String(job.status || '')),
+      ))
+      .map((job) => job.job_id)
+      .sort()
+      .join(','),
+    [modelLoadJobs],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.allSettled(SERVICE_NAMES.map(async (service) => {
+      const response = await getLatestModelLoadJob(service);
+      if (!cancelled) {
+        setModelLoadJobs((prev) => {
+          const current = prev[service];
+          const incoming = response.job || null;
+          const currentActive = current && ['queued', 'running'].includes(String(current.status || ''));
+          if (currentActive && incoming?.job_id !== current.job_id) {
+            return prev;
+          }
+          return { ...prev, [service]: incoming };
+        });
+      }
+    }));
+    return () => {
+      cancelled = true;
+    };
+  }, [servicesStatus]);
+
+  useEffect(() => {
+    const jobIds = activeModelLoadJobIds.split(',').filter(Boolean);
+    if (jobIds.length === 0) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      const settled = await Promise.allSettled(
+        jobIds.map((jobId) => getModelLoadJob(jobId)),
+      );
+      if (cancelled) return;
+      let shouldRefresh = false;
+      settled.forEach((result) => {
+        if (result.status !== 'fulfilled' || !result.value.job) return;
+        const job = result.value.job;
+        setModelLoadJobs((prev) => ({ ...prev, [job.service]: job }));
+        if (!['completed', 'failed'].includes(String(job.status || ''))) return;
+        if (reportedJobsRef.current.has(job.job_id)) return;
+        reportedJobsRef.current.add(job.job_id);
+        shouldRefresh = true;
+        if (job.status === 'completed') {
+          showToast(t('model_load_success'), 'success');
+        } else {
+          showToast(job.error?.message || t('model_load_failed'), 'error');
+        }
+      });
+      if (shouldRefresh) onRefresh();
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeModelLoadJobIds, onRefresh, showToast, t]);
+
+  const handleModelLoad = async (service: string) => {
+    try {
+      const response = await startModelLoadJob(service);
+      if (response.job) {
+        setModelLoadJobs((prev) => ({ ...prev, [service]: response.job }));
+      }
+    } catch (error) {
+      showToast((error as Error).message, 'error');
+    }
+  };
+
+  const handleDownloadLogs = async () => {
+    setPreparingLogs(true);
+    try {
+      await downloadLogs();
+      showToast(t('logs_download_started'));
+    } catch (error) {
+      showToast(t('logs_download_failed', { error: (error as Error).message }), 'error');
+    } finally {
+      setPreparingLogs(false);
+    }
+  };
 
   const serviceByName = (name: string): ServiceInfo => {
     const services = servicesStatus?.services || [];
@@ -141,6 +240,8 @@ export function ServicesPanel({
     const isMissing = status === 'not_created';
     const operation = service.operation || null;
     const opRunning = Boolean(operation && ['queued', 'running'].includes(String(operation.status || '')));
+    const modelLoadJob = modelLoadJobs[name] || null;
+    const modelLoading = Boolean(modelLoadJob && ['queued', 'running'].includes(String(modelLoadJob.status || '')));
     const color = isRunning ? '#10b981' : isMissing || status === 'creating' ? '#f59e0b' : '#ef4444';
     const command =
       service.manage_command || (name === 'sapiens-api' ? './deploy.sh sapiens enable' : `./deploy.sh services start ${name}`);
@@ -199,6 +300,13 @@ export function ServicesPanel({
               </Button>
             </>
           )}
+          <Button
+            variant="contained"
+            disabled={!isRunning || opRunning || modelLoading}
+            onClick={() => void handleModelLoad(name)}
+          >
+            {modelLoading ? t('model_loading') : t('load_model')}
+          </Button>
         </Box>
       </Box>
     );
@@ -215,9 +323,14 @@ export function ServicesPanel({
             {t('model_services_hint')}
           </Typography>
         </Box>
-        <Button variant="outlined" onClick={onRefresh}>
-          {t('refresh')}
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Button variant="outlined" disabled={preparingLogs} onClick={() => void handleDownloadLogs()}>
+            {preparingLogs ? t('logs_preparing') : t('download_logs')}
+          </Button>
+          <Button variant="outlined" onClick={onRefresh}>
+            {t('refresh')}
+          </Button>
+        </Box>
       </Box>
       <Box
         sx={{

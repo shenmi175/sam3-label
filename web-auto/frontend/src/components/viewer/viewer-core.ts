@@ -7,7 +7,7 @@ import type { Annotation, PreviewInfo, Prompt, TileInfo } from '../../api/types'
  * 'none' corresponds to the legacy 'pointer' mode of ImageViewerV2
  * (select / drag-edit annotations, empty-click pans).
  */
-export type PromptMode = 'none' | 'box' | 'point' | 'manual-box' | 'manual-polygon';
+export type PromptMode = 'none' | 'point' | 'manual-box' | 'manual-polygon';
 
 /** Internal superset: legacy 'pan' mode is still honored by the cursor/mouse logic. */
 type CorePromptMode = PromptMode | 'pan';
@@ -31,11 +31,18 @@ export interface ManualAnnotationDraft {
   polygon?: ImagePoint[];
 }
 
-export type PromptAddedHandler = (type: 'point' | 'box', data: number[]) => void;
+export type PromptAddedHandler = (type: 'point', data: number[]) => void;
 export type AnnotationSelectedHandler = (annotationId: string | null) => void;
 export type AnnotationEditStartHandler = (annotation: Annotation) => void;
 export type AnnotationUpdatedHandler = (annotation: Annotation, info: { commit: boolean }) => void;
 export type AnnotationCreatedHandler = (draft: ManualAnnotationDraft) => void;
+export type InteractionCompleteHandler = () => void;
+export type CanvasContextMenuHandler = (info: {
+  clientX: number;
+  clientY: number;
+  imageX: number;
+  imageY: number;
+}) => void;
 
 /** Flat or paired point input, as accepted by the legacy viewer. */
 type PolygonInput = readonly (number | readonly number[])[] | null | undefined;
@@ -112,8 +119,10 @@ export class ImageViewerCore {
   private annotations: Annotation[] = [];
   private prompts: Prompt[] = [];
   private focusedAnnotationId: string | null = null;
+  private highlightedAnnotationIds = new Set<string>();
+  private editable = true;
   private promptMode: CorePromptMode = 'none';
-  private boxPromptLabel: 0 | 1 = 1;
+  private pointPromptLabel: 0 | 1 = 1;
   private options: ViewerOptions = { showMasks: true };
   private drawFrame: number | null = null;
   private staticFrame: number | null = null;
@@ -133,13 +142,12 @@ export class ImageViewerCore {
 
   private isPanning = false;
   private isDrawingBox = false;
-  private boxDrawPurpose: 'prompt' | 'annotation' = 'prompt';
-  private boxDraftLabel: 0 | 1 = 1;
   private boxStart: ImagePoint | null = null;
   private boxEnd: ImagePoint | null = null;
   private lastX = 0;
   private lastY = 0;
   private activePolygonPoints: ImagePoint[] = [];
+  private pointClickTimer: number | null = null;
 
   private isDraggingAnnotation = false;
   private dragOperation: HitResult | null = null;
@@ -154,6 +162,8 @@ export class ImageViewerCore {
   onAnnotationEditStart: AnnotationEditStartHandler | null = null;
   onAnnotationUpdated: AnnotationUpdatedHandler | null = null;
   onAnnotationCreated: AnnotationCreatedHandler | null = null;
+  onInteractionComplete: InteractionCompleteHandler | null = null;
+  onCanvasContextMenu: CanvasContextMenuHandler | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
 
@@ -183,6 +193,10 @@ export class ImageViewerCore {
   };
   private readonly handleContextMenu = (event: Event): void => {
     this.onContextMenu(event);
+  };
+  private readonly handleBlockedBrowserGesture = (event: Event): void => {
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   constructor(container: HTMLElement) {
@@ -256,6 +270,9 @@ export class ImageViewerCore {
     this.overlayCanvas.addEventListener('mousedown', this.handleMouseDown);
     this.overlayCanvas.addEventListener('dblclick', this.handleDoubleClick);
     this.overlayCanvas.addEventListener('contextmenu', this.handleContextMenu);
+    this.overlayCanvas.addEventListener('auxclick', this.handleBlockedBrowserGesture);
+    this.overlayCanvas.addEventListener('dragstart', this.handleBlockedBrowserGesture);
+    this.overlayCanvas.addEventListener('selectstart', this.handleBlockedBrowserGesture);
     window.addEventListener('mousemove', this.handleMouseMove);
     window.addEventListener('mouseup', this.handleMouseUp);
     window.addEventListener('keydown', this.handleKeyDown);
@@ -274,6 +291,9 @@ export class ImageViewerCore {
     this.overlayCanvas.removeEventListener('mousedown', this.handleMouseDown);
     this.overlayCanvas.removeEventListener('dblclick', this.handleDoubleClick);
     this.overlayCanvas.removeEventListener('contextmenu', this.handleContextMenu);
+    this.overlayCanvas.removeEventListener('auxclick', this.handleBlockedBrowserGesture);
+    this.overlayCanvas.removeEventListener('dragstart', this.handleBlockedBrowserGesture);
+    this.overlayCanvas.removeEventListener('selectstart', this.handleBlockedBrowserGesture);
     window.removeEventListener('mousemove', this.handleMouseMove);
     window.removeEventListener('mouseup', this.handleMouseUp);
     window.removeEventListener('keydown', this.handleKeyDown);
@@ -284,6 +304,7 @@ export class ImageViewerCore {
     if (this.wheelFrame) cancelAnimationFrame(this.wheelFrame);
     if (this.panFrame) cancelAnimationFrame(this.panFrame);
     if (this.staticRenderTimer) window.clearTimeout(this.staticRenderTimer);
+    if (this.pointClickTimer) window.clearTimeout(this.pointClickTimer);
     if (this.viewer) {
       this.viewer.destroy();
       this.viewer = null;
@@ -355,6 +376,7 @@ export class ImageViewerCore {
     return Boolean(
       this.staticExcludeAnnotationId
       || this.focusedAnnotationId
+      || this.highlightedAnnotationIds.size > 0
       || this.activePolygonPoints.length > 0
       || (this.isDrawingBox && this.boxStart && this.boxEnd),
     );
@@ -426,6 +448,7 @@ export class ImageViewerCore {
     this.annotations = [];
     this.prompts = [];
     this.focusedAnnotationId = null;
+    this.highlightedAnnotationIds.clear();
     this.isTileOpen = false;
     this.isPanning = false;
     this.isDrawingBox = false;
@@ -478,7 +501,11 @@ export class ImageViewerCore {
   }
 
   setPromptMode(mode: PromptMode): void {
-    this.promptMode = mode;
+    this.promptMode = this.editable ? mode : 'none';
+    if (mode !== 'point' && this.pointClickTimer) {
+      window.clearTimeout(this.pointClickTimer);
+      this.pointClickTimer = null;
+    }
     if (mode !== 'manual-polygon' && this.activePolygonPoints.length > 0) {
       this.activePolygonPoints = [];
     }
@@ -486,8 +513,34 @@ export class ImageViewerCore {
     this.requestDraw();
   }
 
-  setBoxPromptLabel(label: number): void {
-    this.boxPromptLabel = Number(label) === 0 ? 0 : 1;
+  setEditable(editable: boolean): void {
+    this.editable = Boolean(editable);
+    if (!this.editable) {
+      this.promptMode = 'none';
+      this.isDrawingBox = false;
+      this.isDraggingAnnotation = false;
+      this.dragOperation = null;
+      this.dragStart = null;
+      this.dragAnnotation = null;
+      this.dragOriginal = null;
+      this.dragMoved = false;
+      this.dragStartedHistory = false;
+      this.staticExcludeAnnotationId = null;
+      this.boxStart = null;
+      this.boxEnd = null;
+      this.activePolygonPoints = [];
+      if (this.pointClickTimer) {
+        window.clearTimeout(this.pointClickTimer);
+        this.pointClickTimer = null;
+      }
+      this.requestStaticRedraw(true);
+    }
+    this.updateCursor();
+    this.requestDraw();
+  }
+
+  setPointPromptLabel(label: number): void {
+    this.pointPromptLabel = Number(label) === 0 ? 0 : 1;
     this.requestDraw();
   }
 
@@ -502,6 +555,13 @@ export class ImageViewerCore {
   setFocusedAnnotation(annotationId: string | null = null, options: { draw?: boolean } = {}): void {
     this.focusedAnnotationId = annotationId || null;
     if (options.draw !== false) this.requestDraw();
+  }
+
+  setHighlightedAnnotations(annotationIds: readonly string[] = []): void {
+    this.highlightedAnnotationIds = new Set(
+      annotationIds.map(String).filter(Boolean),
+    );
+    this.requestDraw();
   }
 
   focusAnnotation(annotationId: string | null = null, bbox: readonly number[] | null = null): void {
@@ -541,6 +601,7 @@ export class ImageViewerCore {
       if (this.annotationVisible(ann)) this.drawAnnotation(ann);
     }
     for (const p of this.prompts) this.drawPrompt(p);
+    this.drawHighlightedAnnotations();
     this.drawFocusedHandles();
     this.drawActivePolygon();
     if (this.isDrawingBox && this.boxStart && this.boxEnd) this.drawBoxDraft();
@@ -639,7 +700,7 @@ export class ImageViewerCore {
       this.container.style.cursor = 'grab';
       return;
     }
-    if (this.promptMode === 'box' || this.promptMode === 'manual-box' || this.promptMode === 'manual-polygon') {
+    if (this.promptMode === 'manual-box' || this.promptMode === 'manual-polygon') {
       this.container.style.cursor = 'crosshair';
       return;
     }
@@ -906,7 +967,9 @@ export class ImageViewerCore {
   hitTestAnnotation(point: ImagePoint): HitResult | null {
     const tolerance = 8 / this.imageScale();
     const selected = this.focusedAnnotationId
-      ? this.annotations.find((ann) => String(ann?.id || '') === String(this.focusedAnnotationId))
+      ? this.annotations.find((ann) => (
+        !ann?.temporary && String(ann?.id || '') === String(this.focusedAnnotationId)
+      ))
       : null;
     if (selected) {
       const selectedGeom = this.getAnnotationGeometry(selected);
@@ -933,20 +996,34 @@ export class ImageViewerCore {
       }
     }
 
+    let bestHit: HitResult | null = null;
+    let bestArea = Number.POSITIVE_INFINITY;
     for (let i = this.annotations.length - 1; i >= 0; i -= 1) {
       const ann = this.annotations[i];
+      // AI candidates are display-only overlays. Selecting one would leak its
+      // internal placeholder ID into the refine-session request.
+      if (ann?.temporary) continue;
       if (!this.annotationVisible(ann)) continue;
       const geom = this.getAnnotationGeometry(ann);
       const polygon = geom.polygon;
       const bbox = geom.bbox;
       if (!this.pointInExpandedBbox(point, bbox, tolerance)) continue;
-      if (this.pointInAnnotationPolygons(point, geom)) return { annotation: ann, operation: 'move' };
-      if (this.pointNearBboxEdge(point, bbox, tolerance)) return { annotation: ann, operation: 'bbox-body' };
-      if (this.pointInBbox(point, bbox)) {
-        return { annotation: ann, operation: polygon.length >= 3 ? 'bbox-body' : 'move' };
+      let hit: HitResult | null = null;
+      if (this.pointInAnnotationPolygons(point, geom)) hit = { annotation: ann, operation: 'move' };
+      else if (this.pointNearBboxEdge(point, bbox, tolerance)) hit = { annotation: ann, operation: 'bbox-body' };
+      else if (this.pointInBbox(point, bbox)) {
+        hit = { annotation: ann, operation: polygon.length >= 3 ? 'bbox-body' : 'move' };
+      }
+      if (!hit || !bbox) continue;
+      const storedArea = Number(ann?.area || 0);
+      const bboxArea = Math.max(1, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]));
+      const hitArea = storedArea > 0 ? storedArea : bboxArea;
+      if (hitArea < bestArea) {
+        bestArea = hitArea;
+        bestHit = hit;
       }
     }
-    return null;
+    return bestHit;
   }
 
   private cloneGeometry(ann: Annotation): ClonedGeometry {
@@ -998,18 +1075,57 @@ export class ImageViewerCore {
     if (handle.includes('e')) x2 = x;
     if (handle.includes('n')) y1 = y;
     if (handle.includes('s')) y2 = y;
-    this.setAnnotationBbox(ann, [x1, y1, x2, y2]);
+    const target = this.normalizeBbox([x1, y1, x2, y2]);
+    if (!target) return;
+    const sourceWidth = bbox[2] - bbox[0];
+    const sourceHeight = bbox[3] - bbox[1];
+    const scalePoint = (candidate: ImagePoint): ImagePoint => this.clampPoint([
+      target[0] + ((candidate[0] - bbox[0]) / Math.max(sourceWidth, 1e-9)) * (target[2] - target[0]),
+      target[1] + ((candidate[1] - bbox[1]) / Math.max(sourceHeight, 1e-9)) * (target[3] - target[1]),
+    ]);
+    if (original.polygons && original.polygons.length > 0) {
+      ann.polygons = original.polygons.map((polygon) => polygon.map(scalePoint));
+    }
+    const originalMain = original.polygon || original.points;
+    if (originalMain && originalMain.length > 0) {
+      ann.polygon = originalMain.map(scalePoint);
+      delete ann.points;
+    }
+    this.setAnnotationBbox(ann, target);
   }
 
   private applyPolygonVertexDrag(ann: Annotation, original: ClonedGeometry, vertexIndex: number, point: ImagePoint): void {
-    const points = (original.polygon || original.points || []).map((p): ImagePoint => [...p]);
+    const originalMainContour = original.polygon || original.points || [];
+    const points = originalMainContour.map((p): ImagePoint => [...p]);
     if (vertexIndex < 0 || vertexIndex >= points.length) return;
     points[vertexIndex] = this.clampPoint(point);
     ann.polygon = points;
     delete ann.points;
-    // Manual reshape degrades a merged multi-contour annotation to its main polygon.
-    delete ann.polygons;
-    this.setAnnotationBbox(ann, this.bboxFromPolygon(points));
+    if (original.polygons && original.polygons.length > 0) {
+      // `polygon` is the editable/main contour while `polygons` contains every
+      // connected component. Replace only that contour so a vertex edit cannot
+      // silently discard the other components of an instance mask.
+      let mainContourIndex = original.polygons.findIndex((polygon) => (
+        polygon.length === originalMainContour.length
+        && polygon.every((candidatePoint, index) => (
+          candidatePoint[0] === originalMainContour[index]?.[0]
+          && candidatePoint[1] === originalMainContour[index]?.[1]
+        ))
+      ));
+      ann.polygons = original.polygons.map((polygon, index) => {
+        const contour = index === mainContourIndex ? points : polygon;
+        return contour.map((p): ImagePoint => [...p]);
+      });
+      if (mainContourIndex < 0) {
+        // In inconsistent imported data the main contour may be absent from
+        // `polygons`. Append it instead of guessing and overwriting an unrelated
+        // component; preserving existing mask regions is the safer behavior.
+        ann.polygons.push(points.map((p): ImagePoint => [...p]));
+      }
+      this.setAnnotationBbox(ann, this.bboxFromPairs(ann.polygons.flat()));
+    } else {
+      this.setAnnotationBbox(ann, this.bboxFromPolygon(points));
+    }
     this.invalidateAnnotationGeometry(ann);
   }
 
@@ -1045,6 +1161,15 @@ export class ImageViewerCore {
 
   private onContextMenu(e: Event): void {
     e.preventDefault();
+    e.stopPropagation();
+    if (this.promptMode !== 'point' || !(e instanceof MouseEvent)) return;
+    const point = this.screenToImage(e.clientX, e.clientY);
+    this.onCanvasContextMenu?.({
+      clientX: e.clientX,
+      clientY: e.clientY,
+      imageX: point[0],
+      imageY: point[1],
+    });
   }
 
   private onWheel(e: WheelEvent): void {
@@ -1071,7 +1196,10 @@ export class ImageViewerCore {
   private onMouseDown(e: MouseEvent): void {
     if (!this.image) return;
     e.preventDefault();
+    e.stopPropagation();
     const point = this.screenToImage(e.clientX, e.clientY);
+
+    if (e.button === 2) return;
 
     if (e.button === 0 && (e.altKey || this.promptMode === 'pan')) {
       this.isPanning = true;
@@ -1086,7 +1214,7 @@ export class ImageViewerCore {
       if (hit?.annotation) {
         this.focusedAnnotationId = hit.annotation.id || null;
         if (this.onAnnotationSelected) this.onAnnotationSelected(this.focusedAnnotationId);
-        if (hit.operation === 'bbox-body') {
+        if (!this.editable || hit.operation === 'bbox-body') {
           this.requestDraw();
           return;
         }
@@ -1113,7 +1241,8 @@ export class ImageViewerCore {
       return;
     }
 
-    if (e.button === 0 && this.promptMode === 'manual-polygon') {
+    if (this.editable && e.button === 0 && this.promptMode === 'manual-polygon') {
+      if (e.detail > 1) return;
       if (this.activePolygonPoints.length >= 3
         && this.distance(point, this.activePolygonPoints[0]) <= 10 / this.imageScale()) {
         this.finishManualPolygon();
@@ -1124,13 +1253,21 @@ export class ImageViewerCore {
       return;
     }
 
-    if (e.button === 0) {
+    if (this.editable && e.button === 0) {
       if (this.promptMode === 'point') {
-        if (this.onPromptAdded) this.onPromptAdded('point', point);
-      } else if (this.promptMode === 'box' || this.promptMode === 'manual-box') {
+        if (e.detail <= 1) {
+          if (this.pointClickTimer) window.clearTimeout(this.pointClickTimer);
+          const label = this.pointPromptLabel;
+          this.pointClickTimer = window.setTimeout(() => {
+            this.pointClickTimer = null;
+            this.onPromptAdded?.('point', [...point, label]);
+          }, 220);
+        } else if (this.pointClickTimer) {
+          window.clearTimeout(this.pointClickTimer);
+          this.pointClickTimer = null;
+        }
+      } else if (this.promptMode === 'manual-box') {
         this.isDrawingBox = true;
-        this.boxDrawPurpose = this.promptMode === 'manual-box' ? 'annotation' : 'prompt';
-        this.boxDraftLabel = this.boxDrawPurpose === 'prompt' ? this.boxPromptLabel : 1;
         this.boxStart = point;
         this.boxEnd = point;
       }
@@ -1214,16 +1351,11 @@ export class ImageViewerCore {
       const x2 = Math.max(this.boxStart[0], this.boxEnd[0]);
       const y2 = Math.max(this.boxStart[1], this.boxEnd[1]);
       if (Math.abs(x2 - x1) > 2 && Math.abs(y2 - y1) > 2) {
-        if (this.boxDrawPurpose === 'annotation') {
-          if (this.onAnnotationCreated) this.onAnnotationCreated({ bbox: [x1, y1, x2, y2] });
-        } else if (this.onPromptAdded) {
-          this.onPromptAdded('box', [x1, y1, x2, y2, this.boxDraftLabel]);
-        }
+        if (this.onAnnotationCreated) this.onAnnotationCreated({ bbox: [x1, y1, x2, y2] });
       }
     }
     this.isPanning = false;
     this.isDrawingBox = false;
-    this.boxDrawPurpose = 'prompt';
     this.boxStart = null;
     this.boxEnd = null;
     this.updateCursor();
@@ -1231,9 +1363,18 @@ export class ImageViewerCore {
   }
 
   private onDoubleClick(e: MouseEvent): void {
-    if (this.promptMode !== 'manual-polygon') return;
     e.preventDefault();
-    this.finishManualPolygon();
+    e.stopPropagation();
+    if (this.pointClickTimer) {
+      window.clearTimeout(this.pointClickTimer);
+      this.pointClickTimer = null;
+    }
+    if (this.promptMode === 'manual-polygon') {
+      this.finishManualPolygon();
+      return;
+    }
+    // Point-mode completion is intentionally explicit through the canvas
+    // context menu. A double click must never mutate and save a second draft.
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -1265,6 +1406,7 @@ export class ImageViewerCore {
   }
 
   finishManualPolygon(): boolean {
+    if (!this.editable) return false;
     if (this.activePolygonPoints.length < 3) return false;
     const polygon = this.activePolygonPoints.map((p) => this.clampPoint(p));
     const bbox = this.bboxFromPolygon(polygon);
@@ -1355,23 +1497,16 @@ export class ImageViewerCore {
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
     if (p.type === 'point') {
+      const positive = p.label !== 0;
+      ctx.fillStyle = positive ? '#16a34a' : '#dc2626';
       const pos = this.imageToScreen(p.data);
       ctx.beginPath();
       ctx.arc(pos[0], pos[1], 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-    } else if (p.type === 'box') {
-      const positive = p.data.length < 5 || Number(p.data[4]) !== 0;
-      const p1 = this.imageToScreen([p.data[0], p.data[1]]);
-      const p2 = this.imageToScreen([p.data[2], p.data[3]]);
-      ctx.strokeStyle = positive ? '#16a34a' : '#dc2626';
-      ctx.setLineDash(positive ? [] : [5, 4]);
-      ctx.lineWidth = 2;
-      ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
-      ctx.fillStyle = positive ? '#16a34a' : '#dc2626';
-      ctx.font = '800 14px Inter, sans-serif';
-      ctx.fillText(positive ? '+' : '−', p1[0] + 4, p1[1] + 16);
-      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 10px Inter, sans-serif';
+      ctx.fillText(positive ? '+' : '−', pos[0] - 3, pos[1] + 3);
     }
   }
 
@@ -1380,7 +1515,7 @@ export class ImageViewerCore {
     if (!ctx || !this.boxStart || !this.boxEnd) return;
     const p1 = this.imageToScreen(this.boxStart);
     const p2 = this.imageToScreen(this.boxEnd);
-    ctx.strokeStyle = this.boxDraftLabel === 0 ? 'rgba(220, 38, 38, 0.9)' : 'rgba(22, 163, 74, 0.9)';
+    ctx.strokeStyle = 'rgba(22, 163, 74, 0.9)';
     ctx.setLineDash([5, 5]);
     ctx.lineWidth = 2;
     ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
@@ -1421,7 +1556,7 @@ export class ImageViewerCore {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    if (polygon.length >= 3 && this.shouldDrawPolygonVertices(polygon)) {
+    if (this.editable && polygon.length >= 3 && this.shouldDrawPolygonVertices(polygon)) {
       polygon.forEach((point) => this.drawHandle(point, '#ffffff'));
     }
     if (!bbox) return;
@@ -1430,7 +1565,59 @@ export class ImageViewerCore {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
-    this.bboxHandles(bbox).forEach((handle) => this.drawHandle(handle.point, '#ffffff'));
+    if (this.editable) {
+      this.bboxHandles(bbox).forEach((handle) => this.drawHandle(handle.point, '#ffffff'));
+    }
+  }
+
+  private drawHighlightedAnnotations(): void {
+    const ctx = this.ctx;
+    if (!ctx || this.highlightedAnnotationIds.size === 0) return;
+    const highlighted = this.annotations.filter((annotation) => (
+      this.highlightedAnnotationIds.has(String(annotation?.id || ''))
+    ));
+    const bboxOccurrences = new Map<string, number>();
+    for (let index = 0; index < highlighted.length; index += 1) {
+      const ann = highlighted[index];
+      if (!this.annotationVisible(ann)) continue;
+      const color = ann.color || this.getColorForClass(ann.class_name);
+      const geom = this.getAnnotationGeometry(ann);
+      const paths = (geom.polygons && geom.polygons.length > 0)
+        ? geom.polygons
+        : (geom.polygon.length >= 3 ? [geom.polygon] : []);
+      for (const path of paths) {
+        this.drawPath(path, true);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (!geom.bbox) continue;
+      const p1 = this.imageToScreen([geom.bbox[0], geom.bbox[1]]);
+      const p2 = this.imageToScreen([geom.bbox[2], geom.bbox[3]]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 4]);
+      ctx.strokeRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
+      ctx.setLineDash([]);
+
+      // Number every bulk-highlighted instance. Exact duplicates share a
+      // bbox, so stack their badges vertically to make the stored multiplicity
+      // visible even when their masks and boxes overlap pixel-for-pixel.
+      const bboxKey = geom.bbox.map((value) => Number(value).toFixed(2)).join(',');
+      const occurrence = bboxOccurrences.get(bboxKey) || 0;
+      bboxOccurrences.set(bboxKey, occurrence + 1);
+      const badgeText = String(index + 1);
+      const badgeX = p2[0] + 4;
+      const badgeY = p1[1] + occurrence * 18;
+      ctx.font = '700 11px Inter, sans-serif';
+      const badgeWidth = Math.max(18, ctx.measureText(badgeText).width + 8);
+      ctx.fillStyle = color;
+      ctx.fillRect(badgeX, badgeY, badgeWidth, 16);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(badgeText, badgeX + 4, badgeY + 12);
+    }
   }
 
   private shouldDrawPolygonVertices(polygon: ImagePoint[]): boolean {

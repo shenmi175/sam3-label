@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Box, Button, TextField, Typography } from '@mui/material';
+import { Box, Button, IconButton, TextField, Tooltip, Typography } from '@mui/material';
+import SettingsIcon from '@mui/icons-material/Settings';
 import { useTranslation } from 'react-i18next';
 import { getProject, type ProjectInfo } from '../api/projects';
 import { getImages, getImageFileUrl } from '../api/images';
@@ -324,6 +325,11 @@ export function PoseWorkspacePage() {
           </Box>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <Tooltip title={t('project_manage')}>
+            <IconButton size="small" onClick={() => navigate(`/project/${encodeURIComponent(projectId)}/manage`)} aria-label={t('project_manage')}>
+              <SettingsIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Button size="small" variant="outlined" onClick={() => selectByOffset(-1)} sx={{ fontSize: 12 }}>
             {t('pose_prev')}
           </Button>

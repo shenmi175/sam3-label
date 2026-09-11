@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import threading
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from app.repositories.annotation_index import AnnotationIndexRepository
+from app.annotations import infer_annotation_source, normalize_annotation_records
+from app.repositories.annotation_index import AnnotationIndexRepository, SOURCE_CLASS_INDEX_VERSION
+from app.repositories.analytics_index import AnalyticsIndexRepository, build_analytics_rows
 from app.repositories.annotation_records import AnnotationRecordRepository
 from app.repositories.project_catalog import ProjectCatalogRepository
 from app.repositories.project_files import ProjectFileRepository
@@ -48,28 +52,34 @@ def _catalog_locked(method: Any) -> Any:
 
 
 def _ensure_source_model(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not isinstance(annotations, list):
-        return annotations
-    for ann in annotations:
-        if not isinstance(ann, dict):
-            continue
-        existing = str(ann.get('source_model') or '').strip()
-        if existing:
-            continue
-        src = str(ann.get('source') or '').strip()
-        if src == 'manual':
-            ann['source_model'] = 'manual'
-        else:
-            ann['source_model'] = 'sam3'
-    return annotations
+    """Compatibility name for the fixed-field record normalizer."""
+    return normalize_annotation_records(annotations)
+
+
+def _positive_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+AI_FEATURE_OWNERSHIP_VERSION = 1
 
 
 class Storage:
     PROJECT_MANIFEST_NAME = ProjectManifestRepository.MANIFEST_NAME
     PROJECT_MANIFEST_SCHEMA = ProjectManifestRepository.MANIFEST_SCHEMA
 
-    def __init__(self, base_dir: Path):
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        defer_source_index_upgrade: bool = False,
+        smart_filter_retention_max_runs: int | None = None,
+        smart_filter_retention_days: int | None = None,
+    ):
         self.base_dir = ensure_dir(base_dir)
+        self._defer_source_index_upgrade = bool(defer_source_index_upgrade)
         self.projects_file = self.base_dir / 'projects.json'
         self.projects_root = ensure_dir(self.base_dir / 'projects')
         self._catalog_write_lock = InterProcessLock(self.base_dir / '.locks' / 'project_catalog.lock')
@@ -82,6 +92,7 @@ class Storage:
         self._init_index_db()
         self._project_images = ProjectImageRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._annotation_index = AnnotationIndexRepository(db_connect=self._db_connect, db_lock=self._db_lock)
+        self._analytics_index = AnalyticsIndexRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._annotation_records = AnnotationRecordRepository(db_connect=self._db_connect, db_lock=self._db_lock)
         self._project_manifests = ProjectManifestRepository(normalize_project=self._normalize_project)
         self._project_files = ProjectFileRepository(annotation_class_name=self._annotation_class_name)
@@ -98,6 +109,18 @@ class Storage:
             db_connect=self._db_connect,
             db_lock=self._db_lock,
             save_annotations=self.save_annotations,
+            load_annotations=self.load_annotations,
+            base_dir=self.base_dir,
+            retention_max_runs=(
+                smart_filter_retention_max_runs
+                if smart_filter_retention_max_runs is not None
+                else _positive_env('WEB_AUTO_SMART_FILTER_RETENTION_MAX_RUNS', 10)
+            ),
+            retention_days=(
+                smart_filter_retention_days
+                if smart_filter_retention_days is not None
+                else _positive_env('WEB_AUTO_SMART_FILTER_RETENTION_DAYS', 30)
+            ),
         )
         self._ui_state = UIStateRepository(
             global_state_file=self.ui_state_global_file,
@@ -200,6 +223,23 @@ class Storage:
                     ON image_class_index(project_id, class_name_norm, image_id);
                     CREATE INDEX IF NOT EXISTS idx_image_class_index_image
                     ON image_class_index(project_id, image_id);
+                    CREATE TABLE IF NOT EXISTS image_source_class_index (
+                        project_id TEXT NOT NULL,
+                        image_id TEXT NOT NULL,
+                        class_name_norm TEXT NOT NULL,
+                        class_name TEXT NOT NULL,
+                        source_model_norm TEXT NOT NULL,
+                        ann_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (project_id, image_id, class_name_norm, source_model_norm)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_image_source_class_lookup
+                    ON image_source_class_index(project_id, source_model_norm, class_name_norm, image_id);
+                    CREATE INDEX IF NOT EXISTS idx_image_source_class_image
+                    ON image_source_class_index(project_id, image_id);
+                    CREATE TABLE IF NOT EXISTS app_index_meta (
+                        meta_key TEXT PRIMARY KEY,
+                        meta_value TEXT NOT NULL DEFAULT ''
+                    );
                     CREATE TABLE IF NOT EXISTS smart_filter_runs (
                         run_id TEXT PRIMARY KEY,
                         project_id TEXT NOT NULL,
@@ -222,8 +262,134 @@ class Storage:
                     );
                     CREATE INDEX IF NOT EXISTS idx_smart_filter_snapshots_project
                     ON smart_filter_snapshots(project_id, run_id);
+                    CREATE TABLE IF NOT EXISTS ai_feature_index (
+                        project_id TEXT NOT NULL,
+                        image_id TEXT NOT NULL,
+                        image_digest TEXT NOT NULL DEFAULT '',
+                        model_fingerprint TEXT NOT NULL DEFAULT '',
+                        input_size INTEGER NOT NULL DEFAULT 1008,
+                        dtype TEXT NOT NULL DEFAULT 'bfloat16',
+                        format_version TEXT NOT NULL DEFAULT '',
+                        feature_key TEXT NOT NULL DEFAULT '',
+                        relative_path TEXT NOT NULL DEFAULT '',
+                        byte_size INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT '',
+                        error TEXT NOT NULL DEFAULT '',
+                        used_by_ai INTEGER NOT NULL DEFAULT 0,
+                        persisted_by_batch INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        accessed_at TEXT NOT NULL,
+                        PRIMARY KEY (project_id, image_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ai_feature_project_status
+                    ON ai_feature_index(project_id, status);
                     '''
                 )
+                ai_feature_columns = {
+                    str(row[1]) for row in conn.execute('PRAGMA table_info(ai_feature_index)').fetchall()
+                }
+                if 'used_by_ai' not in ai_feature_columns:
+                    conn.execute(
+                        'ALTER TABLE ai_feature_index ADD COLUMN used_by_ai INTEGER NOT NULL DEFAULT 0'
+                    )
+                if 'persisted_by_batch' not in ai_feature_columns:
+                    conn.execute(
+                        'ALTER TABLE ai_feature_index ADD COLUMN persisted_by_batch INTEGER NOT NULL DEFAULT 1'
+                    )
+                ownership_version = conn.execute(
+                    "SELECT meta_value FROM app_index_meta WHERE meta_key = 'ai_feature_ownership_version'"
+                ).fetchone()
+                if (
+                    ownership_version is None
+                    or str(ownership_version[0] or '') != str(AI_FEATURE_OWNERSHIP_VERSION)
+                ):
+                    # Before ownership flags existed, batch and interactive writes shared
+                    # this index. Durable inference jobs are stored in the same database,
+                    # so conservatively retain every legacy feature in a project that has
+                    # ever explicitly requested batch feature persistence. Other legacy
+                    # rows can only have come from interactive assistance.
+                    batch_projects: set[str] = set()
+                    has_background_jobs = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='background_jobs'"
+                    ).fetchone()
+                    if has_background_jobs is not None:
+                        for row in conn.execute(
+                            "SELECT project_id, payload_json FROM background_jobs WHERE job_type LIKE 'infer:%'"
+                        ).fetchall():
+                            try:
+                                payload = json.loads(str(row[1] or '{}'))
+                            except (TypeError, ValueError):
+                                payload = {}
+                            if isinstance(payload, dict) and bool(payload.get('save_ai_features')):
+                                batch_projects.add(str(row[0] or ''))
+                    conn.execute(
+                        'UPDATE ai_feature_index SET used_by_ai=1, persisted_by_batch=0'
+                    )
+                    if batch_projects:
+                        placeholders = ','.join('?' for _ in batch_projects)
+                        conn.execute(
+                            f'''UPDATE ai_feature_index SET persisted_by_batch=1
+                                WHERE project_id IN ({placeholders})''',
+                            sorted(batch_projects),
+                        )
+                    conn.execute(
+                        '''
+                        INSERT INTO app_index_meta (meta_key, meta_value)
+                        VALUES ('ai_feature_ownership_version', ?)
+                        ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value
+                        ''',
+                        (str(AI_FEATURE_OWNERSHIP_VERSION),),
+                    )
+                conn.execute('DROP TABLE IF EXISTS ai_feature_cleanup_deadlines')
+                source_index_version = conn.execute(
+                    "SELECT meta_value FROM app_index_meta WHERE meta_key = 'source_class_index_version'"
+                ).fetchone()
+                current_source_index_version = (
+                    int(source_index_version[0] or 0)
+                    if source_index_version is not None and str(source_index_version[0] or '').isdigit()
+                    else 0
+                )
+                if (
+                    current_source_index_version != SOURCE_CLASS_INDEX_VERSION
+                    and not self._defer_source_index_upgrade
+                ):
+                    conn.execute('DELETE FROM image_source_class_index')
+                    rows = conn.execute(
+                        'SELECT project_id, image_id, annotations_json FROM image_annotations'
+                    )
+                    for row in rows:
+                        try:
+                            annotations = json.loads(str(row[2] or '[]'))
+                        except (TypeError, ValueError):
+                            annotations = []
+                        source_rows = AnnotationIndexRepository.source_class_rows(annotations)
+                        conn.executemany(
+                            '''
+                            INSERT INTO image_source_class_index (
+                                project_id, image_id, class_name_norm, class_name,
+                                source_model_norm, ann_count
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            ''',
+                            [
+                                (
+                                    str(row[0]),
+                                    str(row[1]),
+                                    str(item['class_name_norm']),
+                                    str(item['class_name']),
+                                    str(item['source_model_norm']),
+                                    int(item['ann_count']),
+                                )
+                                for item in source_rows
+                            ],
+                        )
+                    conn.execute(
+                        '''
+                        INSERT INTO app_index_meta (meta_key, meta_value)
+                        VALUES ('source_class_index_version', ?)
+                        ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value
+                        ''',
+                        (str(SOURCE_CLASS_INDEX_VERSION),),
+                    )
                 conn.commit()
             finally:
                 conn.close()
@@ -307,12 +473,271 @@ class Storage:
 
     def _delete_project_image_db(self, project_id: str, image_id: str) -> None:
         self._project_images.delete_one(project_id, image_id)
+        self._delete_ai_feature_rows(project_id, [image_id])
 
     def _delete_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> None:
         self._project_images.delete_many(project_id, image_ids)
+        self._delete_ai_feature_rows(project_id, image_ids)
 
     def _delete_project_images_db(self, project_id: str) -> None:
         self._project_images.delete_project(project_id)
+
+    def _delete_ai_feature_rows(self, project_id: str, image_ids: list[str]) -> None:
+        ids = [str(item).strip() for item in image_ids if str(item).strip()]
+        if not ids:
+            return
+        placeholders = ','.join('?' for _ in ids)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                rows = conn.execute(
+                    f'SELECT relative_path FROM ai_feature_index WHERE project_id=? AND image_id IN ({placeholders})',
+                    [project_id, *ids],
+                ).fetchall()
+                conn.execute(
+                    f'DELETE FROM ai_feature_index WHERE project_id=? AND image_id IN ({placeholders})',
+                    [project_id, *ids],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        try:
+            root = self.ai_feature_root(project_id)
+            for row in rows:
+                path = (root.parent / str(row[0] or '')).resolve()
+                if path.is_relative_to(root):
+                    path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def ai_feature_root(self, project_id: str) -> Path:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+        project_root = Path(str(project.get('project_save_dir') or '')).expanduser().resolve()
+        if not str(project.get('project_save_dir') or '').strip():
+            raise ValueError('project save directory is unavailable')
+        return (project_root / 'feature').resolve()
+
+    def upsert_ai_feature(self, project_id: str, image_id: str, feature: dict[str, Any]) -> None:
+        ts = now_ts()
+        status = str(feature.get('feature_status') or feature.get('status') or '')
+        old_relative_path = ''
+        old_path_still_referenced = False
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                old_row = conn.execute(
+                    'SELECT relative_path FROM ai_feature_index WHERE project_id=? AND image_id=?',
+                    (project_id, image_id),
+                ).fetchone()
+                old_relative_path = str(old_row[0] or '') if old_row is not None else ''
+                conn.execute(
+                    '''
+                    INSERT INTO ai_feature_index (
+                        project_id, image_id, image_digest, model_fingerprint,
+                        input_size, dtype, format_version, feature_key,
+                        relative_path, byte_size, status, error, used_by_ai,
+                        persisted_by_batch, created_at, accessed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(project_id, image_id) DO UPDATE SET
+                        image_digest=excluded.image_digest,
+                        model_fingerprint=excluded.model_fingerprint,
+                        input_size=excluded.input_size,
+                        dtype=excluded.dtype,
+                        format_version=excluded.format_version,
+                        feature_key=excluded.feature_key,
+                        relative_path=excluded.relative_path,
+                        byte_size=excluded.byte_size,
+                        status=excluded.status,
+                        error=excluded.error,
+                        used_by_ai=MAX(ai_feature_index.used_by_ai, excluded.used_by_ai),
+                        persisted_by_batch=MAX(
+                            ai_feature_index.persisted_by_batch,
+                            excluded.persisted_by_batch
+                        ),
+                        accessed_at=excluded.accessed_at
+                    ''',
+                    (
+                        project_id,
+                        image_id,
+                        str(feature.get('image_digest') or ''),
+                        str(feature.get('model_fingerprint') or ''),
+                        int(feature.get('input_size') or 1008),
+                        str(feature.get('dtype') or 'bfloat16'),
+                        str(feature.get('format_version') or ''),
+                        str(feature.get('feature_key') or ''),
+                        str(feature.get('feature_relative_path') or feature.get('relative_path') or ''),
+                        max(0, int(feature.get('feature_bytes') or feature.get('byte_size') or 0)),
+                        status,
+                        str(feature.get('feature_error') or feature.get('error') or ''),
+                        1 if bool(feature.get('used_by_ai')) else 0,
+                        1 if bool(feature.get('persisted_by_batch')) else 0,
+                        ts,
+                        ts,
+                    ),
+                )
+                if old_relative_path:
+                    old_path_still_referenced = bool(conn.execute(
+                        '''SELECT 1 FROM ai_feature_index
+                           WHERE project_id=? AND relative_path=? LIMIT 1''',
+                        (project_id, old_relative_path),
+                    ).fetchone())
+                conn.commit()
+            finally:
+                conn.close()
+        new_relative_path = str(feature.get('feature_relative_path') or feature.get('relative_path') or '')
+        if (
+            old_relative_path
+            and old_relative_path != new_relative_path
+            and not old_path_still_referenced
+        ):
+            try:
+                feature_root = self.ai_feature_root(project_id)
+                old_path = (feature_root.parent / old_relative_path).resolve()
+                if old_path.is_relative_to(feature_root):
+                    old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def ai_feature_status(self, project_id: str, image_id: str = '') -> dict[str, Any]:
+        root = self.ai_feature_root(project_id)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                if image_id:
+                    row = conn.execute(
+                        'SELECT * FROM ai_feature_index WHERE project_id=? AND image_id=?',
+                        (project_id, image_id),
+                    ).fetchone()
+                    item = dict(row) if row is not None else None
+                    if item:
+                        path = (root.parent / str(item.get('relative_path') or '')).resolve()
+                        item['file_exists'] = bool(path.is_relative_to(root) and path.is_file())
+                    return {'project_id': project_id, 'image_id': image_id, 'feature': item}
+                rows = conn.execute(
+                    'SELECT * FROM ai_feature_index WHERE project_id=? ORDER BY image_id',
+                    (project_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+        indexed = [dict(row) for row in rows]
+        files = [path for path in root.glob('*.safetensors') if path.is_file()] if root.is_dir() else []
+        return {
+            'project_id': project_id,
+            'count': len(files),
+            'bytes': sum(int(path.stat().st_size) for path in files),
+            'indexed_count': len(indexed),
+            'features': indexed,
+        }
+
+    def delete_ai_features(self, project_id: str) -> dict[str, Any]:
+        root = self.ai_feature_root(project_id)
+        status = self.ai_feature_status(project_id)
+        if root.exists():
+            shutil.rmtree(root)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                conn.execute('DELETE FROM ai_feature_index WHERE project_id=?', (project_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        return {'project_id': project_id, 'deleted_files': status['count'], 'deleted_bytes': status['bytes']}
+
+    def transient_ai_projects(self) -> list[str]:
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                rows = conn.execute(
+                    '''
+                    SELECT DISTINCT project_id
+                    FROM ai_feature_index
+                    WHERE used_by_ai=1 AND persisted_by_batch=0
+                    ORDER BY project_id
+                    '''
+                ).fetchall()
+            finally:
+                conn.close()
+        return [str(row[0] or '') for row in rows if str(row[0] or '')]
+
+    def delete_transient_ai_features(self, project_id: str) -> dict[str, Any]:
+        """Delete AI-session features unless batch inference promoted them to persistent."""
+        root = self.ai_feature_root(project_id)
+        transient_rows: list[sqlite3.Row] = []
+        retained_paths: set[str] = set()
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                transient_rows = conn.execute(
+                    '''
+                    SELECT image_id, relative_path, byte_size
+                    FROM ai_feature_index
+                    WHERE project_id=? AND used_by_ai=1 AND persisted_by_batch=0
+                    ''',
+                    (project_id,),
+                ).fetchall()
+                candidate_paths = {
+                    str(row['relative_path'] or '') for row in transient_rows if str(row['relative_path'] or '')
+                }
+                if candidate_paths:
+                    placeholders = ','.join('?' for _ in candidate_paths)
+                    retained_paths = {
+                        str(row[0] or '')
+                        for row in conn.execute(
+                            f'''SELECT DISTINCT relative_path FROM ai_feature_index
+                                WHERE project_id=? AND persisted_by_batch=1
+                                AND relative_path IN ({placeholders})''',
+                            [project_id, *sorted(candidate_paths)],
+                        ).fetchall()
+                    }
+            finally:
+                conn.close()
+
+        deleted_files = 0
+        deleted_bytes = 0
+        failed_files = 0
+        removable_image_ids: list[str] = []
+        for row in transient_rows:
+            image_id = str(row['image_id'] or '')
+            relative_path = str(row['relative_path'] or '')
+            if not relative_path or relative_path in retained_paths:
+                removable_image_ids.append(image_id)
+                continue
+            try:
+                path = (root.parent / relative_path).resolve()
+                if not path.is_relative_to(root):
+                    failed_files += 1
+                    continue
+                if path.is_file():
+                    deleted_bytes += int(path.stat().st_size)
+                    path.unlink()
+                    deleted_files += 1
+                removable_image_ids.append(image_id)
+            except OSError:
+                failed_files += 1
+                continue
+        if removable_image_ids:
+            placeholders = ','.join('?' for _ in removable_image_ids)
+            with self._db_lock:
+                conn = self._db_connect()
+                try:
+                    conn.execute(
+                        f'''DELETE FROM ai_feature_index
+                            WHERE project_id=? AND image_id IN ({placeholders})
+                              AND used_by_ai=1 AND persisted_by_batch=0''',
+                        [project_id, *removable_image_ids],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+        return {
+            'project_id': project_id,
+            'deleted_files': deleted_files,
+            'deleted_bytes': deleted_bytes,
+            'deleted_index_rows': len(removable_image_ids),
+            'failed_files': failed_files,
+        }
 
     @staticmethod
     def _json_dumps_db(value: Any) -> str:
@@ -354,6 +779,20 @@ class Storage:
 
     def finish_smart_filter_run(self, *, run_id: str, summary: dict[str, Any] | None = None) -> None:
         self._smart_filter_runs.finish(run_id=run_id, summary=summary)
+
+    def cleanup_smart_filter_runs(
+        self,
+        *,
+        max_runs: int | None = None,
+        retention_days: int | None = None,
+    ) -> dict[str, Any]:
+        return self._smart_filter_runs.cleanup_retained(
+            max_runs=max_runs,
+            retention_days=retention_days,
+        )
+
+    def abort_smart_filter_run(self, *, project_id: str, run_id: str) -> None:
+        self._smart_filter_runs.abort(project_id=project_id, run_id=run_id)
 
     def get_smart_filter_run(self, *, project_id: str, run_id: str) -> dict[str, Any] | None:
         return self._smart_filter_runs.get(project_id=project_id, run_id=run_id)
@@ -437,11 +876,23 @@ class Storage:
         *,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> tuple[str, list[Any], str]:
-        return ProjectImageRepository.filter_query(project_id, status=status, class_name=class_name)
+        return ProjectImageRepository.filter_query(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        )
 
-    def _count_project_images_db(self, project_id: str, *, status: str = '', class_name: str = '') -> int:
-        return self._project_images.count(project_id, status=status, class_name=class_name)
+    def _count_project_images_db(
+        self,
+        project_id: str,
+        *,
+        status: str = '',
+        class_name: str = '',
+        source_model: str = '',
+    ) -> int:
+        return self._project_images.count(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        )
 
     def _get_project_image_filtered_index_db(
         self,
@@ -450,12 +901,14 @@ class Storage:
         *,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> int:
         return self._project_images.filtered_index(
             project_id,
             image_id,
             status=status,
             class_name=class_name,
+            source_model=source_model,
         )
 
     def _load_project_images_page_db(
@@ -466,6 +919,7 @@ class Storage:
         limit: int,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> list[dict[str, Any]]:
         return self._project_images.page(
             project_id,
@@ -473,6 +927,7 @@ class Storage:
             limit=limit,
             status=status,
             class_name=class_name,
+            source_model=source_model,
         )
 
     def _load_project_images_by_ids_db(self, project_id: str, image_ids: list[str]) -> list[dict[str, Any]]:
@@ -1027,13 +1482,20 @@ class Storage:
         image_id: str = '',
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> tuple[list[dict[str, Any]], int, int, int, int]:
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
             raise ValueError('project not found')
 
-        has_filter = bool(str(status or '').strip()) or bool(norm_text(class_name))
-        total = self._count_project_images_db(project_id, status=status, class_name=class_name) if has_filter else max(0, int(project.get('num_images', 0) or 0))
+        has_filter = (
+            bool(str(status or '').strip())
+            or bool(norm_text(class_name))
+            or bool(str(source_model or '').strip())
+        )
+        total = self._count_project_images_db(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        ) if has_filter else max(0, int(project.get('num_images', 0) or 0))
         safe_limit = max(1, min(int(limit or 200), 1000))
         safe_offset = max(0, min(int(offset or 0), max(0, total)))
         image_index = self._get_project_image_filtered_index_db(
@@ -1041,6 +1503,7 @@ class Storage:
             image_id,
             status=status,
             class_name=class_name,
+            source_model=source_model,
         ) if str(image_id or '').strip() else -1
         items = self._load_project_images_page_db(
             project_id,
@@ -1048,6 +1511,7 @@ class Storage:
             limit=safe_limit,
             status=status,
             class_name=class_name,
+            source_model=source_model,
         )
         return items, total, safe_offset, safe_limit, image_index
 
@@ -1110,6 +1574,7 @@ class Storage:
                 conn.execute('DELETE FROM annotation_ids WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_annotation_stats WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
+                conn.execute('DELETE FROM image_source_class_index WHERE project_id = ?', (str(project_id),))
                 used_annotation_ids: set[str] = set()
                 for image_id in image_ids:
                     data = read_json(self._annotation_read_path(project, image_id), [])
@@ -1162,16 +1627,16 @@ class Storage:
 
     @_catalog_locked
     def migrate_project_sources(self, project_id: str) -> dict[str, Any]:
-        """Tag every annotation that lacks ``source_model`` with an inferred
-        source (locate-anything / sam3 / manual) based on ID prefix and the
-        ``source`` field. Rewrites the annotation JSON for affected images and
-        rebuilds the annotation index.
+        """Normalize legacy source metadata using geometry-aware provenance.
+
+        Explicit provenance is retained. Source-less segmentation is attributed
+        to SAM3; bbox-only records without provenance remain unknown.
         """
         project = self.get_project(project_id, enrich=False, include_images=False)
         if not project:
             raise ValueError('project not found')
 
-        by_source: dict[str, int] = {'sam3': 0, 'locate-anything': 0, 'manual': 0}
+        by_source: dict[str, int] = {'sam3': 0, 'locate-anything': 0, 'manual': 0, 'unknown': 0}
         migrated = 0
         total = 0
 
@@ -1189,14 +1654,7 @@ class Storage:
                 if existing:
                     by_source[existing] = by_source.get(existing, 0) + 1
                     continue
-                ann_id = str(ann.get('id') or '')
-                src_field = str(ann.get('source') or '').strip()
-                if src_field == 'manual':
-                    inferred = 'manual'
-                elif ann_id.startswith('la_'):
-                    inferred = 'locate-anything'
-                else:
-                    inferred = 'sam3'
+                inferred = infer_annotation_source(ann).source_id
                 ann['source_model'] = inferred
                 by_source[inferred] = by_source.get(inferred, 0) + 1
                 migrated += 1
@@ -1338,6 +1796,129 @@ class Storage:
             unlabeled_images=unlabeled_images,
         )
 
+    def get_analytics_index_status(self, project_id: str) -> dict[str, Any]:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+        if str(project.get('project_type') or 'image') != 'image':
+            raise ValueError('analytics only supports image projects')
+        return self._analytics_index.status(
+            project_id,
+            content_rev=self._content_rev(project),
+            total_images=max(0, int(project.get('num_images', 0) or 0)),
+        )
+
+    def get_analytics_dimensions(self, project_id: str) -> dict[str, Any] | None:
+        status = self.get_analytics_index_status(project_id)
+        if status['status'] != 'ready' or status['needs_rebuild']:
+            return None
+        return self._analytics_index.dimensions(project_id)
+
+    def get_analytics_overview(
+        self, project_id: str, *, task: str = 'detection', sources: list[str] | None = None
+    ) -> dict[str, Any] | None:
+        status = self.get_analytics_index_status(project_id)
+        if status['status'] != 'ready' or status['needs_rebuild']:
+            return None
+        return self._analytics_index.overview(project_id, task=task, sources=sources)
+
+    def rebuild_analytics_index(
+        self,
+        project_id: str,
+        *,
+        progress_cb: Any | None = None,
+        batch_size: int = 250,
+    ) -> dict[str, Any]:
+        project = self.get_project(project_id, enrich=False, include_images=False)
+        if not project:
+            raise ValueError('project not found')
+        if str(project.get('project_type') or 'image') != 'image':
+            raise ValueError('analytics only supports image projects')
+
+        start_content_rev = self._content_rev(project)
+        image_ids = self._iter_project_image_ids_db(project_id)
+        total = len(image_ids)
+        generation = self._analytics_index.begin_build(project_id, total_images=total)
+        image_rows: list[dict[str, Any]] = []
+        object_rows: list[dict[str, Any]] = []
+        interpretation_summary: dict[str, Any] = {
+            'raw_record_count': 0,
+            'canonical_instance_count': 0,
+            'detection_instance_count': 0,
+            'instance_segmentation_count': 0,
+            'sources': set(),
+            'issues_by_code': {},
+        }
+        done = 0
+        try:
+            for image_id in image_ids:
+                image = self._get_project_image_db(project_id, image_id) or {}
+                annotations = self.load_annotations(project_id, image_id)
+                image_row, objects = build_analytics_rows(
+                    image_id,
+                    str(image.get('abs_path') or ''),
+                    annotations,
+                )
+                image_rows.append(image_row)
+                object_rows.extend(objects)
+                interpretation_summary['raw_record_count'] += int(image_row.get('raw_annotation_count') or 0)
+                interpretation_summary['canonical_instance_count'] += len(objects)
+                interpretation_summary['detection_instance_count'] += sum(int(row.get('has_detection') or 0) for row in objects)
+                interpretation_summary['instance_segmentation_count'] += sum(
+                    int(row.get('has_instance_segmentation') or 0) for row in objects
+                )
+                interpretation_summary['sources'].update(str(row.get('source_model_norm') or 'unknown') for row in objects)
+                for row in objects:
+                    for code in json.loads(str(row.get('issue_codes') or '[]')):
+                        counts = interpretation_summary['issues_by_code']
+                        counts[str(code)] = int(counts.get(str(code), 0)) + 1
+                done += 1
+                if len(image_rows) >= max(1, int(batch_size)):
+                    self._analytics_index.append_build_batch(project_id, generation, image_rows, object_rows)
+                    image_rows, object_rows = [], []
+                    if progress_cb:
+                        progress_cb(
+                            progress_done=done,
+                            progress_total=total,
+                            message=f'indexed {done}/{total} images',
+                        )
+            if image_rows:
+                self._analytics_index.append_build_batch(project_id, generation, image_rows, object_rows)
+            latest = self.get_project(project_id, enrich=False, include_images=False)
+            latest_rev = self._content_rev(latest or {})
+            latest_total = max(0, int((latest or {}).get('num_images', 0) or 0))
+            if latest_rev != start_content_rev or latest_total != total:
+                message = 'project changed while analytics index was building'
+                self._analytics_index.fail_build(project_id, generation, message, stale=True)
+                raise RuntimeError(message)
+            self._analytics_index.activate(
+                project_id,
+                generation,
+                content_rev=start_content_rev,
+                indexed_images=total,
+            )
+            if progress_cb:
+                progress_cb(progress_done=total, progress_total=total, progress_pct=100.0, message='analytics index ready')
+            return {
+                'project_id': project_id,
+                'indexed_images': total,
+                'progress_done': total,
+                'progress_total': total,
+                'content_rev': start_content_rev,
+                'generation': generation,
+                'interpretation_summary': {
+                    **interpretation_summary,
+                    'sources': sorted(interpretation_summary['sources']),
+                },
+            }
+        except Exception as exc:
+            status = self._analytics_index.status(
+                project_id, content_rev=start_content_rev, total_images=total,
+            )
+            if status.get('status') == 'building':
+                self._analytics_index.fail_build(project_id, generation, str(exc))
+            raise
+
     @_catalog_locked
     def create_project(
         self,
@@ -1406,6 +1987,29 @@ class Storage:
         self._save_projects(projects)
         self._write_project_manifest(project)
         return self.get_project(project_id, enrich=False, include_images=False) or self._prepare_project_cached(project)
+
+    @_catalog_locked
+    def update_project_name(self, project_id: str, name: str) -> dict[str, Any]:
+        clean_name = str(name or '').strip()
+        if not clean_name:
+            raise ValueError('project name is required')
+        if len(clean_name) > 128:
+            raise ValueError('project name must not exceed 128 characters')
+        projects = self._load_projects()
+        updated: dict[str, Any] | None = None
+        out: list[dict[str, Any]] = []
+        for raw in projects:
+            project = self._normalize_project(raw)
+            if str(project.get('id') or '') == str(project_id):
+                project['name'] = clean_name
+                project['updated_at'] = now_ts()
+                updated = project
+            out.append(project)
+        if updated is None:
+            raise ValueError('project not found')
+        self._save_projects(out)
+        self._write_project_manifest(updated)
+        return self._prepare_project_cached(updated)
 
     @_catalog_locked
     def add_classes(self, project_id: str, classes_text: str) -> dict[str, Any]:
@@ -1789,6 +2393,7 @@ class Storage:
         export_dir = Path(victim['export_dir']).expanduser().resolve()
         workspace_dir = Path(victim['workspace_dir']).expanduser().resolve()
         project_save_dir = Path(victim['project_save_dir']).expanduser().resolve()
+        feature_dir = project_save_dir / 'feature'
         ui_state_file = workspace_dir / 'ui_state.json'
         manifest_file = project_save_dir / self.PROJECT_MANIFEST_NAME
         workspace_manifest_file = workspace_dir / self.PROJECT_MANIFEST_NAME
@@ -1799,6 +2404,7 @@ class Storage:
         self._safe_unlink(manifest_file, source_path)
         self._safe_unlink(workspace_manifest_file, source_path)
         self._safe_rmtree(workspace_dir, source_path)
+        self._safe_rmtree(feature_dir, source_path)
 
         if project_save_dir.exists() and project_save_dir.is_dir():
             try:
@@ -1808,6 +2414,14 @@ class Storage:
                 pass
 
         self._delete_project_images_db(project_id)
+        with self._db_lock:
+            conn = self._db_connect()
+            try:
+                conn.execute('DELETE FROM ai_feature_index WHERE project_id=?', (project_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        self._analytics_index.delete_project(project_id)
         self._save_projects(kept)
 
     def load_annotations(self, project_id: str, image_id: str) -> list[dict[str, Any]]:
@@ -1816,37 +2430,39 @@ class Storage:
             raise ValueError('project not found')
         annotations_db = self._load_annotations_db(project_id, image_id)
         if annotations_db is not None:
-            return normalize_annotation_masks(
+            normalized = normalize_annotation_masks(
                 base_dir=self.base_dir,
                 project_id=project_id,
                 image_id=image_id,
                 annotations=annotations_db,
             )
+            return normalize_annotation_records(normalized)
         path = self._annotation_read_path(project, image_id)
         data = read_json(path, [])
         annotations = data if isinstance(data, list) else []
         annotations = self._normalize_annotation_ids(project_id, image_id, annotations)
-        return normalize_annotation_masks(
+        normalized = normalize_annotation_masks(
             base_dir=self.base_dir,
             project_id=project_id,
             image_id=image_id,
             annotations=annotations,
         )
+        return normalize_annotation_records(normalized)
 
     @_catalog_locked
-    def save_annotations(self, project_id: str, image_id: str, annotations: list[dict[str, Any]]) -> None:
+    def save_annotations(self, project_id: str, image_id: str, annotations: list[dict[str, Any]], *, _batch: dict[str, Any] | None = None) -> None:
         image = self._get_project_image_db(project_id, image_id)
         if image is None:
             raise ValueError('image not found')
         annotations = self._normalize_annotation_ids(project_id, image_id, annotations)
-        annotations = _ensure_source_model(annotations)
         annotations = normalize_annotation_masks(
             base_dir=self.base_dir,
             project_id=project_id,
             image_id=image_id,
             annotations=annotations,
         )
-        projects = self._load_projects()
+        annotations = normalize_annotation_records(annotations)
+        projects = _batch['projects'] if _batch is not None else self._load_projects()
         out: list[dict[str, Any]] = []
         project: dict[str, Any] | None = None
         for raw in projects:
@@ -1876,16 +2492,64 @@ class Storage:
                 legacy_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        self._replace_annotations_db(project_id, image_id, annotations)
+        conn = _batch['conn'] if _batch is not None else None
+        self._replace_annotations_db(project_id, image_id, annotations, conn=conn)
         self._replace_annotation_ids_db(
             project_id,
             image_id,
             [str(item.get('id') or '').strip() for item in annotations if isinstance(item, dict)],
+            conn=conn,
         )
-        self._replace_annotation_index_db(project_id, image_id, annotations)
-        self._update_project_image_status_db(project_id, image_id, 'labeled' if annotations else 'unlabeled')
+        self._replace_annotation_index_db(project_id, image_id, annotations, conn=conn)
+        self._update_project_image_status_db(project_id, image_id, 'labeled' if annotations else 'unlabeled', conn=conn)
+        if _batch is not None:
+            _batch['projects'] = out
+            _batch['project'] = project
+            return
         self._save_projects(out)
         self._write_project_manifest(project)
+        try:
+            image_row, object_rows = build_analytics_rows(
+                image_id,
+                str(image.get('abs_path') or ''),
+                annotations,
+            )
+            self._analytics_index.replace_active_image(
+                project_id,
+                image_row,
+                object_rows,
+                content_rev=self._content_rev(project),
+            )
+        except Exception:
+            # Analytics is a rebuildable derivative; annotation persistence must
+            # never fail because the optional index could not be refreshed.
+            pass
+
+    @_catalog_locked
+    def save_annotations_batch(self, project_id: str, rows: list[tuple[str, list[dict[str, Any]]]]) -> None:
+        """Cleaning-only small batch; caller owns durable snapshots for rollback.
+
+        JSON remains atomically replaced per image. All annotation indexes share
+        one transaction; the catalog and manifest are persisted once per batch.
+        Analytics is invalidated by content_rev and rebuilt on demand.
+        """
+        if not rows:
+            return
+        with self._db_lock:
+            conn = self._db_connect()
+            batch = {'conn': conn, 'projects': self._load_projects()}
+            try:
+                for image_id, annotations in rows:
+                    self.save_annotations(project_id, image_id, annotations, _batch=batch)
+                conn.execute("UPDATE analytics_index_meta SET status='stale' WHERE project_id=? AND status='ready'", (project_id,))
+                conn.commit()
+                self._save_projects(batch['projects'])
+                self._write_project_manifest(batch['project'])
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def find_image(self, project: dict[str, Any], image_id: str) -> dict[str, Any] | None:
         for img in project.get('images', []):

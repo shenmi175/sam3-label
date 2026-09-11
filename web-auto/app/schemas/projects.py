@@ -13,6 +13,10 @@ class OpenProjectIn(BaseModel):
     classes_text: str = ''
 
 
+class UpdateProjectIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
 class UpdateClassesIn(BaseModel):
     classes_text: str = ''
 

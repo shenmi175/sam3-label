@@ -20,14 +20,20 @@ from app.video_semantic_engine import Sam3VideoSemanticSessionEngine
 from app.schemas import (
     BatchInferOut,
     BatchItemOut,
+    FeatureWritesWaitIn,
+    FeatureWritesWaitOut,
     HealthOut,
     InferResultOut,
+    InteractivePointIn,
+    InteractiveProjectIn,
+    InteractiveSessionIn,
     VideoAddPromptIn,
     VideoPropagateIn,
     VideoRemoveObjectIn,
     VideoSessionControlIn,
     VideoSessionStartIn,
 )
+from app.feature_cache import sha256_bytes
 from app.utils import load_image_from_bytes
 
 logger = logging.getLogger("sam3_api")
@@ -318,6 +324,15 @@ async def _read_upload_image(file: UploadFile, max_image_bytes: int):
     return load_image_from_bytes(raw)
 
 
+async def _read_upload_image_with_digest(file: UploadFile, max_image_bytes: int):
+    raw = await file.read()
+    if not raw:
+        raise ValueError("empty file")
+    if len(raw) > max_image_bytes:
+        raise ValueError(f"image is too large: {len(raw)} bytes > {max_image_bytes} bytes")
+    return load_image_from_bytes(raw), sha256_bytes(raw)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     engine = Sam3InferenceEngine(settings)
@@ -386,6 +401,7 @@ def create_app() -> FastAPI:
 
         return {
             "status": status,
+            "model_state": engine_state,
             "model_loaded": engine.loaded,
             "semantic_model_loaded": engine.loaded,
             "video_model_loaded": video_engine.loaded,
@@ -394,9 +410,16 @@ def create_app() -> FastAPI:
             "video_last_load_error": video_engine.load_error,
             "device": settings.device,
             "checkpoint_path": str(settings.checkpoint_path),
+            "checkpoint_available": settings.checkpoint_path.is_file() or settings.load_from_hf,
             "gpu": _gpu_status(),
             "sam3_pin_sha": SAM3_PIN_SHA,
             "expected_ckpt_generation": settings.expected_ckpt_generation,
+            "instance_interactivity_enabled": bool(
+                settings.instance_interactivity_enabled
+                and (engine.instance_interactivity_enabled or not engine.loaded)
+            ),
+            "feature_gpu_cache_count": engine.feature_cache_stats()["count"],
+            "feature_gpu_cache_bytes": engine.feature_cache_stats()["bytes"],
         }
 
     def _warmup_failure_response(exc: BaseException, label: str) -> HTTPException:
@@ -517,59 +540,6 @@ def create_app() -> FastAPI:
             logger.exception("single infer failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"inference failed: {_format_exc_message(exc)}") from exc
 
-    @app.post("/v1/semantic/infer", response_model=InferResultOut)
-    async def semantic_infer(
-        file: UploadFile = File(...),
-        boxes: Optional[str] = Form(None),
-        input_size: int = Form(0),
-        threshold: Optional[float] = Form(None),
-        include_mask_png: bool = Form(False),
-        max_detections: int = Form(100),
-    ) -> dict:
-        try:
-            image = await _read_upload_image(file, settings.max_image_bytes)
-            boxes_payload = _parse_boxes(boxes)
-            if not boxes_payload:
-                raise ValueError("boxes must not be empty")
-            if not any(label for _, _, _, _, label in boxes_payload):
-                raise ValueError("boxes require at least one positive prompt")
-            use_threshold = float(threshold) if threshold is not None else float(settings.default_threshold)
-            if use_threshold < 0.0 or use_threshold > 1.0:
-                raise ValueError("threshold must be in [0, 1]")
-            return _infer_with_default_size_fallback(
-                engine,
-                infer_kwargs={
-                    "image": image,
-                    "mode": "boxes",
-                    "prompt": "",
-                    "points": [],
-                    "boxes": boxes_payload,
-                    "point_box_size": 16.0,
-                    "input_size": _normalize_image_engine_input_size(
-                        engine,
-                        input_size,
-                        route_label="/v1/semantic/infer",
-                    ),
-                    "threshold": use_threshold,
-                    "include_mask_png": bool(include_mask_png),
-                    "max_detections": max(0, int(max_detections)),
-                },
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            if lifecycle.is_oom_error(exc):
-                lifecycle.cleanup_after_oom()
-                logger.error("visual exemplar infer failed with CUDA OOM: %s", exc)
-                raise HTTPException(
-                    status_code=507, detail="visual exemplar inference failed: CUDA out of memory"
-                ) from exc
-            load_failure = _load_failure_http(engine, exc, "visual exemplar inference")
-            if load_failure is not None:
-                raise load_failure from exc
-            logger.exception("visual exemplar infer failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"visual exemplar inference failed: {exc}") from exc
-
     @app.post("/v1/infer_batch", response_model=BatchInferOut)
     async def infer_batch(
         files: list[UploadFile] = File(...),
@@ -583,6 +553,8 @@ def create_app() -> FastAPI:
         include_mask_png: bool = Form(False),
         max_detections: int = Form(100),
         contour_mode: str = Form("split"),
+        save_ai_features: bool = Form(False),
+        feature_root: str = Form(""),
     ) -> dict:
         if len(files) > settings.max_batch_files:
             raise HTTPException(
@@ -616,23 +588,33 @@ def create_app() -> FastAPI:
         )
 
         if mode_norm == "text" and len(files) > 1:
-            loaded: list[tuple[str, Any]] = []
+            loaded: list[tuple[str, Any, str]] = []
             try:
                 for f in files:
-                    loaded.append((f.filename or "unnamed", await _read_upload_image(f, settings.max_image_bytes)))
+                    image, digest = await _read_upload_image_with_digest(f, settings.max_image_bytes)
+                    loaded.append((f.filename or "unnamed", image, digest))
                 results = engine.infer_text_batch(
-                    images=[image for _, image in loaded],
+                    images=[image for _, image, _ in loaded],
                     prompt=str(prompt or ""),
                     input_size=image_engine_input_size,
                     threshold=use_threshold,
                     include_mask_png=bool(include_mask_png),
                     max_detections=max(0, int(max_detections)),
                     contour_mode=contour_mode_norm,
+                    save_ai_features=bool(save_ai_features),
+                    feature_root=feature_root,
+                    image_digests=[digest for _, _, digest in loaded],
                 )
                 if len(results) != len(loaded):
                     raise RuntimeError(f"batch result count mismatch: {len(results)} != {len(loaded)}")
-                for (filename, _), result in zip(loaded, results):
-                    items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
+                for (filename, _, _), result in zip(loaded, results):
+                    feature = result.pop("_feature", {}) if isinstance(result, dict) else {}
+                    items.append(BatchItemOut(
+                        filename=filename,
+                        ok=True,
+                        result=InferResultOut(**result),
+                        **(feature if isinstance(feature, dict) else {}),
+                    ))
                     succeeded += 1
                 return {
                     "total": len(files),
@@ -656,22 +638,28 @@ def create_app() -> FastAPI:
                 items = []
                 succeeded = 0
                 failed = 0
-                for filename, image in loaded:
+                for filename, image, digest in loaded:
                     try:
-                        result = engine.infer(
-                            image=image,
-                            mode="text",
+                        fallback_results = engine.infer_text_batch(
+                            images=[image],
                             prompt=str(prompt or ""),
-                            points=[],
-                            boxes=[],
-                            point_box_size=float(point_box_size),
                             input_size=image_engine_input_size,
                             threshold=use_threshold,
                             include_mask_png=bool(include_mask_png),
                             max_detections=max(0, int(max_detections)),
                             contour_mode=contour_mode_norm,
+                            save_ai_features=bool(save_ai_features),
+                            feature_root=feature_root,
+                            image_digests=[digest],
                         )
-                        items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
+                        result = fallback_results[0]
+                        feature = result.pop("_feature", {}) if isinstance(result, dict) else {}
+                        items.append(BatchItemOut(
+                            filename=filename,
+                            ok=True,
+                            result=InferResultOut(**result),
+                            **(feature if isinstance(feature, dict) else {}),
+                        ))
                         succeeded += 1
                     except Exception as item_exc:  # noqa: BLE001
                         items.append(BatchItemOut(filename=filename, ok=False, error=str(item_exc)))
@@ -686,7 +674,11 @@ def create_app() -> FastAPI:
         for f in files:
             filename = f.filename or "unnamed"
             try:
-                image = await _read_upload_image(f, settings.max_image_bytes)
+                if mode_norm == "text" and save_ai_features:
+                    image, digest = await _read_upload_image_with_digest(f, settings.max_image_bytes)
+                else:
+                    image = await _read_upload_image(f, settings.max_image_bytes)
+                    digest = ""
                 result = engine.infer(
                     image=image,
                     mode=mode_norm,
@@ -699,8 +691,17 @@ def create_app() -> FastAPI:
                     include_mask_png=bool(include_mask_png),
                     max_detections=max(0, int(max_detections)),
                     contour_mode=contour_mode_norm,
+                    save_ai_features=bool(save_ai_features and mode_norm == "text"),
+                    feature_root=feature_root,
+                    image_digest=digest,
                 )
-                items.append(BatchItemOut(filename=filename, ok=True, result=InferResultOut(**result)))
+                feature = result.pop("_feature", {}) if isinstance(result, dict) else {}
+                items.append(BatchItemOut(
+                    filename=filename,
+                    ok=True,
+                    result=InferResultOut(**result),
+                    **(feature if isinstance(feature, dict) else {}),
+                ))
                 succeeded += 1
             except Exception as exc:  # noqa: BLE001
                 if lifecycle.is_oom_error(exc):
@@ -721,6 +722,97 @@ def create_app() -> FastAPI:
             "failed": failed,
             "items": items,
         }
+
+    @app.post("/v1/features/writes/wait", response_model=FeatureWritesWaitOut)
+    def wait_feature_writes(payload: FeatureWritesWaitIn) -> dict:
+        return {"items": engine.wait_feature_writes(payload.write_ids)}
+
+    @app.post("/v1/interactive/session/open")
+    async def interactive_session_open(
+        file: UploadFile = File(...),
+        project_id: str = Form(...),
+        image_id: str = Form(...),
+        feature_root: str = Form(...),
+        session_id: str = Form(""),
+        initial_polygons: str = Form("[]"),
+        keep_session: bool = Form(True),
+        persist_feature: bool = Form(False),
+    ) -> dict:
+        try:
+            image, digest = await _read_upload_image_with_digest(file, settings.max_image_bytes)
+            polygons = _parse_json_list(initial_polygons, "initial_polygons")
+            result = engine.ensure_interactive_session(
+                image=image,
+                image_digest=digest,
+                feature_root=feature_root,
+                project_id=project_id,
+                image_id=image_id,
+                session_id=session_id,
+                initial_polygons=polygons,
+                persist_feature=persist_feature,
+            )
+            if not keep_session:
+                engine.close_interactive_session(str(result.get("session_id") or ""))
+                result["session_id"] = ""
+                result["state"] = "prefetched"
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                raise HTTPException(status_code=507, detail="interactive feature preparation failed: CUDA out of memory") from exc
+            load_failure = _load_failure_http(engine, exc, "interactive feature preparation")
+            if load_failure is not None:
+                raise load_failure from exc
+            logger.exception("interactive session open failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"interactive session open failed: {exc}") from exc
+
+    @app.post("/v1/interactive/predict")
+    def interactive_predict(payload: InteractivePointIn) -> dict:
+        try:
+            return engine.interactive_predict(
+                session_id=payload.session_id,
+                x=payload.x,
+                y=payload.y,
+                label=payload.label,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            if lifecycle.is_oom_error(exc):
+                lifecycle.cleanup_after_oom()
+                raise HTTPException(status_code=507, detail="interactive prediction failed: CUDA out of memory") from exc
+            raise HTTPException(status_code=500, detail=f"interactive prediction failed: {exc}") from exc
+
+    @app.post("/v1/interactive/reset")
+    def interactive_reset(payload: InteractiveSessionIn) -> dict:
+        try:
+            return engine.reset_interactive_session(payload.session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/v1/interactive/prompts/undo")
+    def interactive_prompt_undo(payload: InteractiveSessionIn) -> dict:
+        try:
+            return engine.undo_interactive_prompt(payload.session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/v1/interactive/prompts/redo")
+    def interactive_prompt_redo(payload: InteractiveSessionIn) -> dict:
+        try:
+            return engine.redo_interactive_prompt(payload.session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/v1/interactive/close")
+    def interactive_close(payload: InteractiveSessionIn) -> dict:
+        return {"ok": True, "closed": engine.close_interactive_session(payload.session_id)}
+
+    @app.post("/v1/interactive/project/clear")
+    def interactive_project_clear(payload: InteractiveProjectIn) -> dict:
+        return {"ok": True, **engine.clear_project_features(payload.project_id)}
 
 
     @app.post("/v1/video/session/start")

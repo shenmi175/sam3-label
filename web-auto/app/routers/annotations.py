@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
+from app.audit import AuditLogger
 from app.schemas import AnnotationMigrationIn, AppendAnnIn, SaveAnnIn
 from app.storage import Storage
 from app.utils import new_id
@@ -48,7 +49,7 @@ def _assign_unique_annotation_ids(
     return out
 
 
-def create_annotations_router(*, get_storage: Callable[[], Storage]) -> APIRouter:
+def create_annotations_router(*, get_storage: Callable[[], Storage], audit: AuditLogger | None = None) -> APIRouter:
     router = APIRouter()
 
     @router.get('/api/projects/{project_id}/images/{image_id}/annotations')
@@ -66,6 +67,8 @@ def create_annotations_router(*, get_storage: Callable[[], Storage]) -> APIRoute
         _get_image_or_404(storage, project, payload.image_id)
         storage.save_annotations(payload.project_id, payload.image_id, payload.annotations)
         saved = storage.load_annotations(payload.project_id, payload.image_id)
+        if audit:
+            audit.emit(category='annotation', action='save', project_id=payload.project_id, message='Annotations saved', details={'image_id': payload.image_id, 'annotation_count': len(saved)})
         return {'ok': True, 'saved_annotations': saved}
 
     @router.post('/api/annotations/append')
@@ -81,6 +84,8 @@ def create_annotations_router(*, get_storage: Callable[[], Storage]) -> APIRoute
         merged = list(old) + incoming
         storage.save_annotations(payload.project_id, payload.image_id, merged)
         saved = storage.load_annotations(payload.project_id, payload.image_id)
+        if audit:
+            audit.emit(category='annotation', action='append', project_id=payload.project_id, message='Annotations appended', details={'image_id': payload.image_id, 'added_count': len(incoming), 'annotation_count': len(saved)})
         return {'ok': True, 'saved_annotations': saved, 'added': len(incoming)}
 
     @router.post('/api/projects/{project_id}/annotations/migrate')

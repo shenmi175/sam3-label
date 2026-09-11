@@ -1,54 +1,48 @@
-import { useState } from 'react';
-import { Box, Button } from '@mui/material';
-import { useNavigate } from 'react-router-dom';
+import { useState, type ReactNode } from 'react';
+import { Box, Button, IconButton, Menu, MenuItem, Tooltip } from '@mui/material';
+import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useLayoutStore, type WorkspaceMode } from '../../stores/workspace/layoutStore';
 import { useViewerStore } from '../../stores/workspace/viewerStore';
 import { useAnnotationStore } from '../../stores/workspace/annotationStore';
 import { toast } from '../../utils/notify';
-import { ReviewToolbar } from './ReviewToolbar';
 import { ExportPanel } from './ExportPanel';
-import { DataDashboardPanel } from './DataDashboardPanel';
 
 interface WorkspaceToolbarProps {
   projectId: string;
-  /** Opens the data-cleaning dialog; the open state lives in ImageWorkspacePage. */
-  onOpenDataCleaning: () => void;
+  mode: WorkspaceMode;
+  modePanel: ReactNode;
 }
 
 /**
- * Workspace toolbar core row — 1:1 port of the legacy workspace-toolbar.js:
+ * Shared workspace toolbar row, with its mode-specific panel supplied by the
+ * automatic or manual route component:
  *   - auto/review mode switch (guarded route navigation, legacy
  *     navigateWorkspaceRoute: commit pending polygon → flush dirty → hash nav)
  *   - review mode: ReviewToolbar (accept/reject/recategorize/save-next flow)
- *   - right side: data dashboard / data cleaning / export entry points
- *     (all three open dialogs; the data-cleaning dialog open state is owned
- *     by ImageWorkspacePage and triggered through onOpenDataCleaning).
+ *   - right side: data dashboard / data cleaning / export entry points.
  *
- * The legacy AutoAnnotatePanel is NOT rendered here: it lives on its own
- * single-line row below this toolbar (see ImageWorkspacePage) as a compact
- * inference-settings summary button plus the execution actions.
+ * Auto and review controls share this row so switching modes never changes the
+ * vertical workspace layout.
  */
-export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToolbarProps) {
+export function WorkspaceToolbar({ projectId, mode, modePanel }: WorkspaceToolbarProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const workspaceMode = useLayoutStore((s) => s.workspaceMode);
+  const location = useLocation();
   const routeWorkspaceMode = useLayoutStore((s) => s.routeWorkspaceMode);
   const [exportOpen, setExportOpen] = useState(false);
-  const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [toolsAnchor, setToolsAnchor] = useState<HTMLElement | null>(null);
 
   const switchMode = async (mode: WorkspaceMode) => {
-    if (mode === workspaceMode) return;
+    if (mode === routeWorkspaceMode) return;
     if (projectId && routeWorkspaceMode !== mode) {
       // Guarded route switch (legacy navigateWorkspaceRoute).
       if (!useViewerStore.getState().commitPendingManualPolygon()) return;
       const annotation = useAnnotationStore.getState();
-      if (annotation.dirty) {
-        await annotation.flushSave('workspace-mode-route-switch');
-        if (useAnnotationStore.getState().dirty) {
-          toast(t('anns_not_saved_mode'), 'error');
-          return;
-        }
+      if (!(await annotation.prepareForNavigation())) {
+        toast(t('anns_not_saved_mode'), 'error');
+        return;
       }
       navigate(`/project/image/${encodeURIComponent(projectId)}/${mode}`);
       return;
@@ -56,10 +50,41 @@ export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToo
     useLayoutStore.getState().setWorkspaceMode(mode);
   };
 
+  const openAnalytics = async () => {
+    if (!projectId || !useViewerStore.getState().commitPendingManualPolygon()) return;
+    const annotation = useAnnotationStore.getState();
+    if (!(await annotation.prepareForNavigation())) {
+      toast(t('anns_not_saved_mode'), 'error');
+      return;
+    }
+    navigate(`/project/image/${encodeURIComponent(projectId)}/analytics`, {
+      state: { from: location.pathname },
+    });
+  };
+
+  const openDataCleaning = async () => {
+    if (!projectId || !useViewerStore.getState().commitPendingManualPolygon()) return;
+    const annotation = useAnnotationStore.getState();
+    if (!(await annotation.prepareForNavigation())) {
+      toast(t('anns_not_saved_mode'), 'error');
+      return;
+    }
+    navigate(`/project/image/${encodeURIComponent(projectId)}/cleaning`, {
+      state: { from: location.pathname },
+    });
+  };
+
+  const openManagement = async () => {
+    setToolsAnchor(null);
+    if (!projectId || !useViewerStore.getState().commitPendingManualPolygon()) return;
+    if (!(await useAnnotationStore.getState().prepareForNavigation())) return;
+    navigate(`/project/${encodeURIComponent(projectId)}/manage`);
+  };
+
   return (
     <Box
       sx={{
-        height: 64,
+        height: 48,
         flexShrink: 0,
         display: 'flex',
         alignItems: 'center',
@@ -89,7 +114,7 @@ export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToo
       >
         <Button
           size="small"
-          variant={workspaceMode === 'auto' ? 'contained' : 'text'}
+          variant={mode === 'auto' ? 'contained' : 'text'}
           onClick={() => void switchMode('auto')}
           sx={{ height: 28, px: 1.5, fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' }}
         >
@@ -97,7 +122,7 @@ export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToo
         </Button>
         <Button
           size="small"
-          variant={workspaceMode === 'review' ? 'contained' : 'text'}
+          variant={mode === 'review' ? 'contained' : 'text'}
           onClick={() => void switchMode('review')}
           sx={{ height: 28, px: 1.5, fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' }}
         >
@@ -105,27 +130,29 @@ export function WorkspaceToolbar({ projectId, onOpenDataCleaning }: WorkspaceToo
         </Button>
       </Box>
 
-      {/* Review-mode flow controls (auto-mode inference panel is a separate row) */}
-      {workspaceMode === 'review' && <ReviewToolbar />}
+      {modePanel}
 
       <Box sx={{ flex: 1 }} />
 
-      {/* Data dashboard / data cleaning / export entry points */}
-      <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setDashboardOpen(true)}>
-          {t('data_dashboard')}
-        </Button>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={onOpenDataCleaning}>
-          {t('smart_filter')}
-        </Button>
-        <Button size="small" variant="outlined" sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }} onClick={() => setExportOpen(true)}>
-          {t('export')}
-        </Button>
-      </Box>
+      <Tooltip title={t('project_tools')}>
+        <IconButton size="small" onClick={(event) => setToolsAnchor(event.currentTarget)} aria-label={t('project_tools')}>
+          <MoreHorizIcon />
+        </IconButton>
+      </Tooltip>
+      <Menu anchorEl={toolsAnchor} open={Boolean(toolsAnchor)} onClose={() => setToolsAnchor(null)}>
+        <MenuItem onClick={() => { setToolsAnchor(null); void openAnalytics(); }}>{t('data_dashboard')}</MenuItem>
+        <MenuItem onClick={() => { setToolsAnchor(null); void openDataCleaning(); }}>{t('smart_filter')}</MenuItem>
+        <MenuItem onClick={() => { setToolsAnchor(null); setExportOpen(true); }}>{t('export')}</MenuItem>
+        <MenuItem onClick={() => void openManagement()}>{t('project_manage')}</MenuItem>
+      </Menu>
 
       {/* Phase-9 dialogs */}
-      <ExportPanel projectId={projectId} open={exportOpen} onClose={() => setExportOpen(false)} />
-      <DataDashboardPanel projectId={projectId} open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
+      <ExportPanel
+        projectId={projectId}
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        onOpenDataCleaning={() => void openDataCleaning()}
+      />
     </Box>
   );
 }

@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 
+from app.audit import AuditLogger
+from app.data_cleaning.artifacts import resolve_preview_artifact
 from app.schemas import SmartFilterIn
 from app.storage import Storage
 
@@ -17,176 +20,35 @@ def create_filters_router(
     spawn_smart_filter_job: Callable[..., dict[str, Any]],
     run_smart_filter_preview_job: Callable[..., dict[str, Any]],
     run_smart_filter_apply_job: Callable[..., dict[str, Any]],
+    run_smart_filter_sync_preview: Callable[[SmartFilterIn], dict[str, Any]],
+    run_smart_filter_sync_apply: Callable[[SmartFilterIn], dict[str, Any]],
     get_active_smart_filter_job_for_project: Callable[[str], dict[str, Any] | None],
     get_smart_filter_job_state_or_404: Callable[[str], dict[str, Any]],
+    audit: AuditLogger | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
+    @router.get('/api/filter/intelligent/artifacts/{preview_token}/{relative_name:path}')
+    def get_smart_filter_artifact(preview_token: str, relative_name: str) -> FileResponse:
+        path = resolve_preview_artifact(get_storage().base_dir, preview_token, relative_name)
+        if path is None:
+            raise HTTPException(status_code=404, detail='preview artifact not found')
+        media_type = 'image/webp' if path.suffix.lower() == '.webp' else 'image/png'
+        return FileResponse(str(path), media_type=media_type)
+
     @router.post('/api/filter/intelligent/preview')
     def preview_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
-        project = get_project_or_404(payload.project_id)
-        if project.get('project_type') != 'image':
-            raise HTTPException(status_code=400, detail='only image project is supported')
-
-        merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
-        spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
-        coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
-        canonical_class = str(payload.canonical_class or '').strip()
-        source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
-        area_mode = str(payload.area_mode or 'instance').strip().lower()
-        if merge_mode == 'canonical_class' and not canonical_class:
-            raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
-        if merge_mode == 'canonical_class' and not source_classes:
-            raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
-
-        items: list[dict[str, Any]] = []
-        total_candidates = 0
-        total_images = 0
-        total_relabels = 0
-        storage = get_storage()
-        for image in project.get('images', []):
-            image_id = str(image.get('id') or '')
-            if not image_id:
-                continue
-            annotations = storage.load_annotations(payload.project_id, image_id)
-            analysis = analyze_smart_merge_annotations(
-                annotations,
-                merge_mode=merge_mode,
-                spatial_mode=spatial_mode,
-                coverage_threshold=coverage_threshold,
-                canonical_class=canonical_class,
-                source_classes=source_classes,
-                area_mode=area_mode,
-            )
-            removed = analysis.get('removed_annotations', [])
-            pairs = analysis.get('pairs', [])
-            relabeled = analysis.get('relabeled_annotations', [])
-            remove_count = len(removed) if isinstance(removed, list) else 0
-            relabel_count = len(relabeled) if isinstance(relabeled, list) else 0
-            if remove_count <= 0 and relabel_count <= 0:
-                continue
-            total_candidates += remove_count
-            total_relabels += relabel_count
-            total_images += 1
-            items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': str(image.get('rel_path') or image_id),
-                    'candidate_count': remove_count,
-                    'relabel_count': relabel_count,
-                    'pair_count': len(pairs) if isinstance(pairs, list) else 0,
-                }
-            )
-
-        items.sort(
-            key=lambda x: (
-                int(x.get('candidate_count') or 0),
-                int(x.get('relabel_count') or 0),
-                str(x.get('rel_path') or ''),
-            ),
-            reverse=True,
-        )
-        return {
-            'project_id': payload.project_id,
-            'image_count': total_images,
-            'candidate_count': total_candidates,
-            'relabel_count': total_relabels,
-            'items': items,
-            'rule': {
-                'merge_mode': merge_mode,
-                'spatial_mode': spatial_mode,
-                'same_class': merge_mode == 'same_class',
-                'canonical_class': canonical_class,
-                'source_classes': source_classes,
-                'area_mode': area_mode,
-                'small_box_covered_by_large_gte': coverage_threshold,
-                'keep': 'larger_area',
-            },
-        }
+        result = run_smart_filter_sync_preview(payload)
+        if audit:
+            audit.emit(category='data_cleaning', action='preview', project_id=payload.project_id, message='Data-cleaning preview completed')
+        return result
 
     @router.post('/api/filter/intelligent/apply')
     def apply_intelligent_filter(payload: SmartFilterIn) -> dict[str, Any]:
-        project = get_project_or_404(payload.project_id)
-        if project.get('project_type') != 'image':
-            raise HTTPException(status_code=400, detail='only image project is supported')
-
-        merge_mode = str(payload.merge_mode or 'same_class').strip().lower()
-        spatial_mode = str(payload.spatial_mode or 'instance_cover').strip().lower()
-        coverage_threshold = max(0.0, min(1.0, float(payload.coverage_threshold)))
-        canonical_class = str(payload.canonical_class or '').strip()
-        source_classes = [str(x).strip() for x in payload.source_classes if str(x).strip()]
-        area_mode = str(payload.area_mode or 'instance').strip().lower()
-        if merge_mode == 'canonical_class' and not canonical_class:
-            raise HTTPException(status_code=400, detail='canonical_class is required for canonical_class merge mode')
-        if merge_mode == 'canonical_class' and not source_classes:
-            raise HTTPException(status_code=400, detail='source_classes is required for canonical_class merge mode')
-
-        changed_images = 0
-        removed_annotations = 0
-        relabeled_annotations = 0
-        items: list[dict[str, Any]] = []
-        storage = get_storage()
-        for image in project.get('images', []):
-            image_id = str(image.get('id') or '')
-            if not image_id:
-                continue
-            annotations = storage.load_annotations(payload.project_id, image_id)
-            analysis = analyze_smart_merge_annotations(
-                annotations,
-                merge_mode=merge_mode,
-                spatial_mode=spatial_mode,
-                coverage_threshold=coverage_threshold,
-                canonical_class=canonical_class,
-                source_classes=source_classes,
-                area_mode=area_mode,
-            )
-            removed = analysis.get('removed_annotations', [])
-            kept_annotations = analysis.get('kept_annotations', annotations)
-            relabeled = analysis.get('relabeled_annotations', [])
-            remove_count = len(removed) if isinstance(removed, list) else 0
-            relabel_count = len(relabeled) if isinstance(relabeled, list) else 0
-            if remove_count <= 0 and relabel_count <= 0:
-                continue
-            storage.save_annotations(
-                payload.project_id,
-                image_id,
-                kept_annotations if isinstance(kept_annotations, list) else annotations,
-            )
-            changed_images += 1
-            removed_annotations += remove_count
-            relabeled_annotations += relabel_count
-            items.append(
-                {
-                    'image_id': image_id,
-                    'rel_path': str(image.get('rel_path') or image_id),
-                    'removed_count': remove_count,
-                    'relabel_count': relabel_count,
-                }
-            )
-
-        items.sort(
-            key=lambda x: (
-                int(x.get('removed_count') or 0),
-                int(x.get('relabel_count') or 0),
-                str(x.get('rel_path') or ''),
-            ),
-            reverse=True,
-        )
-        return {
-            'project_id': payload.project_id,
-            'changed_images': changed_images,
-            'removed_annotations': removed_annotations,
-            'relabeled_annotations': relabeled_annotations,
-            'rule': {
-                'merge_mode': merge_mode,
-                'spatial_mode': spatial_mode,
-                'canonical_class': canonical_class,
-                'source_classes': source_classes,
-                'area_mode': area_mode,
-                'small_box_covered_by_large_gte': coverage_threshold,
-            },
-            'items': items,
-        }
+        result = run_smart_filter_sync_apply(payload)
+        if audit:
+            audit.emit(category='data_cleaning', action='apply', project_id=payload.project_id, message='Data-cleaning changes applied')
+        return result
 
     @router.post('/api/filter/intelligent/jobs/start_preview')
     def start_smart_filter_preview_job(payload: SmartFilterIn) -> dict[str, Any]:
@@ -197,9 +59,11 @@ def create_filters_router(
         job = spawn_smart_filter_job(
             project_id=payload.project_id,
             job_type='preview',
-            payload_dict=payload.model_dump(),
+            payload_dict=payload.model_dump(exclude_unset=True),
             worker=run_smart_filter_preview_job,
         )
+        if audit:
+            audit.emit(category='data_cleaning', action='start_preview', outcome='accepted', project_id=payload.project_id, job_id=str(job.get('job_id') or ''), message='Data-cleaning preview task started')
         return {'job': job}
 
     @router.post('/api/filter/intelligent/jobs/start_apply')
@@ -211,9 +75,11 @@ def create_filters_router(
         job = spawn_smart_filter_job(
             project_id=payload.project_id,
             job_type='apply',
-            payload_dict=payload.model_dump(),
+            payload_dict=payload.model_dump(exclude_unset=True),
             worker=run_smart_filter_apply_job,
         )
+        if audit:
+            audit.emit(category='data_cleaning', action='start_apply', outcome='accepted', project_id=payload.project_id, job_id=str(job.get('job_id') or ''), message='Data-cleaning apply task started')
         return {'job': job}
 
     @router.get('/api/filter/intelligent/jobs/active')
@@ -237,6 +103,8 @@ def create_filters_router(
             result = get_storage().rollback_smart_filter_run(project_id=project_id, run_id=run_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if audit:
+            audit.emit(category='data_cleaning', action='rollback', project_id=project_id, message='Data-cleaning run rolled back', details={'run_id': run_id})
         return {'result': result}
 
     return router

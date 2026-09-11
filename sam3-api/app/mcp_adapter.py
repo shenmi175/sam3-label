@@ -100,7 +100,6 @@ class Sam3ApiHttpClient:
         mode: str,
         prompt: Optional[str] = None,
         points: Optional[list[list[float | int]]] = None,
-        boxes: Optional[list[list[float | int]]] = None,
         point_box_size: float = 16.0,
         threshold: float = 0.5,
         include_mask_png: bool = False,
@@ -118,8 +117,6 @@ class Sam3ApiHttpClient:
             data["prompt"] = str(prompt)
         if points:
             data["points"] = _json_field(points)
-        if boxes:
-            data["boxes"] = _json_field(boxes)
         with image.open("rb") as fh:
             files = {"file": (image.name, fh, _mime_type(image))}
             return self._request("POST", "/v1/infer", data=data, files=files)
@@ -147,29 +144,6 @@ class Sam3ApiHttpClient:
                 fh = stack.enter_context(path.open("rb"))
                 files.append(("files", (path.name, fh, _mime_type(path))))
             return self._request("POST", "/v1/infer_batch", data=data, files=files)
-
-    def semantic_infer(
-        self,
-        *,
-        image_path: str,
-        boxes: list[list[float | int]],
-        threshold: float = 0.5,
-        include_mask_png: bool = False,
-        max_detections: int = 100,
-        input_size: int = 0,
-    ) -> dict[str, Any]:
-        image = _resolve_path(image_path, kind="image")
-        data = {
-            "boxes": _json_field(boxes),
-            "threshold": str(float(threshold)),
-            "include_mask_png": _stringify_bool(include_mask_png),
-            "max_detections": str(max(0, int(max_detections))),
-            "input_size": str(max(0, int(input_size))),
-        }
-        with image.open("rb") as fh:
-            files = {"file": (image.name, fh, _mime_type(image))}
-            return self._request("POST", "/v1/semantic/infer", data=data, files=files)
-
 
     def video_start_session(
         self,

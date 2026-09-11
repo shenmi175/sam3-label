@@ -4,18 +4,12 @@ import { useTranslation } from 'react-i18next';
 import {
   Box,
   Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   IconButton,
   Typography,
 } from '@mui/material';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import {
-  deleteProject,
   getProjects,
   getUploadConfig,
   type ProjectInfo,
@@ -39,6 +33,7 @@ import { ServicesPanel } from '../components/projects/ServicesPanel';
 import { CreateProjectDialog, type CreateProjectPrefill } from '../components/projects/CreateProjectDialog';
 import { RestoreProjectDialog } from '../components/projects/RestoreProjectDialog';
 import { DatasetUploadDialog } from '../components/projects/DatasetUploadDialog';
+import { logFeatureEvent } from '../api/audit';
 
 interface HealthState {
   color: string;
@@ -69,14 +64,13 @@ export function ProjectsPage() {
     targetDir: '',
     projectId: '',
   });
-  const [deleteTarget, setDeleteTarget] = useState<ProjectInfo | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   const hasCacheRef = useRef(false);
   const mountedRef = useRef(true);
   const downloadStartedRef = useRef(false);
   const downloadJobIdRef = useRef('');
   const sapiensTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const serviceManagementLoggedRef = useRef(false);
 
   // ---------------- health ----------------
 
@@ -109,6 +103,9 @@ export function ProjectsPage() {
   }, []);
 
   const loadServicesRef = useRef<() => Promise<void>>(async () => {});
+  const refreshServices = useCallback(() => {
+    void loadServicesRef.current();
+  }, []);
 
   const pollSapiensDownload = useCallback(async () => {
     const jobId = downloadJobIdRef.current;
@@ -244,6 +241,10 @@ export function ProjectsPage() {
 
   useEffect(() => {
     mountedRef.current = true;
+    if (!serviceManagementLoggedRef.current) {
+      logFeatureEvent('open_service_management');
+      serviceManagementLoggedRef.current = true;
+    }
     loadProjects({ showLoading: true });
     checkHealth();
     loadUploadConfig();
@@ -270,21 +271,6 @@ export function ProjectsPage() {
   const openProject = (id: string, projectType = 'image') => {
     const type = String(projectType || 'image');
     navigate(type === 'pose' ? `/project/pose/${id}` : `/project/image/${id}`);
-  };
-
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      await deleteProject(deleteTarget.id);
-      showToast(t('project_deleted'));
-      setDeleteTarget(null);
-      loadProjects();
-    } catch (err) {
-      showToast(t('delete_failed', { error: (err as Error).message }), 'error');
-    } finally {
-      setDeleting(false);
-    }
   };
 
   const showDatasetUpload = (targetDir = '', projectId = '') => {
@@ -333,10 +319,10 @@ export function ProjectsPage() {
               {t('dashboard')}: {health ? health.text : t('backend_checking')}
             </Typography>
           </Box>
-          <Button variant="outlined" onClick={() => showDatasetUpload()}>
+          <Button variant="outlined" onClick={() => { logFeatureEvent('open_import_export'); showDatasetUpload(); }}>
             {t('upload_dataset_btn')}
           </Button>
-          <Button variant="outlined" onClick={() => setRestoreOpen(true)}>
+          <Button variant="outlined" onClick={() => { logFeatureEvent('open_import_export'); setRestoreOpen(true); }}>
             {t('restore_project_btn')}
           </Button>
           <Button variant="contained" onClick={() => { setCreatePrefill({}); setCreateOpen(true); }} sx={{ fontWeight: 700 }}>
@@ -356,7 +342,7 @@ export function ProjectsPage() {
         <ServicesPanel
           servicesStatus={servicesStatus}
           sapiensStatus={sapiensStatus}
-          onRefresh={() => loadServicesRef.current()}
+          onRefresh={refreshServices}
           onControlService={controlServiceAction}
           onStartSapiensDownload={startSapiensDownload}
         />
@@ -391,8 +377,7 @@ export function ProjectsPage() {
                 key={project.id}
                 project={project}
                 onOpen={openProject}
-                onAddData={showDatasetUpload}
-                onDelete={setDeleteTarget}
+                onManage={(projectId) => navigate(`/project/${encodeURIComponent(projectId)}/manage`)}
               />
             ))}
           </Box>
@@ -421,18 +406,6 @@ export function ProjectsPage() {
         onProjectsMaybeChanged={() => loadProjects()}
         onCreateProjectFromUpload={handleCreateFromUpload}
       />
-      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>{t('delete_btn')}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>{t('confirm_delete_project')}</DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>{t('cancel')}</Button>
-          <Button color="error" variant="contained" disabled={deleting} onClick={confirmDelete}>
-            {t('delete_btn')}
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

@@ -36,6 +36,17 @@ class BatchItemOut(BaseModel):
     ok: bool
     result: Optional[InferResultOut] = None
     error: Optional[str] = None
+    feature_status: Optional[str] = None
+    feature_key: Optional[str] = None
+    feature_relative_path: Optional[str] = None
+    feature_bytes: Optional[int] = None
+    feature_error: Optional[str] = None
+    image_digest: Optional[str] = None
+    model_fingerprint: Optional[str] = None
+    feature_input_size: Optional[int] = None
+    feature_dtype: Optional[str] = None
+    feature_format_version: Optional[str] = None
+    feature_write_id: Optional[str] = None
 
 
 class BatchInferOut(BaseModel):
@@ -45,8 +56,31 @@ class BatchInferOut(BaseModel):
     items: list[BatchItemOut]
 
 
+class FeatureWritesWaitIn(BaseModel):
+    write_ids: list[str]
+
+
+class FeatureWriteResultOut(BaseModel):
+    feature_write_id: str
+    feature_status: str
+    feature_key: Optional[str] = None
+    feature_relative_path: Optional[str] = None
+    feature_bytes: int = 0
+    feature_error: Optional[str] = None
+    image_digest: Optional[str] = None
+    model_fingerprint: Optional[str] = None
+    feature_input_size: Optional[int] = None
+    feature_dtype: Optional[str] = None
+    feature_format_version: Optional[str] = None
+
+
+class FeatureWritesWaitOut(BaseModel):
+    items: list[FeatureWriteResultOut]
+
+
 class HealthOut(BaseModel):
     status: str
+    model_state: str = "not_loaded"
     model_loaded: bool
     semantic_model_loaded: bool = False
     video_model_loaded: bool = False
@@ -55,9 +89,28 @@ class HealthOut(BaseModel):
     video_last_load_error: Optional[str] = None
     device: str
     checkpoint_path: str
+    checkpoint_available: bool = False
     gpu: Optional[dict[str, Any]] = None
     sam3_pin_sha: Optional[str] = None
     expected_ckpt_generation: Optional[str] = None
+    instance_interactivity_enabled: bool = False
+    feature_gpu_cache_count: int = 0
+    feature_gpu_cache_bytes: int = 0
+
+
+class InteractivePointIn(BaseModel):
+    session_id: str
+    x: float
+    y: float
+    label: int = 1
+
+
+class InteractiveSessionIn(BaseModel):
+    session_id: str
+
+
+class InteractiveProjectIn(BaseModel):
+    project_id: str
 
 
 class VideoSessionStartIn(BaseModel):

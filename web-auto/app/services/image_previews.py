@@ -4,6 +4,7 @@ import hashlib
 import logging
 import shutil
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,11 +22,13 @@ class ImagePreviewService:
         preview_max_edge: int = 1280,
         thumbnail_max_edge: int = 384,
         logger: logging.Logger | None = None,
+        maintenance_lock: threading.RLock | None = None,
     ) -> None:
         self.get_current_data_dir = get_current_data_dir
         self.preview_max_edge = max(256, int(preview_max_edge or 1280))
         self.thumbnail_max_edge = max(64, int(thumbnail_max_edge or 384))
         self.logger = logger or logging.getLogger('web_auto.previews')
+        self.maintenance_lock = maintenance_lock
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -124,18 +127,20 @@ class ImagePreviewService:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def ensure_image_previews(self, project_id: str, image_id: str, image_path: Path) -> tuple[Path, dict[str, Any]]:
-        cache_dir = self.preview_cache_dir(project_id, image_id, image_path)
-        metadata = self._read_metadata(cache_dir)
-        if metadata:
-            return cache_dir, metadata
-
-        with self._lock_for_dir(cache_dir):
+        gate = self.maintenance_lock if self.maintenance_lock is not None else nullcontext()
+        with gate:
+            cache_dir = self.preview_cache_dir(project_id, image_id, image_path)
             metadata = self._read_metadata(cache_dir)
             if metadata:
                 return cache_dir, metadata
-            metadata = self.generate_previews(cache_dir, image_path)
-            self.logger.info('generated image preview for %s/%s', project_id, image_id)
-            return cache_dir, metadata
+
+            with self._lock_for_dir(cache_dir):
+                metadata = self._read_metadata(cache_dir)
+                if metadata:
+                    return cache_dir, metadata
+                metadata = self.generate_previews(cache_dir, image_path)
+                self.logger.info('generated image preview for %s/%s', project_id, image_id)
+                return cache_dir, metadata
 
     def preview_file(self, cache_dir: Path) -> Path:
         path = self._preview_path(cache_dir)

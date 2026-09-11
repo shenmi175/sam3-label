@@ -1,7 +1,11 @@
 import copy
 import gc
+import hashlib
 import threading
 import time
+import uuid
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional
@@ -14,6 +18,15 @@ from torchvision.transforms import functional as TF
 
 from app import lifecycle
 from app.config import Settings
+from app.feature_cache import (
+    feature_key,
+    feature_tensor_bytes,
+    load_feature,
+    metadata_matches,
+    resolve_feature_root,
+    save_feature_atomic,
+    sha256_file,
+)
 from app.utils import mask_to_png_base64, split_mask_components
 
 logger = logging.getLogger("sam3_api")
@@ -50,6 +63,18 @@ class Sam3InferenceEngine:
         self._cuda_autocast_dtype = torch.bfloat16
         self._cuda_autocast_context = None
         self._cuda_autocast_context_entered = False
+        self._model_fingerprint = ""
+        self._feature_lru: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._interactive_sessions: dict[str, dict[str, Any]] = {}
+        self._feature_write_executor = ThreadPoolExecutor(
+            max_workers=int(self.settings.feature_write_workers),
+            thread_name_prefix="sam3-feature-write",
+        )
+        self._feature_write_slots = threading.BoundedSemaphore(
+            int(self.settings.feature_write_max_pending)
+        )
+        self._feature_write_lock = threading.Lock()
+        self._feature_writes: dict[str, Future[dict[str, Any]]] = {}
 
     @property
     def loaded(self) -> bool:
@@ -150,6 +175,8 @@ class Sam3InferenceEngine:
             self._state = "not_loaded"
             self._load_error = None
             self._clear_load_artifacts()
+            self._feature_lru.clear()
+            self._interactive_sessions.clear()
 
             # The autocast context entered at load time is never exited otherwise;
             # pair it with an explicit __exit__ on unload.
@@ -224,7 +251,12 @@ class Sam3InferenceEngine:
             device=self.settings.device,
             eval_mode=True,
             compile=self.settings.compile_model,
+            enable_inst_interactivity=self.settings.instance_interactivity_enabled,
         )
+        checkpoint_digest = sha256_file(checkpoint) if checkpoint.exists() else "huggingface"
+        self._model_fingerprint = hashlib.sha256(
+            f"{checkpoint_digest}:{SAM3_PIN_SHA}".encode("utf-8")
+        ).hexdigest()
         self._processor_cls = Sam3Processor
         self._api_copy_to_device = copy_data_to_device
         self._api_postprocessor_cls = PostProcessImage
@@ -321,6 +353,610 @@ class Sam3InferenceEngine:
             # Autocast is thread-local; request worker threads need the same official mode.
             return torch.autocast(device_type="cuda", dtype=self._cuda_autocast_dtype)
         return nullcontext()
+
+    @property
+    def instance_interactivity_enabled(self) -> bool:
+        return bool(
+            self.settings.instance_interactivity_enabled
+            and self._model is not None
+            and getattr(self._model, "inst_interactive_predictor", None) is not None
+        )
+
+    def feature_cache_stats(self) -> dict[str, int]:
+        return {
+            "count": len(self._feature_lru),
+            "bytes": sum(int(item.get("gpu_bytes") or 0) for item in self._feature_lru.values()),
+        }
+
+    def _interactive_features_from_sam2(
+        self,
+        sam2_backbone_out: dict[str, Any],
+        *,
+        already_projected: bool,
+    ) -> dict[str, torch.Tensor]:
+        if not self.instance_interactivity_enabled:
+            raise RuntimeError("SAM3 instance interactivity is not enabled")
+        predictor = self._model.inst_interactive_predictor
+        tracker = predictor.model
+        fpn = list(sam2_backbone_out.get("backbone_fpn") or [])
+        if len(fpn) != 3:
+            raise RuntimeError("SAM3 interactive backbone did not return three FPN levels")
+        if not already_projected:
+            fpn[0] = tracker.sam_mask_decoder.conv_s0(fpn[0])
+            fpn[1] = tracker.sam_mask_decoder.conv_s1(fpn[1])
+        prepared = dict(sam2_backbone_out)
+        prepared["backbone_fpn"] = fpn
+        _, vision_feats, _, _ = tracker._prepare_backbone_features(prepared)
+        vision_feats[-1] = vision_feats[-1] + tracker.no_mem_embed
+        batch_size = int(vision_feats[-1].shape[1])
+        feats = [
+            feat.permute(1, 2, 0).view(batch_size, -1, *feat_size)
+            for feat, feat_size in zip(vision_feats[::-1], predictor._bb_feat_sizes[::-1])
+        ][::-1]
+        return {
+            "high_res_0": feats[0],
+            "high_res_1": feats[1],
+            "image_embed": feats[-1],
+        }
+
+    def _feature_metadata(
+        self,
+        *,
+        key: str,
+        image_digest: str,
+        width: int,
+        height: int,
+    ) -> dict[str, str]:
+        return {
+            "feature_key": key,
+            "format_version": self.settings.feature_format_version,
+            "model_fingerprint": self._model_fingerprint,
+            "image_digest": image_digest,
+            "input_size": str(self._default_processor_resolution),
+            "width": str(int(width)),
+            "height": str(int(height)),
+            "dtype": "bfloat16",
+        }
+
+    def _feature_identity(
+        self,
+        *,
+        image_digest: str,
+        width: int,
+        height: int,
+    ) -> tuple[str, dict[str, str]]:
+        key = feature_key(
+            image_digest=image_digest,
+            model_fingerprint=self._model_fingerprint,
+            input_size=self._default_processor_resolution,
+            format_version=self.settings.feature_format_version,
+            width=width,
+            height=height,
+        )
+        return key, self._feature_metadata(
+            key=key,
+            image_digest=image_digest,
+            width=width,
+            height=height,
+        )
+
+    def _feature_plan(
+        self,
+        *,
+        image: Image.Image,
+        image_digest: str,
+        feature_root: str,
+    ) -> dict[str, Any]:
+        root = resolve_feature_root(feature_root, self.settings.feature_allowed_roots)
+        key, metadata = self._feature_identity(
+            image_digest=image_digest,
+            width=image.width,
+            height=image.height,
+        )
+        path = root / f"{key}.safetensors"
+        public = {
+            "feature_key": key,
+            "feature_relative_path": f"feature/{path.name}",
+            "image_digest": image_digest,
+            "model_fingerprint": self._model_fingerprint,
+            "feature_input_size": self._default_processor_resolution,
+            "feature_dtype": "bfloat16",
+            "feature_format_version": self.settings.feature_format_version,
+        }
+        if metadata_matches(path, metadata):
+            return {
+                **public,
+                "feature_status": "reused",
+                "feature_bytes": int(path.stat().st_size),
+            }
+        return {**public, "_path": path, "_metadata": metadata}
+
+    @staticmethod
+    def _feature_failed(plan: dict[str, Any], exc: BaseException) -> dict[str, Any]:
+        return {
+            **{k: v for k, v in plan.items() if not str(k).startswith("_")},
+            "feature_status": "feature_failed",
+            "feature_bytes": 0,
+            "feature_error": str(exc),
+        }
+
+    def _queue_feature_write(
+        self,
+        plan: dict[str, Any],
+        tensors: dict[str, torch.Tensor],
+    ) -> dict[str, Any]:
+        self._feature_write_slots.acquire()
+        write_id = uuid.uuid4().hex
+        public = {k: v for k, v in plan.items() if not str(k).startswith("_")}
+
+        def write() -> dict[str, Any]:
+            try:
+                size = save_feature_atomic(
+                    Path(plan["_path"]),
+                    tensors=tensors,
+                    metadata=dict(plan["_metadata"]),
+                )
+                return {**public, "feature_status": "saved", "feature_bytes": size}
+            except Exception as exc:  # feature failure must not fail annotations
+                return self._feature_failed(plan, exc)
+            finally:
+                self._feature_write_slots.release()
+
+        try:
+            future = self._feature_write_executor.submit(write)
+        except Exception:
+            self._feature_write_slots.release()
+            raise
+        with self._feature_write_lock:
+            self._feature_writes[write_id] = future
+        return {
+            **public,
+            "feature_status": "queued",
+            "feature_write_id": write_id,
+            "feature_bytes": 0,
+        }
+
+    def wait_feature_writes(self, write_ids: list[str]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for raw_id in write_ids:
+            write_id = str(raw_id or "").strip()
+            if not write_id:
+                continue
+            with self._feature_write_lock:
+                future = self._feature_writes.get(write_id)
+            if future is None:
+                results.append({
+                    "feature_write_id": write_id,
+                    "feature_status": "feature_failed",
+                    "feature_bytes": 0,
+                    "feature_error": "feature write result is unavailable",
+                })
+                continue
+            result = future.result()
+            with self._feature_write_lock:
+                self._feature_writes.pop(write_id, None)
+            results.append({"feature_write_id": write_id, **result})
+        return results
+
+    def _put_gpu_feature(
+        self,
+        key: str,
+        *,
+        tensors: dict[str, torch.Tensor],
+        width: int,
+        height: int,
+        project_id: str,
+    ) -> None:
+        self._feature_lru.pop(key, None)
+        self._feature_lru[key] = {
+            "tensors": tensors,
+            "width": int(width),
+            "height": int(height),
+            "project_id": project_id,
+            "gpu_bytes": feature_tensor_bytes(tensors),
+        }
+        while len(self._feature_lru) > int(self.settings.feature_gpu_lru_size):
+            evicted_key, _ = self._feature_lru.popitem(last=False)
+            for session_id, session in list(self._interactive_sessions.items()):
+                if session.get("feature_key") == evicted_key:
+                    self._interactive_sessions.pop(session_id, None)
+
+    def ensure_interactive_session(
+        self,
+        *,
+        image: Image.Image,
+        image_digest: str,
+        feature_root: str,
+        project_id: str,
+        image_id: str,
+        session_id: str = "",
+        initial_polygons: list[list[list[float]]] | None = None,
+        persist_feature: bool = False,
+    ) -> dict[str, Any]:
+        self._ensure_model()
+        if not self.instance_interactivity_enabled:
+            raise RuntimeError("SAM3 instance interactivity is unavailable")
+        root = resolve_feature_root(feature_root, self.settings.feature_allowed_roots)
+        key, metadata = self._feature_identity(
+            image_digest=image_digest,
+            width=image.width,
+            height=image.height,
+        )
+        path = root / f"{key}.safetensors"
+        status = "gpu_cached"
+        with self._infer_lock, self._precision_context():
+            entry = self._feature_lru.pop(key, None)
+            if entry is not None:
+                self._feature_lru[key] = entry
+            else:
+                if metadata_matches(path, metadata):
+                    tensors, _ = load_feature(path, device=self.settings.device)
+                    status = "loaded"
+                else:
+                    processor = self._get_processor_for_size(self._default_processor_resolution)
+                    state = processor.set_image(image, state={})
+                    tensors = self._interactive_features_from_sam2(
+                        state["backbone_out"]["sam2_backbone_out"],
+                        already_projected=True,
+                    )
+                    tensors = {name: value.to(torch.bfloat16) for name, value in tensors.items()}
+                    if persist_feature:
+                        save_feature_atomic(path, tensors=tensors, metadata=metadata)
+                        status = "generated"
+                    else:
+                        status = "memory_only"
+                self._put_gpu_feature(
+                    key,
+                    tensors=tensors,
+                    width=image.width,
+                    height=image.height,
+                    project_id=project_id,
+                )
+        sid = str(session_id or uuid.uuid4().hex)
+        initial_binary_mask = self._polygons_to_binary_mask(
+            initial_polygons or [], width=image.width, height=image.height
+        )
+        initial_mask = self._binary_mask_to_input(initial_binary_mask)
+        self._interactive_sessions[sid] = {
+            "session_id": sid,
+            "project_id": project_id,
+            "image_id": image_id,
+            "feature_key": key,
+            "points": [],
+            "labels": [],
+            "low_res_logits": initial_mask,
+            "initial_low_res_logits": initial_mask.copy() if initial_mask is not None else None,
+            "edited_mask": initial_binary_mask.copy() if initial_binary_mask is not None else None,
+            "initial_edited_mask": initial_binary_mask.copy() if initial_binary_mask is not None else None,
+            "candidate": None,
+            "prompt_history": [],
+            "prompt_history_index": 0,
+        }
+        session = self._interactive_sessions[sid]
+        session["prompt_history"] = [self._interactive_prompt_snapshot(session)]
+        feature_on_disk = path.is_file()
+        return {
+            "session_id": sid,
+            "project_id": project_id,
+            "image_id": image_id,
+            "feature_status": status,
+            "feature_key": key,
+            "feature_relative_path": f"feature/{path.name}" if feature_on_disk else "",
+            "feature_bytes": int(path.stat().st_size) if feature_on_disk else 0,
+            "feature_persisted": feature_on_disk,
+            "image_digest": image_digest,
+            "model_fingerprint": self._model_fingerprint,
+            "feature_input_size": self._default_processor_resolution,
+            "feature_dtype": "bfloat16",
+            "feature_format_version": self.settings.feature_format_version,
+            "state": "ready",
+        }
+
+    @staticmethod
+    def _polygons_to_binary_mask(
+        polygons: list[list[list[float]]], *, width: int, height: int
+    ) -> np.ndarray | None:
+        valid = [poly for poly in polygons if isinstance(poly, list) and len(poly) >= 3]
+        if not valid:
+            return None
+        import cv2
+
+        mask = np.zeros((int(height), int(width)), dtype=np.uint8)
+        contours = [np.asarray(poly, dtype=np.float32).round().astype(np.int32) for poly in valid]
+        cv2.fillPoly(mask, contours, 1)
+        return mask
+
+    def _binary_mask_to_input(self, mask: np.ndarray | None) -> np.ndarray | None:
+        if mask is None:
+            return None
+        import cv2
+
+        predictor = self._model.inst_interactive_predictor
+        target_h, target_w = predictor.model.sam_prompt_encoder.mask_input_size
+        low = cv2.resize(mask, (int(target_w), int(target_h)), interpolation=cv2.INTER_NEAREST)
+        return (low.astype(np.float32) * 20.0 - 10.0)[None, :, :]
+
+    @staticmethod
+    def _select_refinement_candidate(
+        masks: np.ndarray, scores: np.ndarray, reference_mask: np.ndarray | None
+    ) -> int:
+        default = int(np.argmax(scores))
+        if reference_mask is None or len(masks) <= 1:
+            return default
+        reference = np.asarray(reference_mask) > 0
+        if reference.ndim != 2 or not np.any(reference):
+            return default
+        overlaps: list[float] = []
+        for candidate in masks:
+            binary = np.asarray(candidate) > 0
+            if binary.shape != reference.shape:
+                overlaps.append(-1.0)
+                continue
+            union = int(np.logical_or(binary, reference).sum())
+            intersection = int(np.logical_and(binary, reference).sum())
+            overlaps.append(float(intersection) / float(union) if union else 0.0)
+        return max(range(len(overlaps)), key=lambda index: (overlaps[index], float(scores[index])))
+
+    @staticmethod
+    def _foreground_component_mask(
+        raw_mask: np.ndarray,
+        *,
+        x: float,
+        y: float,
+        reference_mask: np.ndarray,
+    ) -> np.ndarray:
+        components = split_mask_components(raw_mask)
+        if not components:
+            return np.zeros_like(reference_mask, dtype=np.uint8)
+        px = max(0, min(int(reference_mask.shape[1]) - 1, int(round(x))))
+        py = max(0, min(int(reference_mask.shape[0]) - 1, int(round(y))))
+        pointed = [component for component in components if component.mask[py, px] > 0]
+        if pointed:
+            selected = pointed
+        else:
+            # Numerical edge effects can leave the click one pixel outside the
+            # returned component. Fall back to the component most connected to
+            # the existing instance, never to an unrelated high-score fragment.
+            selected = [max(
+                components,
+                key=lambda component: int(np.logical_and(component.mask > 0, reference_mask > 0).sum()),
+            )]
+        merged = np.zeros_like(reference_mask, dtype=np.uint8)
+        for component in selected:
+            merged |= (component.mask > 0).astype(np.uint8)
+        return merged
+
+    def interactive_predict(self, *, session_id: str, x: float, y: float, label: int) -> dict[str, Any]:
+        session = self._interactive_sessions.get(str(session_id))
+        if not session:
+            raise KeyError("interactive session not found or evicted")
+        key = str(session["feature_key"])
+        entry = self._feature_lru.pop(key, None)
+        if entry is None:
+            self._interactive_sessions.pop(str(session_id), None)
+            raise KeyError("interactive feature was evicted; reopen the session")
+        self._feature_lru[key] = entry
+        before = self._interactive_prompt_snapshot(session)
+        session["points"].append([float(x), float(y)])
+        session["labels"].append(1 if int(label) != 0 else 0)
+        predictor = self._model.inst_interactive_predictor
+        tensors = entry["tensors"]
+        # Rebuild the official inference-state shape from the persisted decoder
+        # features. ``predict_inst`` prepares these spatial features and adds
+        # ``no_mem_embed`` itself, so remove that term from the cached image
+        # embedding before handing the state back to the public SAM3 method.
+        tracker = predictor.model
+        no_mem_spatial = tracker.no_mem_embed.reshape(-1).view(1, -1, 1, 1).to(
+            device=tensors["image_embed"].device,
+            dtype=tensors["image_embed"].dtype,
+        )
+        backbone_fpn = [
+            tensors["high_res_0"],
+            tensors["high_res_1"],
+            tensors["image_embed"] - no_mem_spatial,
+        ]
+        inference_state = {
+            "original_height": int(entry["height"]),
+            "original_width": int(entry["width"]),
+            "backbone_out": {
+                "sam2_backbone_out": {
+                    "backbone_fpn": backbone_fpn,
+                    # The tracker uses positional tensors here to obtain the
+                    # spatial sizes; predict_inst does not consume their values.
+                    "vision_pos_enc": [torch.zeros_like(feat) for feat in backbone_fpn],
+                }
+            },
+        }
+        reference_mask = session.get("edited_mask")
+        with self._infer_lock, self._precision_context():
+            try:
+                masks, scores, logits = self._model.predict_inst(
+                    inference_state,
+                    point_coords=np.asarray(session["points"], dtype=np.float32),
+                    point_labels=np.asarray(session["labels"], dtype=np.int32),
+                    mask_input=session.get("low_res_logits"),
+                    multimask_output=len(session["points"]) == 1,
+                    return_logits=False,
+                    normalize_coords=True,
+                )
+            except Exception:
+                self._restore_interactive_prompt_snapshot(session, before)
+                raise
+            finally:
+                # The official method clears _features/_is_image_set on the
+                # success path; also normalize state when its decoder raises.
+                predictor._features = None
+                predictor._is_image_set = False
+                predictor._orig_hw = None
+        best = self._select_refinement_candidate(masks, scores, reference_mask)
+        raw_mask = (masks[best] > 0).astype(np.uint8)
+        if reference_mask is not None:
+            reference = (np.asarray(reference_mask) > 0).astype(np.uint8)
+            if int(label) != 0:
+                addition = self._foreground_component_mask(
+                    raw_mask, x=float(x), y=float(y), reference_mask=reference
+                )
+                mask = np.logical_or(reference > 0, addition > 0).astype(np.uint8)
+            else:
+                mask = np.logical_and(reference > 0, raw_mask > 0).astype(np.uint8)
+            session["edited_mask"] = mask.copy()
+            session["low_res_logits"] = self._binary_mask_to_input(mask)
+        else:
+            mask = raw_mask
+            session["low_res_logits"] = logits[best : best + 1]
+        components = split_mask_components(mask)
+        polygons = [component.polygon for component in components]
+        if not polygons:
+            # Negative prompts can legitimately suppress every pixel. Keep the
+            # prompt/logit state so the user can undo it or add a foreground
+            # point, but do not turn this normal decoder result into HTTP 500.
+            session["candidate"] = None
+            history = list(session.get("prompt_history") or [])
+            index = int(session.get("prompt_history_index") or 0)
+            history = history[: index + 1]
+            history.append(self._interactive_prompt_snapshot(session))
+            if len(history) > 51:
+                history = history[-51:]
+            session["prompt_history"] = history
+            session["prompt_history_index"] = len(history) - 1
+            return {
+                "session_id": str(session_id),
+                "state": "empty",
+                "points": len(session["points"]),
+                "candidate": None,
+                "can_undo": len(history) > 1,
+                "can_redo": False,
+            }
+        ys, xs = np.where(mask > 0)
+        candidate = {
+            "bbox": [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())],
+            "polygon": max(components, key=lambda component: component.area).polygon,
+            "polygons": polygons,
+            "area": int(mask.sum()),
+            "score": float(scores[best]),
+        }
+        session["candidate"] = candidate
+        history = list(session.get("prompt_history") or [])
+        index = int(session.get("prompt_history_index") or 0)
+        history = history[: index + 1]
+        history.append(self._interactive_prompt_snapshot(session))
+        if len(history) > 51:
+            history = history[-51:]
+        session["prompt_history"] = history
+        session["prompt_history_index"] = len(history) - 1
+        return {
+            "session_id": str(session_id),
+            "state": "candidate",
+            "points": len(session["points"]),
+            "candidate": candidate,
+            "can_undo": len(history) > 1,
+            "can_redo": False,
+        }
+
+    @staticmethod
+    def _interactive_prompt_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+        logits = session.get("low_res_logits")
+        edited = session.get("edited_mask")
+        return {
+            "points": copy.deepcopy(list(session.get("points") or [])),
+            "labels": list(session.get("labels") or []),
+            "low_res_logits": logits.copy() if logits is not None else None,
+            "edited_mask_packed": np.packbits(edited.reshape(-1)) if edited is not None else None,
+            "edited_mask_shape": tuple(edited.shape) if edited is not None else None,
+            "candidate": copy.deepcopy(session.get("candidate")),
+        }
+
+    @staticmethod
+    def _restore_interactive_prompt_snapshot(session: dict[str, Any], snapshot: dict[str, Any]) -> None:
+        logits = snapshot.get("low_res_logits")
+        packed = snapshot.get("edited_mask_packed")
+        shape = snapshot.get("edited_mask_shape")
+        edited = None
+        if packed is not None and isinstance(shape, tuple) and len(shape) == 2:
+            size = int(shape[0]) * int(shape[1])
+            edited = np.unpackbits(packed, count=size).reshape(shape).astype(np.uint8)
+        session.update(
+            points=copy.deepcopy(list(snapshot.get("points") or [])),
+            labels=list(snapshot.get("labels") or []),
+            low_res_logits=logits.copy() if logits is not None else None,
+            edited_mask=edited,
+            candidate=copy.deepcopy(snapshot.get("candidate")),
+        )
+
+    def _interactive_history_move(self, session_id: str, delta: int) -> dict[str, Any]:
+        session = self._interactive_sessions.get(str(session_id))
+        if not session:
+            raise KeyError("interactive session not found")
+        history = list(session.get("prompt_history") or [])
+        if not history:
+            history = [self._interactive_prompt_snapshot(session)]
+        current = int(session.get("prompt_history_index") or 0)
+        target = max(0, min(len(history) - 1, current + int(delta)))
+        self._restore_interactive_prompt_snapshot(session, history[target])
+        session["prompt_history"] = history
+        session["prompt_history_index"] = target
+        candidate = copy.deepcopy(session.get("candidate"))
+        return {
+            "session_id": str(session_id),
+            "state": "candidate" if candidate else "ready",
+            "points": len(session.get("points") or []),
+            "candidate": candidate,
+            "can_undo": target > 0,
+            "can_redo": target < len(history) - 1,
+        }
+
+    def undo_interactive_prompt(self, session_id: str) -> dict[str, Any]:
+        return self._interactive_history_move(session_id, -1)
+
+    def redo_interactive_prompt(self, session_id: str) -> dict[str, Any]:
+        return self._interactive_history_move(session_id, 1)
+
+    def reset_interactive_session(self, session_id: str) -> dict[str, Any]:
+        session = self._interactive_sessions.get(str(session_id))
+        if not session:
+            raise KeyError("interactive session not found")
+        initial = session.get("initial_low_res_logits")
+        initial_edited = session.get("initial_edited_mask")
+        session.update(
+            points=[],
+            labels=[],
+            low_res_logits=initial.copy() if initial is not None else None,
+            edited_mask=initial_edited.copy() if initial_edited is not None else None,
+            candidate=None,
+        )
+        session["prompt_history"] = [self._interactive_prompt_snapshot(session)]
+        session["prompt_history_index"] = 0
+        return {
+            "session_id": str(session_id),
+            "state": "ready",
+            "points": 0,
+            "candidate": None,
+            "can_undo": False,
+            "can_redo": False,
+        }
+
+    def close_interactive_session(self, session_id: str) -> bool:
+        return self._interactive_sessions.pop(str(session_id), None) is not None
+
+    def clear_project_features(self, project_id: str) -> dict[str, int]:
+        closed = 0
+        for session_id, session in list(self._interactive_sessions.items()):
+            if str(session.get("project_id") or "") == str(project_id):
+                self._interactive_sessions.pop(session_id, None)
+                closed += 1
+        removed = 0
+        for key, entry in list(self._feature_lru.items()):
+            if str(entry.get("project_id") or "") == str(project_id):
+                self._feature_lru.pop(key, None)
+                removed += 1
+        if removed:
+            gc.collect()
+            if self._uses_cuda():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+        return {"sessions_closed": closed, "gpu_entries_removed": removed}
 
     @staticmethod
     def _xyxy_to_cxcywh_norm(
@@ -693,6 +1329,9 @@ class Sam3InferenceEngine:
         max_detections: int,
         input_size: int | None = None,
         contour_mode: str = "split",
+        save_ai_features: bool = False,
+        feature_root: str = "",
+        image_digests: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         self._ensure_model()
         if not images:
@@ -707,6 +1346,30 @@ class Sam3InferenceEngine:
             input_size,
             default=self._default_processor_resolution,
         )
+        feature_plans: list[dict[str, Any]] = []
+        if save_ai_features:
+            if use_size != self._default_processor_resolution:
+                feature_plans = [{
+                    "feature_status": "feature_failed",
+                    "feature_error": "interactive features require the official 1008 input size",
+                } for _ in images]
+            elif len(image_digests or []) != len(images):
+                feature_plans = [{
+                    "feature_status": "feature_failed",
+                    "feature_error": "image digest count does not match image count",
+                } for _ in images]
+            else:
+                for image, digest in zip(images, image_digests or []):
+                    try:
+                        feature_plans.append(self._feature_plan(
+                            image=image,
+                            image_digest=str(digest),
+                            feature_root=feature_root,
+                        ))
+                    except Exception as exc:
+                        feature_plans.append(self._feature_failed({}, exc))
+
+        prepared_feature_tensors: list[dict[str, torch.Tensor] | None] = [None] * len(images)
         with self._infer_lock, self._precision_context():
             if self._model is None or self._api_copy_to_device is None:
                 raise RuntimeError("SAM3 official batch inference helpers are not initialized")
@@ -723,9 +1386,31 @@ class Sam3InferenceEngine:
                 non_blocking=True,
             )
 
+            # Keep feature projection in the same inference context as the
+            # backbone forward. PyTorch inference tensors cannot be consumed
+            # by the decoder projection layers while autograd is enabled.
             with torch.inference_mode():
                 outputs = self._model(batch)
-            processed = postprocessor.process_results(outputs, batch.find_metadatas)
+                missing_indices = [
+                    idx for idx, plan in enumerate(feature_plans)
+                    if plan.get("feature_status") not in {"reused", "feature_failed"}
+                ]
+                if missing_indices:
+                    try:
+                        stage = outputs.output[0][-1]
+                        sam2_out = stage["prev_encoder_out"]["backbone_out"]["sam2_backbone_out"]
+                        all_features = self._interactive_features_from_sam2(
+                            sam2_out, already_projected=False
+                        )
+                        for idx in missing_indices:
+                            prepared_feature_tensors[idx] = {
+                                name: tensor[idx:idx + 1].to(torch.bfloat16)
+                                for name, tensor in all_features.items()
+                            }
+                    except Exception as exc:
+                        for idx in missing_indices:
+                            feature_plans[idx] = self._feature_failed(feature_plans[idx], exc)
+                processed = postprocessor.process_results(outputs, batch.find_metadatas)
 
             per_image_detections: list[list[dict[str, Any]]] = [[] for _ in range(len(images))]
             for query_key, result in processed.items():
@@ -748,32 +1433,44 @@ class Sam3InferenceEngine:
                 )
                 per_image_detections[img_idx].extend(class_dets)
 
-            results: list[dict[str, Any]] = []
-            total_latency_ms = round((time.perf_counter() - start) * 1000.0, 3)
-            for img_idx, image in enumerate(images):
-                detections_all = per_image_detections[img_idx]
-                detections_all.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
-                if max_detections > 0:
-                    detections_all = detections_all[:max_detections]
-                self._renumber_detection_ids(detections_all)
-                results.append(
-                    {
-                        "model": "sam3",
-                        "device": self.settings.device,
-                        "mode": "text",
-                        "prompt": ", ".join(class_prompts),
-                        "threshold": float(threshold),
-                        "image": {
-                            "width": int(image.width),
-                            "height": int(image.height),
-                            "input_size": int(use_size),
-                        },
-                        "num_detections": len(detections_all),
-                        "detections": detections_all,
-                        "latency_ms": total_latency_ms,
-                    }
-                )
-            return results
+        feature_items: list[dict[str, Any]] = []
+        for idx, plan in enumerate(feature_plans):
+            tensors = prepared_feature_tensors[idx]
+            if tensors is None:
+                feature_items.append(plan)
+                continue
+            try:
+                feature_items.append(self._queue_feature_write(plan, tensors))
+            except Exception as exc:
+                feature_items.append(self._feature_failed(plan, exc))
+
+        results: list[dict[str, Any]] = []
+        total_latency_ms = round((time.perf_counter() - start) * 1000.0, 3)
+        for img_idx, image in enumerate(images):
+            detections_all = per_image_detections[img_idx]
+            detections_all.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+            if max_detections > 0:
+                detections_all = detections_all[:max_detections]
+            self._renumber_detection_ids(detections_all)
+            item_result = {
+                "model": "sam3",
+                "device": self.settings.device,
+                "mode": "text",
+                "prompt": ", ".join(class_prompts),
+                "threshold": float(threshold),
+                "image": {
+                    "width": int(image.width),
+                    "height": int(image.height),
+                    "input_size": int(use_size),
+                },
+                "num_detections": len(detections_all),
+                "detections": detections_all,
+                "latency_ms": total_latency_ms,
+            }
+            if feature_items:
+                item_result["_feature"] = feature_items[img_idx]
+            results.append(item_result)
+        return results
 
     def infer(
         self,
@@ -788,6 +1485,9 @@ class Sam3InferenceEngine:
         point_box_size: float = 16.0,
         input_size: int | None = None,
         contour_mode: str = "split",
+        save_ai_features: bool = False,
+        feature_root: str = "",
+        image_digest: str = "",
     ) -> dict[str, Any]:
         self._ensure_model()
 
@@ -795,7 +1495,27 @@ class Sam3InferenceEngine:
         prompt_norm = str(prompt or "").strip()
 
         start = time.perf_counter()
+        use_size = self._normalize_input_size(
+            input_size, default=self._default_processor_resolution
+        )
+        feature_plan: dict[str, Any] = {}
+        if save_ai_features:
+            if use_size != self._default_processor_resolution:
+                feature_plan = {
+                    "feature_status": "feature_failed",
+                    "feature_error": "interactive features require the official 1008 input size",
+                }
+            else:
+                try:
+                    feature_plan = self._feature_plan(
+                        image=image,
+                        image_digest=image_digest,
+                        feature_root=feature_root,
+                    )
+                except Exception as exc:
+                    feature_plan = self._feature_failed({}, exc)
 
+        feature_tensors: dict[str, torch.Tensor] | None = None
         with self._infer_lock, self._precision_context():
             state: dict[str, Any] = {}
             processor = self._get_processor_for_size(input_size)
@@ -891,8 +1611,21 @@ class Sam3InferenceEngine:
             else:
                 raise ValueError("mode must be one of: text, points, boxes")
 
+            if feature_plan and feature_plan.get("feature_status") not in {"reused", "feature_failed"}:
+                try:
+                    sam2_out = state["backbone_out"]["sam2_backbone_out"]
+                    feature_tensors = self._interactive_features_from_sam2(
+                        sam2_out, already_projected=True
+                    )
+                    feature_tensors = {
+                        name: tensor.to(torch.bfloat16)
+                        for name, tensor in feature_tensors.items()
+                    }
+                except Exception as exc:
+                    feature_plan = self._feature_failed(feature_plan, exc)
+
         latency_ms = round((time.perf_counter() - start) * 1000.0, 3)
-        return {
+        result = {
             "model": "sam3",
             "device": self.settings.device,
             "mode": "text" if mode_norm == "text" else ("points" if mode_norm in {"points", "point"} else "boxes"),
@@ -907,6 +1640,15 @@ class Sam3InferenceEngine:
             "detections": detections,
             "latency_ms": latency_ms,
         }
+        if feature_plan:
+            if feature_tensors is not None:
+                try:
+                    result["_feature"] = self._queue_feature_write(feature_plan, feature_tensors)
+                except Exception as exc:
+                    result["_feature"] = self._feature_failed(feature_plan, exc)
+            else:
+                result["_feature"] = feature_plan
+        return result
 
 
 class Sam3VideoSessionEngine:

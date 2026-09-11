@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -19,29 +19,18 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
-import NearMeIcon from '@mui/icons-material/NearMe';
-import CropSquareIcon from '@mui/icons-material/CropSquare';
-import PolylineIcon from '@mui/icons-material/Polyline';
-import UndoIcon from '@mui/icons-material/Undo';
-import RedoIcon from '@mui/icons-material/Redo';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AddBoxIcon from '@mui/icons-material/AddBox';
-import IndeterminateCheckBoxIcon from '@mui/icons-material/IndeterminateCheckBox';
-import ClearIcon from '@mui/icons-material/Clear';
-import ZoomOutMapIcon from '@mui/icons-material/ZoomOutMap';
 import ImageIcon from '@mui/icons-material/Image';
 import { useTranslation } from 'react-i18next';
 import { ImageViewer, type ImageViewerHandle } from '../components/viewer/ImageViewer';
-import type { ManualAnnotationDraft } from '../components/viewer/viewer-core';
 import type { Annotation } from '../api/types';
 import { clearBundleCache } from '../api/bundleCache';
-import { toast } from '../utils/notify';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useProjectStore } from '../stores/workspace/projectStore';
 import { useImageStore } from '../stores/workspace/imageStore';
-import { useAnnotationStore, selectCanUndo, selectCanRedo } from '../stores/workspace/annotationStore';
+import { useAnnotationStore } from '../stores/workspace/annotationStore';
 import { useViewerStore, filterAnnotationsBySource } from '../stores/workspace/viewerStore';
 import { useInferenceStore } from '../stores/workspace/inferenceStore';
+import { useAiAssistantStore } from '../stores/workspace/aiAssistantStore';
 import { useLayoutStore } from '../stores/workspace/layoutStore';
 import { useTasksStore } from '../stores/workspace/tasksStore';
 import { useSmartFilterStore } from '../stores/workspace/smartFilterStore';
@@ -55,16 +44,17 @@ import { FilterBar } from '../components/workspace/FilterBar';
 import { ClassPanel } from '../components/workspace/ClassPanel';
 import { AnnotationList } from '../components/workspace/AnnotationList';
 import { WorkspaceToolbar } from '../components/workspace/WorkspaceToolbar';
-import { AutoAnnotatePanel } from '../components/workspace/AutoAnnotatePanel';
 import { TaskProgressBar } from '../components/workspace/TaskProgressBar';
 import { GpuStatusWidget } from '../components/workspace/GpuStatusWidget';
-import { DataCleaningDialog } from '../components/data-cleaning/DataCleaningDialog';
 import { BatchConfigModal } from '../components/workspace/BatchConfigModal';
 import { BatchResultModal } from '../components/workspace/BatchResultModal';
 import { BackendErrorModal } from '../components/workspace/BackendErrorModal';
+import { UnsavedChangesDialog } from '../components/workspace/UnsavedChangesDialog';
+import { AutoCanvasToolbar, ManualCanvasToolbar } from '../components/workspace/CanvasToolbars';
+import type { ManualWorkspaceController } from '../hooks/useManualWorkspaceController';
 
 /**
- * Image workspace page — React assembly of the legacy
+ * Shared image workspace shell — React assembly of the legacy
  * `js/pages/image-workspace.js` God Object page.
  *
  * Initialization order mirrors the legacy render():
@@ -72,17 +62,24 @@ import { BackendErrorModal } from '../components/workspace/BackendErrorModal';
  *   restore the selected image. Unmount mirrors legacy unmount(): abort /
  *   clear bundle cache / flush ui_state (useUiStateSync) / reset all stores.
  *
- * Viewer callbacks dispatch to the stores exactly like the legacy wiring:
+ * Manual-mode viewer callbacks dispatch to the stores like the legacy wiring:
  *   onPromptAdded         → viewerStore.addPrompt
  *   onAnnotationSelected  → viewerStore.setFocusedAnnotation
  *   onAnnotationEditStart → annotationStore.pushHistory
  *   onAnnotationUpdated   → annotationStore.handleGeometryUpdated (markDirty)
  *   onAnnotationCreated   → annotationStore.createAnnotation (+review continuous)
  */
-export function ImageWorkspacePage() {
+export type ImageWorkspaceShellProps = {
+  viewerRef: RefObject<ImageViewerHandle | null>;
+  modePanel: ReactNode;
+} & (
+  | { mode: 'auto'; manual?: never }
+  | { mode: 'review'; manual: ManualWorkspaceController }
+);
+
+export function ImageWorkspaceShell({ mode, viewerRef, modePanel, manual }: ImageWorkspaceShellProps) {
   const { id = '' } = useParams();
   const projectId = id;
-  const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const theme = useTheme();
@@ -93,14 +90,10 @@ export function ImageWorkspacePage() {
   const canvasBg = theme.palette.mode === 'dark' ? '#1b1e26' : '#eaeff2';
 
   // Route-derived workspace mode (legacy routeWorkspaceMode).
-  const routeMode = location.pathname.endsWith('/review') ? 'review' : 'auto';
-
-  const viewerRef = useRef<ImageViewerHandle | null>(null);
-  /** Manual-polygon point counter (the viewer exposes no point callbacks). */
-  const polygonPointsRef = useRef(0);
-  /** Synchronous probe detecting a polygon commit inside finishManualPolygon. */
-  const commitProbeRef = useRef<'idle' | 'pending' | 'created'>('idle');
+  const routeMode = mode;
+  const editable = mode === 'review';
   const commitPolygonGuardRef = useRef<() => boolean>(() => true);
+  commitPolygonGuardRef.current = manual?.commitPolygonGuard ?? (() => true);
 
   // ─── Store subscriptions ────────────────────────────────────────────────────
   const projectMeta = useProjectStore((s) => s.projectMeta);
@@ -114,15 +107,12 @@ export function ImageWorkspacePage() {
 
   const annotations = useAnnotationStore((s) => s.annotations);
   const sourceFilter = useAnnotationStore((s) => s.sourceFilter);
-  const autosaveEnabled = useAnnotationStore((s) => s.autosaveEnabled);
   const saveStatus = useAnnotationStore((s) => s.saveStatus);
-  const canUndo = useAnnotationStore(selectCanUndo);
-  const canRedo = useAnnotationStore(selectCanRedo);
 
   const promptMode = useViewerStore((s) => s.promptMode);
-  const boxPromptLabel = useViewerStore((s) => s.boxPromptLabel);
   const currentPrompts = useViewerStore((s) => s.currentPrompts);
   const focusedAnnotationId = useViewerStore((s) => s.focusedAnnotationId);
+  const highlightedAnnotationIds = useViewerStore((s) => s.highlightedAnnotationIds);
   const showMasks = useViewerStore((s) => s.showMasks);
 
   const workspaceMode = useLayoutStore((s) => s.workspaceMode);
@@ -132,22 +122,33 @@ export function ImageWorkspacePage() {
   const annotationsSectionCollapsed = useLayoutStore((s) => s.annotationsSectionCollapsed);
   const unlabeledNavigationEnabled = useLayoutStore((s) => s.unlabeledNavigationEnabled);
 
-  // Data-cleaning dialog open state (toolbar entry point).
-  const [dataCleaningOpen, setDataCleaningOpen] = useState(false);
-
   // Backend health indicator — legacy startHealthCheck (10 s /api/health).
   const backendHealth = useBackendHealth();
 
-  // Effective mode: review-only UI (ReviewToolbar) renders in WorkspaceToolbar;
-  // auto-only UI is conditionally rendered through this flag (legacy
-  // .ws-auto-only elements).
-  const isReviewMode = workspaceMode === 'review';
+  // The route component owns the mode; persisted UI state cannot override it.
+  const isReviewMode = editable;
 
   // Legacy single-select source filter applied to the viewer + list.
   const visibleAnnotations = useMemo(
     () => filterAnnotationsBySource(annotations, sourceFilter),
     [annotations, sourceFilter],
   );
+  const viewerAnnotations = useMemo(() => {
+    const aiCandidate = manual?.aiCandidate;
+    if (!aiCandidate) return visibleAnnotations;
+    const candidate: Annotation = {
+      id: '__sam3_ai_candidate__',
+      class_name: t('ai_candidate'),
+      bbox: aiCandidate.bbox,
+      polygon: aiCandidate.polygon,
+      polygons: aiCandidate.polygons,
+      score: aiCandidate.score,
+      color: '#22d3ee',
+      source_model: 'sam3',
+      temporary: true,
+    };
+    return [...visibleAnnotations, candidate];
+  }, [visibleAnnotations, manual?.aiCandidate, t]);
 
   const viewerOptions = useMemo(() => ({ showMasks }), [showMasks]);
 
@@ -159,95 +160,9 @@ export function ImageWorkspacePage() {
   // Restore the project's active infer job on mount, stop polling on unmount.
   useJobPolling(projectId);
 
-  // ─── Viewer callback dispatch ───────────────────────────────────────────────
-
-  const handlePromptAdded = useCallback((type: 'point' | 'box', data: number[]) => {
-    useViewerStore.getState().addPrompt(type, data);
-  }, []);
-
   const handleAnnotationSelected = useCallback((annotationId: string | null) => {
     useViewerStore.getState().setFocusedAnnotation(annotationId);
   }, []);
-
-  const handleAnnotationEditStart = useCallback(() => {
-    useAnnotationStore.getState().pushHistory();
-  }, []);
-
-  const handleAnnotationUpdated = useCallback((annotation: Annotation) => {
-    const annotationId = String(annotation?.id || '');
-    if (!annotationId) return;
-    useAnnotationStore.getState().handleGeometryUpdated(annotationId, annotation);
-  }, []);
-
-  const handleAnnotationCreated = useCallback((draft: ManualAnnotationDraft) => {
-    commitProbeRef.current = 'created';
-    polygonPointsRef.current = 0;
-    const project = useProjectStore.getState();
-    const layout = useLayoutStore.getState();
-    const previousMode = useViewerStore.getState().promptMode;
-    // Legacy selectedOrDefaultClass.
-    const className =
-      String(project.selectedClass || project.classes[0] || 'object').trim() || 'object';
-    useAnnotationStore
-      .getState()
-      .createAnnotation({ bbox: draft.bbox, polygon: draft.polygon }, className);
-    // Legacy review continuous mode: keep drawing manual shapes after commit.
-    if (
-      layout.workspaceMode === 'review' &&
-      layout.reviewContinuousMode &&
-      (previousMode === 'manual-box' || previousMode === 'manual-polygon')
-    ) {
-      setTimeout(() => {
-        useViewerStore.getState().setPromptMode(previousMode, layout.workspaceMode);
-      }, 0);
-    }
-  }, []);
-
-  // ─── Manual polygon commit guard (legacy commitPendingManualPolygon) ───────
-  // The viewer handle exposes no hasActiveManualPolygon/point-count API, so the
-  // page tracks points itself: mousedown capture increments the counter while
-  // in manual-polygon mode; the counter resets on mode change, Escape and any
-  // created annotation (Enter / double-click / closing near the first point).
-  commitPolygonGuardRef.current = () => {
-    if (useViewerStore.getState().promptMode !== 'manual-polygon') return true;
-    const points = polygonPointsRef.current;
-    if (points === 0) return true; // no draft started yet
-    if (points < 3) {
-      toast(t('polygon_need_3_points'), 'error');
-      return false;
-    }
-    commitProbeRef.current = 'pending';
-    viewerRef.current?.finishManualPolygon();
-    // finishManualPolygon synchronously fires onAnnotationCreated, which flips
-    // the probe to 'created'; TS cannot see that mutation, so widen the type.
-    const committed = (commitProbeRef.current as string) === 'created';
-    commitProbeRef.current = 'idle';
-    if (!committed) {
-      toast(t('polygon_commit_failed'), 'error');
-      return false;
-    }
-    return true;
-  };
-
-  const onViewerMouseDownCapture = useCallback((event: React.MouseEvent) => {
-    if (event.button !== 0 || event.altKey) return;
-    if (useViewerStore.getState().promptMode === 'manual-polygon') {
-      polygonPointsRef.current += 1;
-    }
-  }, []);
-
-  useEffect(() => {
-    polygonPointsRef.current = 0;
-  }, [promptMode]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') polygonPointsRef.current = 0;
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-
   // ─── Initialization / teardown (legacy render + unmount) ───────────────────
 
   useEffect(() => {
@@ -260,13 +175,17 @@ export function ImageWorkspacePage() {
     useAnnotationStore.getState().reset();
     useViewerStore.getState().reset();
     useInferenceStore.getState().reset();
+    useAiAssistantStore.getState().reset();
     useLayoutStore.getState().reset();
     useSmartFilterStore.getState().reset();
+    useAnnotationStore.getState().setEditingEnabled(editable);
+    useViewerStore.getState().setEditable(editable);
 
     useViewerStore
       .getState()
       .registerCommitPolygonGuard(() => commitPolygonGuardRef.current());
     useLayoutStore.getState().setRouteWorkspaceMode(routeMode);
+    useLayoutStore.getState().setWorkspaceMode(routeMode);
     useProjectStore.getState().setProjectId(projectId);
     useTasksStore.getState().setProjectContext(projectId);
     useTasksStore.getState().startPolling();
@@ -310,13 +229,14 @@ export function ImageWorkspacePage() {
       clearBundleCache();
       useImageStore.getState().reset();
       useInferenceStore.getState().reset();
+      useAiAssistantStore.getState().reset();
       useAnnotationStore.getState().reset();
       useViewerStore.getState().reset();
       useLayoutStore.getState().reset();
       useProjectStore.getState().reset();
       useAnnotationStore.getState().setUnmounted(true);
     };
-  }, [projectId, routeMode, loadImages]);
+  }, [projectId, routeMode, editable, loadImages]);
 
   // ─── Keyboard shortcuts (legacy KeyboardCommandManager) ─────────────────────
 
@@ -331,39 +251,30 @@ export function ImageWorkspacePage() {
     [deleteProjectImage],
   );
 
-  useKeyboardCommands({ onFitToScreen: handleFitToScreen, onDeleteImage: handleDeleteImage });
+  useKeyboardCommands({
+    editable,
+    onFitToScreen: handleFitToScreen,
+    onDeleteImage: handleDeleteImage,
+    onUndo: manual?.onUndo,
+    onRedo: manual?.onRedo,
+    onToggleAiOperationMode: manual?.onToggleAiOperationMode,
+    onToggleAiPointLabel: manual?.onToggleAiPointLabel,
+  });
 
   // ─── Toolbar / status-bar helpers ───────────────────────────────────────────
 
   const setToolMode = useCallback(
-    (mode: 'none' | 'manual-box' | 'manual-polygon') => {
+    (mode: 'none' | 'manual-box' | 'manual-polygon' | 'point') => {
       useViewerStore.getState().setPromptMode(mode, workspaceMode);
     },
     [workspaceMode],
   );
 
-  const handleDeleteFocusedAnnotation = useCallback(() => {
-    const focused = useViewerStore.getState().focusedAnnotationId;
-    if (!focused) {
-      toast(t('select_annotation_first'), 'info');
-      return;
-    }
-    useAnnotationStore.getState().deleteAnnotation(focused);
-  }, [t]);
-
-  const handleClearPrompts = useCallback(() => {
-    useViewerStore.getState().clearPrompts();
-    toast(t('prompts_cleared'));
-  }, [t]);
-
-  const handleAutosaveToggle = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const store = useAnnotationStore.getState();
-      store.setAutosaveEnabled(event.target.checked);
-      if (event.target.checked) store.triggerAutosave();
-    },
-    [],
-  );
+  const guardedNavigate = useCallback(async (target: string) => {
+    if (!useViewerStore.getState().commitPendingManualPolygon()) return;
+    if (!(await useAnnotationStore.getState().prepareForNavigation())) return;
+    navigate(target);
+  }, [navigate]);
 
 
   // ─── Derived display strings ────────────────────────────────────────────────
@@ -378,11 +289,7 @@ export function ImageWorkspacePage() {
       ? t('mode_manual_box')
       : promptMode === 'manual-polygon'
         ? t('mode_manual_polygon')
-        : promptMode === 'box'
-          ? boxPromptLabel === 0
-            ? t('negative_box_tool')
-            : t('positive_box_tool')
-          : t('mode_select_edit');
+        : t('mode_select_edit');
 
   const imageStatusText = selectedImagePath
     ? `${selectedImagePath} | ${promptModeText}`
@@ -401,19 +308,6 @@ export function ImageWorkspacePage() {
 
   const saveStatusColor =
     saveStatus === 'failed' ? '#ef4444' : saveStatus === 'saved' ? '#10b981' : 'text.secondary';
-
-  const floatingToolSx = (active: boolean) => ({
-    minWidth: 0,
-    width: 40,
-    height: 40,
-    borderRadius: '20px',
-    fontSize: 11,
-    fontWeight: 800,
-    bgcolor: active ? 'action.selected' : 'transparent',
-    border: '1px solid',
-    borderColor: active ? 'primary.main' : 'transparent',
-    color: active ? 'primary.main' : 'text.primary',
-  });
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -437,11 +331,11 @@ export function ImageWorkspacePage() {
         <Box
           role="button"
           tabIndex={0}
-          onClick={() => navigate('/')}
+          onClick={() => void guardedNavigate('/')}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              navigate('/');
+              void guardedNavigate('/');
             }
           }}
           title={t('back_to_projects')}
@@ -513,27 +407,7 @@ export function ImageWorkspacePage() {
       </Box>
 
       {/* 2. Top operation bar (mode switch / review flow / dashboard+export) */}
-      <WorkspaceToolbar projectId={projectId} onOpenDataCleaning={() => setDataCleaningOpen(true)} />
-
-      {/* 2b. Auto-annotate (inference) panel — compact single row: the
-             inference-settings summary button plus the execution actions. */}
-      {workspaceMode === 'auto' && (
-        <Box
-          sx={{
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            px: 3,
-            py: 0.75,
-            zIndex: 89,
-            borderBottom: '1px solid',
-            borderColor: 'divider',
-            bgcolor: 'background.paper',
-          }}
-        >
-          <AutoAnnotatePanel />
-        </Box>
-      )}
+      <WorkspaceToolbar mode={mode} modePanel={modePanel} projectId={projectId} />
 
       {/* 3. Task progress bar (shadow row) */}
       <TaskProgressBar />
@@ -614,22 +488,26 @@ export function ImageWorkspacePage() {
 
         {/* Center column: canvas + floating tools */}
         <Box sx={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0, bgcolor: canvasBg }}>
-          <Box sx={{ flex: 1, position: 'relative' }} onMouseDownCapture={onViewerMouseDownCapture}>
+          <Box sx={{ flex: 1, position: 'relative' }} onMouseDownCapture={manual?.onViewerMouseDownCapture}>
             <ImageViewer
+              editable={editable}
               ref={viewerRef}
               tileInfo={tileInfo}
               previewInfo={previewInfo}
-              annotations={visibleAnnotations}
+              annotations={viewerAnnotations}
               prompts={currentPrompts}
               promptMode={promptMode}
-              boxPromptLabel={boxPromptLabel}
+              pointPromptLabel={manual?.pointPromptLabel ?? 1}
               focusedAnnotationId={focusedAnnotationId}
+              highlightedAnnotationIds={highlightedAnnotationIds}
               options={viewerOptions}
-              onPromptAdded={handlePromptAdded}
+              onPromptAdded={manual?.onPromptAdded}
               onAnnotationSelected={handleAnnotationSelected}
-              onAnnotationEditStart={handleAnnotationEditStart}
-              onAnnotationUpdated={handleAnnotationUpdated}
-              onAnnotationCreated={handleAnnotationCreated}
+              onAnnotationEditStart={manual?.onAnnotationEditStart}
+              onAnnotationUpdated={manual?.onAnnotationUpdated}
+              onAnnotationCreated={manual?.onAnnotationCreated}
+              onInteractionComplete={manual?.onInteractionComplete}
+              onCanvasContextMenu={manual?.onCanvasContextMenu}
             />
 
             {(!selectedImageId || isImageLoading) && (
@@ -658,104 +536,31 @@ export function ImageWorkspacePage() {
               </Box>
             )}
 
-            {/* Floating annotation toolbar (legacy canvas hover toolbar) */}
-            <Paper
-              elevation={4}
-              sx={{
-                position: 'absolute',
-                top: 20,
-                left: '50%',
-                transform: 'translateX(-50%)',
-                height: 50,
-                borderRadius: '25px',
-                display: 'flex',
-                alignItems: 'center',
-                px: 1,
-                gap: 0.5,
-                zIndex: 100,
-              }}
-            >
-              <Typography sx={{ fontSize: 10, fontWeight: 800, color: 'text.secondary', px: 0.5 }}>
-                {t('toolbar_annotate')}
-              </Typography>
-              <Tooltip title={t('tool_pointer_title')}>
-                <IconButton size="small" onClick={() => setToolMode('none')} aria-label={t('tool_pointer_title')} aria-pressed={promptMode === 'none'} sx={floatingToolSx(promptMode === 'none')}>
-                  <NearMeIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={t('tool_manual_box_title')}>
-                <IconButton size="small" onClick={() => setToolMode('manual-box')} aria-label={t('tool_manual_box_title')} aria-pressed={promptMode === 'manual-box'} sx={floatingToolSx(promptMode === 'manual-box')}>
-                  <CropSquareIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={t('tool_manual_polygon_title')}>
-                <IconButton size="small" onClick={() => setToolMode('manual-polygon')} aria-label={t('tool_manual_polygon_title')} aria-pressed={promptMode === 'manual-polygon'} sx={floatingToolSx(promptMode === 'manual-polygon')}>
-                  <PolylineIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
-              <Tooltip title={t('tool_undo_title')}>
-                <span>
-                  <IconButton size="small" disabled={!canUndo} onClick={() => useAnnotationStore.getState().undo()} aria-label={t('tool_undo_title')} sx={floatingToolSx(false)}>
-                    <UndoIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title={t('tool_redo_title')}>
-                <span>
-                  <IconButton size="small" disabled={!canRedo} onClick={() => useAnnotationStore.getState().redo()} aria-label={t('tool_redo_title')} sx={floatingToolSx(false)}>
-                    <RedoIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title={t('tool_delete_ann_title')}>
-                <IconButton size="small" onClick={handleDeleteFocusedAnnotation} aria-label={t('tool_delete_ann_title')} sx={{ ...floatingToolSx(false), color: '#ef4444', opacity: focusedAnnotationId ? 1 : 0.45 }}>
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              {/* SAM box-exemplar tools are auto-mode only (legacy .ws-auto-only) */}
-              {!isReviewMode && (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
-                  <Typography sx={{ fontSize: 10, fontWeight: 800, color: 'text.secondary', px: 0.5 }}>
-                    {t('toolbar_sam')}
-                  </Typography>
-                  <Tooltip title={t('positive_box_tool')}>
-                    <Button
-                      size="small"
-                      onClick={() => useViewerStore.getState().setBoxPromptLabel(1)}
-                      aria-pressed={promptMode === 'box' && boxPromptLabel === 1}
-                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 1), color: '#16a34a', width: 'auto', px: 1.25, gap: 0.5 }}
-                    >
-                      <AddBoxIcon fontSize="small" />
-                      {t('tool_box_positive')}
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title={t('negative_box_tool')}>
-                    <Button
-                      size="small"
-                      onClick={() => useViewerStore.getState().setBoxPromptLabel(0)}
-                      aria-pressed={promptMode === 'box' && boxPromptLabel === 0}
-                      sx={{ ...floatingToolSx(promptMode === 'box' && boxPromptLabel === 0), color: '#dc2626', width: 'auto', px: 1.25, gap: 0.5 }}
-                    >
-                      <IndeterminateCheckBoxIcon fontSize="small" />
-                      {t('tool_box_negative')}
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title={t('tool_clear_prompts_title')}>
-                    <IconButton size="small" onClick={handleClearPrompts} aria-label={t('tool_clear_prompts_title')} sx={floatingToolSx(false)}>
-                      <ClearIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-              )}
-              <Box sx={{ width: 1, height: 24, bgcolor: 'divider', mx: 0.5 }} />
-              <Tooltip title={t('tool_fit_title')}>
-                <IconButton size="small" onClick={handleFitToScreen} aria-label={t('tool_fit_title')} sx={floatingToolSx(false)}>
-                  <ZoomOutMapIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Paper>
+            {manual ? (
+              <ManualCanvasToolbar
+                promptMode={promptMode}
+                onSetToolMode={setToolMode}
+                onFitToScreen={handleFitToScreen}
+                aiEnabled={manual.aiEnabled}
+                aiPredicting={manual.aiPredicting}
+                aiPromptCount={manual.aiPromptCount}
+                aiOperationMode={manual.aiOperationMode}
+                aiCanUndoPrompt={manual.aiCanUndoPrompt}
+                aiCanRedoPrompt={manual.aiCanRedoPrompt}
+                pointPromptLabel={manual.pointPromptLabel}
+                canUndo={manual.canUndo}
+                canRedo={manual.canRedo}
+                hasFocusedAnnotation={Boolean(focusedAnnotationId)}
+                onSelectAiPointLabel={manual.onSelectAiPointLabel}
+                onSetAiOperationMode={manual.onSetAiOperationMode}
+                onClearAiPrompts={manual.onClearAiPrompts}
+                onUndo={manual.onUndo}
+                onRedo={manual.onRedo}
+                onDeleteFocusedAnnotation={manual.onDeleteFocusedAnnotation}
+              />
+            ) : (
+              <AutoCanvasToolbar promptMode={promptMode} onSetToolMode={setToolMode} onFitToScreen={handleFitToScreen} />
+            )}
 
             {/* Panel re-show toggles (legacy LayoutController edge buttons) */}
             <Tooltip title={t('collapse_expand')}>
@@ -837,13 +642,6 @@ export function ImageWorkspacePage() {
               }
               label={<Typography sx={{ fontSize: 11 }}>{t('show_masks')}</Typography>}
             />
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={
-                <Checkbox size="small" checked={autosaveEnabled} onChange={handleAutosaveToggle} />
-              }
-              label={<Typography sx={{ fontSize: 11 }}>{t('autosave_label')}</Typography>}
-            />
             <Typography sx={{ fontWeight: 700, color: saveStatusColor, minWidth: 72, fontSize: 11 }}>
               {saveStatusText}
             </Typography>
@@ -918,7 +716,7 @@ export function ImageWorkspacePage() {
                   </IconButton>
                 </Box>
               </Box>
-              <AnnotationList collapsed={annotationsSectionCollapsed} />
+              <AnnotationList collapsed={annotationsSectionCollapsed} editable={editable} />
             </Box>
           </Box>
         )}
@@ -928,7 +726,8 @@ export function ImageWorkspacePage() {
       <BatchConfigModal />
       <BatchResultModal />
       <BackendErrorModal />
-      <DataCleaningDialog open={dataCleaningOpen} onClose={() => setDataCleaningOpen(false)} />
+      <UnsavedChangesDialog />
+      {manual?.overlays}
     </Box>
   );
 }

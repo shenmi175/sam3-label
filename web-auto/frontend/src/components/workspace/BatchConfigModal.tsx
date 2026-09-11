@@ -22,11 +22,14 @@ import { useInferenceStore, type BatchConfigResult } from '../../stores/workspac
 import { toast } from '../../utils/notify';
 
 type ScopeMode = BatchConfigResult['scope_mode'];
+type ScopeSelection = ScopeMode | 'append';
 
 const SCOPE_OPTIONS: ScopeMode[] = ['all', 'unlabeled', 'class_related', 'class_related_unlabeled'];
 
-function scopeLabel(mode: ScopeMode, t: (key: string) => string): string {
+function scopeLabel(mode: ScopeSelection, t: (key: string) => string): string {
   switch (mode) {
+    case 'append':
+      return t('batch_scope_append');
     case 'all':
       return t('batch_scope_all');
     case 'unlabeled':
@@ -52,33 +55,45 @@ export function BatchConfigModal() {
   const threshold = useSettingsStore((s) => s.threshold);
   const batchSize = useSettingsStore((s) => s.batchSize);
 
-  const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
+  const [scopeSelection, setScopeSelection] = useState<ScopeSelection>('all');
+  const [selectedClasses, setSelectedClasses] = useState<Set<string>>(new Set());
   const [related, setRelated] = useState<Set<string>>(new Set());
+  const [saveAiFeatures, setSaveAiFeatures] = useState(false);
 
   // Reset local state whenever a new request opens (legacy re-rendered the
   // modal content on every open with the default classes checked).
   useEffect(() => {
     if (request) {
-      setScopeMode('all');
+      setScopeSelection('all');
+      setSelectedClasses(new Set(request.classes));
       setRelated(new Set(request.classes));
+      setSaveAiFeatures(false);
     }
   }, [request]);
 
-  const needRelated = scopeMode === 'class_related' || scopeMode === 'class_related_unlabeled';
+  const needRelated = scopeSelection === 'class_related' || scopeSelection === 'class_related_unlabeled';
 
-  const classesToShow = useMemo(() => request?.classes || [], [request]);
+  const classesToShow = useMemo(() => projectClasses, [projectClasses]);
 
   const confirm = () => {
     if (!request) return;
+    const classes = projectClasses.filter((cls) => selectedClasses.has(cls));
+    if (classes.length === 0) {
+      toast(t('batch_classes_required'), 'error');
+      return;
+    }
     if (needRelated && related.size === 0) {
       toast(t('batch_related_required'), 'error');
       return;
     }
     useInferenceStore.getState().resolveBatchConfig({
-      scope_mode: scopeMode,
+      classes,
+      scope_mode: scopeSelection === 'append' ? 'all' : scopeSelection,
+      merge_mode: scopeSelection === 'append' ? 'append' : 'replace',
       related_classes: Array.from(related),
       image_ids: [],
       retry_image_ids: [],
+      save_ai_features: request.supportsAiFeatures ? saveAiFeatures : false,
     });
   };
 
@@ -100,7 +115,28 @@ export function BatchConfigModal() {
           <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 1.25 }}>{t('batch_classes_to_infer')}</Typography>
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
             {classesToShow.length ? (
-              classesToShow.map((cls) => <Chip key={cls} label={cls} size="small" sx={{ fontSize: 12 }} />)
+              classesToShow.map((cls) => {
+                const selected = selectedClasses.has(cls);
+                return (
+                  <Chip
+                    key={cls}
+                    label={cls}
+                    size="small"
+                    color={selected ? 'primary' : 'default'}
+                    variant={selected ? 'filled' : 'outlined'}
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setSelectedClasses((previous) => {
+                        const next = new Set(previous);
+                        if (next.has(cls)) next.delete(cls);
+                        else next.add(cls);
+                        return next;
+                      });
+                    }}
+                    sx={{ fontSize: 12 }}
+                  />
+                );
+              })
             ) : (
               <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>{t('batch_no_classes')}</Typography>
             )}
@@ -112,8 +148,8 @@ export function BatchConfigModal() {
           select
           label={t('batch_scope_title')}
           size="small"
-          value={scopeMode}
-          onChange={(e) => setScopeMode(e.target.value as ScopeMode)}
+          value={scopeSelection}
+          onChange={(e) => setScopeSelection(e.target.value as ScopeSelection)}
           fullWidth
         >
           {SCOPE_OPTIONS.map((mode) => (
@@ -121,7 +157,18 @@ export function BatchConfigModal() {
               {scopeLabel(mode, t)}
             </MenuItem>
           ))}
+          {request?.supportsAppendMode ? (
+            <MenuItem value="append" sx={{ fontSize: 13 }}>
+              {scopeLabel('append', t)}
+            </MenuItem>
+          ) : null}
         </TextField>
+
+        {scopeSelection === 'append' ? (
+          <Typography sx={{ mt: -1, fontSize: 11, color: 'warning.main' }}>
+            {t('batch_append_duplicate_hint')}
+          </Typography>
+        ) : null}
 
         {/* Related classes (only for class_related scopes) */}
         {needRelated ? (
@@ -163,6 +210,21 @@ export function BatchConfigModal() {
               ))}
             </Box>
             <Typography sx={{ mt: 1, fontSize: 11, color: 'text.secondary' }}>{t('batch_related_hint')}</Typography>
+          </Box>
+        ) : null}
+
+        {request?.supportsAiFeatures ? (
+          <Box sx={{ p: 1.5, borderRadius: 3, border: '1px solid', borderColor: 'divider' }}>
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Checkbox size="small" checked={saveAiFeatures} onChange={(event) => setSaveAiFeatures(event.target.checked)} />}
+              label={<Typography sx={{ fontSize: 12, fontWeight: 700 }}>{t('batch_save_ai_features')}</Typography>}
+            />
+            {saveAiFeatures ? (
+              <Typography sx={{ mt: 0.5, ml: 4, fontSize: 11, color: 'text.secondary' }}>
+                {t('batch_save_ai_features_hint')}
+              </Typography>
+            ) : null}
           </Box>
         ) : null}
 

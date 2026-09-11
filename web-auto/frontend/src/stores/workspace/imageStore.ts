@@ -52,12 +52,9 @@ export const useImageStore = create<ImageStore>((set, get) => ({
     if (!viewer.commitPendingManualPolygon()) return false;
 
     const annotationStore = useAnnotationStore.getState();
-    if (annotationStore.dirty) {
-      await annotationStore.flushSave('before-switch');
-      if (useAnnotationStore.getState().dirty) {
-        toast(i18n.t('anns_not_saved_switch'), 'warning');
-        return false;
-      }
+    if (!(await annotationStore.prepareForNavigation())) {
+      if (useAnnotationStore.getState().dirty) toast(i18n.t('anns_not_saved_switch'), 'warning');
+      return false;
     }
 
     const seq = get().imageLoadSeq + 1;
@@ -132,6 +129,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
         signal: controller.signal,
         includeAnnotations: true,
         includePreview: true,
+        forceRefresh: true,
       });
       if (seq !== get().imageLoadSeq || get().selectedImageId !== selectedImageId) return false;
       if (!bundle) return false;

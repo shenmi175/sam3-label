@@ -12,10 +12,6 @@ function clampBatchSize(value: unknown): number {
   return Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : 1;
 }
 
-function normalizeContourMode(value: unknown): 'split' | 'merged' {
-  return String(value || '').trim().toLowerCase() === 'merged' ? 'merged' : 'split';
-}
-
 export type ThemeMode = 'light' | 'dark';
 
 interface SettingsState {
@@ -23,7 +19,6 @@ interface SettingsState {
   locateApiUrl: string;
   defaultBackend: string;
   scoreDefault: number;
-  contourMode: 'split' | 'merged';
   themeMode: ThemeMode;
   language: string;
   threshold: number;
@@ -38,7 +33,6 @@ export const useSettingsStore = create<SettingsState>((set, getState) => ({
   locateApiUrl: localStorage.getItem('locateApiUrl') || 'http://127.0.0.1:8004',
   defaultBackend: localStorage.getItem('defaultBackend') || 'sam3',
   scoreDefault: clamp01(localStorage.getItem('scoreDefault')),
-  contourMode: normalizeContourMode(localStorage.getItem('contourMode')),
   themeMode: (localStorage.getItem('theme') as ThemeMode) || 'light',
   language: localStorage.getItem('language') || 'zh',
   threshold: clamp01(localStorage.getItem('threshold')),
@@ -49,7 +43,6 @@ export const useSettingsStore = create<SettingsState>((set, getState) => ({
     let v = value;
     if (key === 'threshold' || key === 'scoreDefault') v = clamp01(value) as never;
     else if (key === 'batchSize') v = clampBatchSize(value) as never;
-    else if (key === 'contourMode') v = normalizeContourMode(value) as never;
 
     const lsKey = key === 'themeMode' ? 'theme' : key;
     localStorage.setItem(lsKey, String(v));

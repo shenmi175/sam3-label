@@ -86,6 +86,15 @@ export function getProject(id: string, includeImages = false) {
   return get<{ project: ProjectInfo }>(`/projects/${encodeURIComponent(id)}?include_images=${includeImages}`);
 }
 
+/** PATCH /api/projects/{id} */
+export function updateProject(id: string, data: { name: string }) {
+  return request<{ project: ProjectInfo }>(
+    'PATCH',
+    `/projects/${encodeURIComponent(id)}`,
+    data,
+  );
+}
+
 /** POST /api/projects/open */
 export function createProject(data: CreateProjectPayload) {
   return post<{ project: ProjectInfo }>('/projects/open', data);

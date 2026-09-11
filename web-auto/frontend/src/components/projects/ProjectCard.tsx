@@ -1,16 +1,16 @@
 import { useTranslation } from 'react-i18next';
-import { Box, Button, LinearProgress, Paper, Typography } from '@mui/material';
+import { Box, Button, IconButton, LinearProgress, Paper, Tooltip, Typography } from '@mui/material';
+import SettingsIcon from '@mui/icons-material/Settings';
 import type { ProjectInfo } from '../../api/projects';
 import { safeFormatDate } from './utils';
 
 interface ProjectCardProps {
   project: ProjectInfo;
   onOpen: (id: string, projectType: string) => void;
-  onAddData: (imageDir: string, projectId: string) => void;
-  onDelete: (project: ProjectInfo) => void;
+  onManage: (id: string) => void;
 }
 
-export function ProjectCard({ project, onOpen, onAddData, onDelete }: ProjectCardProps) {
+export function ProjectCard({ project, onOpen, onManage }: ProjectCardProps) {
   const { t } = useTranslation();
 
   const projectType = String(project.project_type || 'image');
@@ -52,10 +52,11 @@ export function ProjectCard({ project, onOpen, onAddData, onDelete }: ProjectCar
           <Button onClick={() => onOpen(project.id, projectType)} sx={{ fontWeight: 600 }}>
             {t('open_btn')}
           </Button>
-          <Button onClick={() => onAddData(sourcePath, project.id)}>{t('add_data_btn')}</Button>
-          <Button color="error" onClick={() => onDelete(project)}>
-            {t('delete_btn')}
-          </Button>
+          <Tooltip title={t('project_manage')}>
+            <IconButton onClick={() => onManage(project.id)} aria-label={t('project_manage')}>
+              <SettingsIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </Box>
       </Box>
 

@@ -47,6 +47,25 @@ class OpsClient:
             raise RuntimeError(f'ops-api HTTP {response.status_code}: {detail or data}')
         return data if isinstance(data, dict) else {}
 
+    def stream(self, path: str, *, timeout: float = 120.0) -> requests.Response:
+        if not self.base_url:
+            raise RuntimeError('ops-api is not configured')
+        url = self.base_url + '/' + path.lstrip('/')
+        headers = self.headers()
+        headers['Accept'] = 'application/zip'
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        except requests.RequestException as exc:
+            raise RuntimeError(f'ops-api request failed: {exc}') from exc
+        if not response.ok:
+            try:
+                data = response.json()
+            except Exception:
+                data = {'detail': response.text[:400]}
+            response.close()
+            raise RuntimeError(f"ops-api HTTP {response.status_code}: {data.get('detail') or data}")
+        return response
+
 
 class SapiensClient:
     def __init__(self, base_url: str, token: str = ''):
@@ -131,6 +150,5 @@ def service_management_unavailable(error: str) -> dict[str, Any]:
             {'service': 'sam3-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart sam3-api'},
             {'service': 'locate-anything-api', 'status': 'unknown', 'manage_command': './deploy.sh services restart locate-anything-api'},
             {'service': 'sapiens-api', 'status': 'unknown', 'manage_command': './deploy.sh sapiens enable'},
-            {'service': 'caddy', 'status': 'unknown', 'manage_command': './deploy.sh install --proxy'},
         ],
     }

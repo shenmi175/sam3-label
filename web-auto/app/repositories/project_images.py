@@ -3,6 +3,7 @@ from __future__ import annotations
 from threading import RLock
 from typing import Any, Callable
 
+from app.annotations import normalize_source
 from app.utils import norm_text
 
 
@@ -156,6 +157,10 @@ class ProjectImageRepository:
                     'DELETE FROM image_class_index WHERE project_id = ? AND image_id = ?',
                     (str(project_id), str(image_id)),
                 )
+                conn.execute(
+                    'DELETE FROM image_source_class_index WHERE project_id = ? AND image_id = ?',
+                    (str(project_id), str(image_id)),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -170,6 +175,7 @@ class ProjectImageRepository:
             'image_annotations',
             'image_annotation_stats',
             'image_class_index',
+            'image_source_class_index',
         ]
         with self._db_lock:
             conn = self._db_connect()
@@ -195,6 +201,7 @@ class ProjectImageRepository:
                 conn.execute('DELETE FROM image_annotations WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_annotation_stats WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM image_class_index WHERE project_id = ?', (str(project_id),))
+                conn.execute('DELETE FROM image_source_class_index WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM smart_filter_snapshots WHERE project_id = ?', (str(project_id),))
                 conn.execute('DELETE FROM smart_filter_runs WHERE project_id = ?', (str(project_id),))
                 conn.commit()
@@ -237,26 +244,45 @@ class ProjectImageRepository:
         *,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> tuple[str, list[Any], str]:
         class_norm = norm_text(class_name)
+        source_norm = normalize_source(source_model).source_id if str(source_model or '').strip() else ''
         status_norm = cls.normalize_status(status) if str(status or '').strip().lower() in {'labeled', 'unlabeled'} else ''
         join_sql = ''
         where_parts = ['pi.project_id = ?']
         params: list[Any] = [str(project_id)]
-        if class_norm:
+        if class_norm and not source_norm:
             join_sql = '''
             INNER JOIN image_class_index ci
             ON ci.project_id = pi.project_id AND ci.image_id = pi.image_id
             '''
             where_parts.append('ci.class_name_norm = ?')
             params.append(class_norm)
+        if source_norm:
+            source_where = [
+                'sci.project_id = pi.project_id',
+                'sci.image_id = pi.image_id',
+                'sci.source_model_norm = ?',
+            ]
+            params.append(source_norm)
+            if class_norm:
+                source_where.append('sci.class_name_norm = ?')
+                params.append(class_norm)
+            where_parts.append(
+                'EXISTS (SELECT 1 FROM image_source_class_index sci WHERE '
+                + ' AND '.join(source_where)
+                + ')'
+            )
         if status_norm:
             where_parts.append('pi.status = ?')
             params.append(status_norm)
         return join_sql, params, ' AND '.join(where_parts)
 
-    def count(self, project_id: str, *, status: str = '', class_name: str = '') -> int:
-        join_sql, params, where_sql = self.filter_query(project_id, status=status, class_name=class_name)
+    def count(self, project_id: str, *, status: str = '', class_name: str = '', source_model: str = '') -> int:
+        join_sql, params, where_sql = self.filter_query(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        )
         with self._db_lock:
             conn = self._db_connect()
             try:
@@ -280,13 +306,16 @@ class ProjectImageRepository:
         *,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> int:
         if not str(image_id or '').strip():
             return -1
         selected_index = self.index(project_id, image_id)
         if selected_index < 0:
             return -1
-        join_sql, params, where_sql = self.filter_query(project_id, status=status, class_name=class_name)
+        join_sql, params, where_sql = self.filter_query(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        )
         params = list(params) + [int(selected_index)]
         with self._db_lock:
             conn = self._db_connect()
@@ -324,8 +353,11 @@ class ProjectImageRepository:
         limit: int,
         status: str = '',
         class_name: str = '',
+        source_model: str = '',
     ) -> list[dict[str, Any]]:
-        join_sql, params, where_sql = self.filter_query(project_id, status=status, class_name=class_name)
+        join_sql, params, where_sql = self.filter_query(
+            project_id, status=status, class_name=class_name, source_model=source_model,
+        )
         params = list(params) + [int(limit), int(offset)]
         with self._db_lock:
             conn = self._db_connect()

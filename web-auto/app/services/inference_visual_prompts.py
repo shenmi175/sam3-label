@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.annotation_geometry import (
+from app.annotations.operations import (
     _ann_bbox,
     _bbox_center,
     _bbox_iou,

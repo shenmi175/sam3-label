@@ -8,6 +8,13 @@ import json
 import requests
 
 
+class Sam3ApiError(RuntimeError):
+    def __init__(self, status_code: int, detail: Any):
+        self.status_code = int(status_code)
+        self.detail = detail
+        super().__init__(f'API HTTP error {self.status_code}: {detail}')
+
+
 class Sam3Client:
     def __init__(self, timeout_sec: float = 120.0):
         self.timeout_sec = timeout_sec
@@ -22,8 +29,6 @@ class Sam3Client:
         url = url.rstrip('/')
         if url.lower().endswith('/v1/infer'):
             return url[:-len('/v1/infer')]
-        if url.lower().endswith('/v1/semantic/infer'):
-            return url[:-len('/v1/semantic/infer')]
         if url.lower().endswith('/health'):
             return url[:-len('/health')]
         return url
@@ -68,7 +73,7 @@ class Sam3Client:
             raise RuntimeError(f'API response is not JSON: HTTP {resp.status_code} {resp.text[:240]}')
         if not resp.ok:
             err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
+            raise Sam3ApiError(resp.status_code, err or data)
         return data if isinstance(data, dict) else {}
 
     def _post_json(self, url: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
@@ -84,7 +89,7 @@ class Sam3Client:
             raise RuntimeError(f'API response is not JSON: HTTP {resp.status_code} {resp.text[:240]}')
         if not resp.ok:
             err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
+            raise Sam3ApiError(resp.status_code, err or data)
         return data if isinstance(data, dict) else {}
 
     def health(self, base_url: str) -> dict[str, Any]:
@@ -104,7 +109,6 @@ class Sam3Client:
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
-        contour_mode: str = 'split',
     ) -> dict[str, Any]:
         infer_url = self._infer_url(api_base_url)
         image_file = Path(image_path)
@@ -117,8 +121,7 @@ class Sam3Client:
             'include_mask_png': 'true' if include_mask_png else 'false',
             'max_detections': str(int(max_detections)),
         }
-        if str(contour_mode or '').strip().lower() == 'merged':
-            payload['contour_mode'] = 'merged'
+        payload['contour_mode'] = 'merged'
         if prompt:
             payload['prompt'] = prompt
 
@@ -146,7 +149,7 @@ class Sam3Client:
 
         if not resp.ok:
             err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
+            raise Sam3ApiError(resp.status_code, err or data)
 
         return data
 
@@ -164,7 +167,8 @@ class Sam3Client:
         point_box_size: float | None = None,
         include_mask_png: bool = True,
         max_detections: int = 200,
-        contour_mode: str = 'split',
+        save_ai_features: bool = False,
+        feature_root: str = '',
     ) -> dict[str, Any]:
         infer_url = self._api_root(api_base_url) + '/v1/infer_batch'
         clean_paths = [Path(p) for p in (image_paths or []) if str(p).strip()]
@@ -180,8 +184,10 @@ class Sam3Client:
             'include_mask_png': 'true' if include_mask_png else 'false',
             'max_detections': str(int(max_detections)),
         }
-        if str(contour_mode or '').strip().lower() == 'merged':
-            payload['contour_mode'] = 'merged'
+        payload['contour_mode'] = 'merged'
+        payload['save_ai_features'] = 'true' if save_ai_features else 'false'
+        if save_ai_features:
+            payload['feature_root'] = str(feature_root or '')
         if prompt:
             payload['prompt'] = prompt
         if payload['mode'] == 'points':
@@ -218,6 +224,93 @@ class Sam3Client:
 
         if not resp.ok:
             err = data.get('detail') if isinstance(data, dict) else None
-            raise RuntimeError(f'API HTTP error {resp.status_code}: {err or data}')
+            raise Sam3ApiError(resp.status_code, err or data)
 
+        return data if isinstance(data, dict) else {}
+
+    def wait_feature_writes(
+        self,
+        *,
+        api_base_url: str,
+        write_ids: list[str],
+    ) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/features/writes/wait',
+            {'write_ids': [str(item) for item in write_ids if str(item).strip()]},
+            timeout=max(self.timeout_sec * 4.0, 120.0),
+        )
+
+    def open_interactive_session(
+        self,
+        *,
+        api_base_url: str,
+        image_path: str,
+        project_id: str,
+        image_id: str,
+        feature_root: str,
+        session_id: str = '',
+        initial_polygons: list | None = None,
+        keep_session: bool = True,
+        persist_feature: bool = False,
+    ) -> dict[str, Any]:
+        url = self._api_root(api_base_url) + '/v1/interactive/session/open'
+        image_file = Path(image_path)
+        payload = {
+            'project_id': project_id,
+            'image_id': image_id,
+            'feature_root': feature_root,
+            'session_id': session_id,
+            'initial_polygons': json.dumps(initial_polygons or []),
+            'keep_session': 'true' if keep_session else 'false',
+            'persist_feature': 'true' if persist_feature else 'false',
+        }
+        with image_file.open('rb') as handle:
+            resp = requests.post(
+                url,
+                data=payload,
+                files={'file': (image_file.name, handle, 'application/octet-stream')},
+                headers=self._auth_headers(),
+                timeout=max(self.timeout_sec * 2.0, 240.0),
+            )
+        return self._response_json(resp)
+
+    def interactive_predict(self, api_base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_json(self._api_root(api_base_url) + '/v1/interactive/predict', payload)
+
+    def interactive_reset(self, api_base_url: str, session_id: str) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/interactive/reset', {'session_id': session_id}
+        )
+
+    def interactive_prompt_undo(self, api_base_url: str, session_id: str) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/interactive/prompts/undo',
+            {'session_id': session_id},
+        )
+
+    def interactive_prompt_redo(self, api_base_url: str, session_id: str) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/interactive/prompts/redo',
+            {'session_id': session_id},
+        )
+
+    def interactive_close(self, api_base_url: str, session_id: str) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/interactive/close', {'session_id': session_id}
+        )
+
+    def interactive_clear_project(self, api_base_url: str, project_id: str) -> dict[str, Any]:
+        return self._post_json(
+            self._api_root(api_base_url) + '/v1/interactive/project/clear', {'project_id': project_id}
+        )
+
+    @staticmethod
+    def _response_json(resp: requests.Response) -> dict[str, Any]:
+        try:
+            data = resp.json()
+        except Exception:
+            raise RuntimeError(f'API response is not JSON: HTTP {resp.status_code} {resp.text[:240]}')
+        if not resp.ok:
+            err = data.get('detail') if isinstance(data, dict) else None
+            raise Sam3ApiError(resp.status_code, err or data)
         return data if isinstance(data, dict) else {}

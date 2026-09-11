@@ -13,6 +13,8 @@ export interface LoadBundleOptions {
   includeAnnotations?: boolean;
   includePreview?: boolean;
   includeTileInfo?: boolean;
+  /** Bypass both the local bundle cache and the browser HTTP cache. */
+  forceRefresh?: boolean;
   /** Low priority, non-enqueued background prefetch. */
   background?: boolean;
 }
@@ -47,20 +49,23 @@ export async function loadImageBundle(
   const includeAnnotations = options.includeAnnotations !== false;
   const includePreview = options.includePreview !== false;
   const includeTileInfo = Boolean(options.includeTileInfo);
+  const forceRefresh = Boolean(options.forceRefresh);
 
   const requirements = { annotations: includeAnnotations, preview: includePreview };
   const cached = bundleCache.getCachedBundle(projectId, imageId);
-  if (bundleCache.bundleSatisfies(cached, requirements)) return cached;
+  if (!forceRefresh && bundleCache.bundleSatisfies(cached, requirements)) return cached;
 
-  const promiseKey = makePromiseKey(projectId, imageId, includeAnnotations, includePreview);
-  const inflight = bundleCache.getInflightPromise(promiseKey);
+  const basePromiseKey = makePromiseKey(projectId, imageId, includeAnnotations, includePreview);
+  const promiseKey = forceRefresh ? `${basePromiseKey}:force` : basePromiseKey;
+  const inflight = forceRefresh ? undefined : bundleCache.getInflightPromise(promiseKey);
   if (inflight) return inflight;
 
+  const generation = bundleCache.getBundleGeneration(projectId, imageId);
   const promise = (async () => {
     const resp = await getImageBundle(
       projectId,
       imageId,
-      { signal: options.signal },
+      { signal: options.signal, cache: forceRefresh ? 'no-store' : undefined },
       {
         includeAnnotations,
         includePreview,
@@ -69,6 +74,9 @@ export async function loadImageBundle(
         enqueue: !options.background,
       },
     );
+    if (generation !== bundleCache.getBundleGeneration(projectId, imageId)) {
+      return bundleCache.getCachedBundle(projectId, imageId);
+    }
     const imageInfo = findImageInfo(imageId);
     bundleCache.storeBundle(
       projectId,

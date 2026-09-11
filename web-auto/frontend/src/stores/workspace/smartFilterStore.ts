@@ -6,12 +6,15 @@ import type {
   FilterOperationMode,
   FilterRun,
   FilterSpatialMode,
+  FilterTaskType,
   SmartFilterJobResult,
   SmartFilterPayload,
 } from '../../api/filters';
 import { clearBundleCache } from '../../api/bundleCache';
 import { toast } from '../../utils/notify';
 import i18n from '../../i18n';
+import { useProjectStore } from './projectStore';
+import { useImageStore } from './imageStore';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -21,6 +24,8 @@ export type FilterPreset = '' | 'dedupe' | 'canonical' | 'cleanup' | 'delete_unl
 export type FilterJobKind = 'preview' | 'apply';
 
 export interface SmartFilterConfig {
+  taskType: FilterTaskType;
+  classScopeMode: 'all' | 'selected';
   operationMode: FilterOperationMode;
   mergeMode: FilterMergeMode;
   spatialMode: FilterSpatialMode;
@@ -40,10 +45,37 @@ export interface SmartFilterConfig {
   confidenceEnabled: boolean;
   minConfidence: number;
   maxConfidence: number;
+  includeMissingConfidence: boolean;
+  ruleMatchMode: 'all' | 'any';
+  positionMatchMode: 'inside' | 'outside';
+  componentAbsAreaEnabled: boolean;
+  componentMaxAreaPx: number;
+  componentRelativeAreaEnabled: boolean;
+  componentMaxMainRatio: number;
+  componentRequireAllThresholds: boolean;
+  componentOpeningEnabled: boolean;
+  componentOpeningRadiusPx: number;
+  componentOpeningIterations: number;
+  componentGapRepairEnabled: boolean;
+  componentGapRepairMethod: 'shortest_bridge' | 'morph_close';
+  componentBridgeMaxGapPx: number;
+  componentBridgeWidthPx: number;
+  componentBridgeTopology: 'mst' | 'main_only';
+  componentClosingRadiusPx: number;
+  componentClosingIterations: number;
+  componentGapAvoidOtherInstances: boolean;
+  componentHoleFillEnabled: boolean;
+  componentHoleAbsAreaEnabled: boolean;
+  componentMaxHoleAreaPx: number;
+  componentHoleRelativeAreaEnabled: boolean;
+  componentMaxHoleMainRatio: number;
+  componentHoleRequireAllThresholds: boolean;
 }
 
-const DEFAULT_CONFIG: SmartFilterConfig = {
-  operationMode: 'merge',
+export const DEFAULT_CONFIG: SmartFilterConfig = {
+  taskType: 'remove_small_components',
+  classScopeMode: 'all',
+  operationMode: 'component_noise',
   mergeMode: 'same_class',
   spatialMode: 'instance_cover',
   areaMode: 'instance',
@@ -62,6 +94,31 @@ const DEFAULT_CONFIG: SmartFilterConfig = {
   confidenceEnabled: false,
   minConfidence: 0,
   maxConfidence: 1,
+  includeMissingConfidence: false,
+  ruleMatchMode: 'all',
+  positionMatchMode: 'inside',
+  componentAbsAreaEnabled: true,
+  componentMaxAreaPx: 128,
+  componentRelativeAreaEnabled: true,
+  componentMaxMainRatio: 0.001,
+  componentRequireAllThresholds: true,
+  componentOpeningEnabled: false,
+  componentOpeningRadiusPx: 1,
+  componentOpeningIterations: 1,
+  componentGapRepairEnabled: false,
+  componentGapRepairMethod: 'shortest_bridge',
+  componentBridgeMaxGapPx: 16,
+  componentBridgeWidthPx: 3,
+  componentBridgeTopology: 'mst',
+  componentClosingRadiusPx: 8,
+  componentClosingIterations: 1,
+  componentGapAvoidOtherInstances: true,
+  componentHoleFillEnabled: false,
+  componentHoleAbsAreaEnabled: true,
+  componentMaxHoleAreaPx: 128,
+  componentHoleRelativeAreaEnabled: true,
+  componentMaxHoleMainRatio: 0.001,
+  componentHoleRequireAllThresholds: true,
 };
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -83,6 +140,7 @@ interface SmartFilterStore {
   // Job state
   jobId: string;
   jobKind: FilterJobKind | null;
+  jobStatus: string;
   jobRunning: boolean;
   progressPct: number;
   jobMessage: string;
@@ -103,9 +161,13 @@ interface SmartFilterStore {
 
   setProjectId: (projectId: string) => void;
   updateConfig: (partial: Partial<SmartFilterConfig>) => void;
+  selectTask: (taskType: FilterTaskType) => void;
   applyPreset: (preset: Exclude<FilterPreset, ''>, classes: string[]) => void;
   startPreview: () => Promise<void>;
   startApply: () => Promise<void>;
+  pauseJob: () => Promise<void>;
+  resumeJob: () => Promise<void>;
+  cancelJob: () => Promise<void>;
   loadLatestRun: () => Promise<void>;
   rollbackLatestRun: () => Promise<void>;
   stopPolling: () => void;
@@ -121,6 +183,14 @@ function clearFilterTimer() {
   }
 }
 
+const waitForFilterControl = (milliseconds: number) => new Promise<void>((resolve) => {
+  setTimeout(resolve, milliseconds);
+});
+
+function resolveProjectId(storedProjectId: string): string {
+  return String(useProjectStore.getState().projectId || storedProjectId || '').trim();
+}
+
 /** Legacy resetPreviewState: hide apply, clear summary/token/progress. */
 function previewIdleState() {
   return {
@@ -133,50 +203,44 @@ function previewIdleState() {
   };
 }
 
-/** Legacy collectPayload — validates per operation mode and builds the body. */
-function buildPayload(projectId: string, config: SmartFilterConfig): SmartFilterPayload {
-  const {
-    operationMode, mergeMode, spatialMode, areaMode, coverageThreshold,
-    canonicalClass, sourceClasses, ruleClasses,
-    smallTargetEnabled, maxAreaRatio, instanceCountEnabled, minInstances, maxInstances,
-    positionEnabled, centerXHalfWidth, centerYHalfHeight,
-    confidenceEnabled, minConfidence, maxConfidence,
-  } = config;
+export function taskOperation(taskType: FilterTaskType): FilterOperationMode {
+  if (['remove_small_components', 'remove_edge_spurs', 'shortest_bridge', 'morph_close', 'fill_small_holes'].includes(taskType)) return 'component_noise';
+  if (taskType === 'deduplicate_same_class' || taskType === 'normalize_classes') return 'merge';
+  if (taskType === 'delete_unlabeled_images') return 'delete_unlabeled';
+  return 'rule';
+}
 
-  if (operationMode === 'merge' && mergeMode === 'canonical_class' && sourceClasses.length === 0) {
-    throw new Error(i18n.t('sf_need_source_class'));
-  }
-  if (operationMode === 'rule' && ruleClasses.length === 0) {
-    throw new Error(i18n.t('sf_need_rule_classes'));
-  }
-  if (
-    operationMode === 'rule'
-    && !(smallTargetEnabled || instanceCountEnabled || positionEnabled || confidenceEnabled)
-  ) {
-    throw new Error(i18n.t('sf_need_one_rule'));
-  }
+/** Build a strict v2 body containing parameters for exactly one task. */
+export function buildPayload(projectId: string, config: SmartFilterConfig): SmartFilterPayload {
+  const task = config.taskType;
+  if (config.classScopeMode === 'selected' && config.ruleClasses.length === 0) throw new Error(i18n.t('sf_need_rule_classes'));
+  if (task === 'delete_by_box_count' && config.maxInstances > 0 && config.maxInstances < config.minInstances) throw new Error(i18n.t('sf_invalid_instance_range'));
+  if (task === 'remove_confidence_range' && config.maxConfidence < config.minConfidence) throw new Error(i18n.t('sf_invalid_confidence_range'));
+  if (task === 'remove_small_components' && !(config.componentAbsAreaEnabled || config.componentRelativeAreaEnabled)) throw new Error(i18n.t('sf_component_need_operation'));
+  if (task === 'fill_small_holes' && !(config.componentHoleAbsAreaEnabled || config.componentHoleRelativeAreaEnabled)) throw new Error(i18n.t('sf_hole_need_threshold'));
+  if (task === 'normalize_classes' && !config.canonicalClass.trim()) throw new Error(i18n.t('sf_need_target_class'));
 
+  let params: SmartFilterPayload['params'];
+  switch (task) {
+    case 'remove_small_components': params = { absolute_area_enabled: config.componentAbsAreaEnabled, max_area_px: config.componentMaxAreaPx, relative_area_enabled: config.componentRelativeAreaEnabled, max_main_ratio: config.componentMaxMainRatio, threshold_mode: config.componentRequireAllThresholds ? 'and' : 'or' }; break;
+    case 'remove_edge_spurs': params = { radius_px: config.componentOpeningRadiusPx, iterations: config.componentOpeningIterations }; break;
+    case 'shortest_bridge': params = { max_gap_px: config.componentBridgeMaxGapPx, bridge_width_px: config.componentBridgeWidthPx, topology: config.componentBridgeTopology, avoid_other_instances: config.componentGapAvoidOtherInstances }; break;
+    case 'morph_close': params = { radius_px: config.componentClosingRadiusPx, iterations: config.componentClosingIterations, avoid_other_instances: config.componentGapAvoidOtherInstances }; break;
+    case 'fill_small_holes': params = { absolute_area_enabled: config.componentHoleAbsAreaEnabled, max_area_px: config.componentMaxHoleAreaPx, relative_area_enabled: config.componentHoleRelativeAreaEnabled, max_main_ratio: config.componentMaxHoleMainRatio, threshold_mode: config.componentHoleRequireAllThresholds ? 'and' : 'or' }; break;
+    case 'deduplicate_same_class': params = { spatial_mode: config.spatialMode, coverage_threshold: config.coverageThreshold }; break;
+    case 'remove_small_instances': params = { max_image_ratio: config.maxAreaRatio }; break;
+    case 'remove_confidence_range': params = { min_confidence: config.minConfidence, max_confidence: config.maxConfidence }; break;
+    case 'remove_position_region': params = { center_x_half_width: config.centerXHalfWidth, center_y_half_height: config.centerYHalfHeight, relation: config.positionMatchMode }; break;
+    case 'delete_by_box_count': params = { min_boxes: config.minInstances, max_boxes: config.maxInstances }; break;
+    case 'normalize_classes': params = { target_class: config.canonicalClass.trim() }; break;
+    default: params = {};
+  }
   return {
+    schema_version: 2,
     project_id: projectId,
-    operation_mode: operationMode,
-    merge_mode: operationMode === 'merge' ? mergeMode : 'same_class',
-    spatial_mode: operationMode === 'merge' ? spatialMode : 'instance_cover',
-    coverage_threshold: Number(coverageThreshold),
-    canonical_class: operationMode === 'merge' && mergeMode === 'canonical_class' ? canonicalClass : '',
-    source_classes: operationMode === 'merge' && mergeMode === 'canonical_class' ? sourceClasses : [],
-    area_mode: areaMode,
-    rule_classes: operationMode === 'rule' ? ruleClasses : [],
-    small_target_enabled: operationMode === 'rule' ? smallTargetEnabled : false,
-    max_area_ratio: Number(maxAreaRatio) || 0.02,
-    instance_count_enabled: operationMode === 'rule' ? instanceCountEnabled : false,
-    min_instances: Math.max(0, Math.trunc(Number(minInstances) || 1)),
-    max_instances: Math.max(0, Math.trunc(Number(maxInstances) || 0)),
-    position_enabled: operationMode === 'rule' ? positionEnabled : false,
-    center_x_half_width: Number(centerXHalfWidth) || 0.25,
-    center_y_half_height: Number(centerYHalfHeight) || 0.05,
-    confidence_enabled: operationMode === 'rule' ? confidenceEnabled : false,
-    min_confidence: Number(minConfidence) || 0,
-    max_confidence: Number.isFinite(Number(maxConfidence)) ? Number(maxConfidence) : 1,
+    task_type: task,
+    class_scope: { mode: config.classScopeMode, classes: config.classScopeMode === 'selected' ? [...config.ruleClasses] : [] },
+    params,
   };
 }
 
@@ -192,17 +256,29 @@ function pollFilterJob(jobId: string, kind: FilterJobKind) {
       store = useSmartFilterStore.getState();
       if (store.jobId !== jobId) return;
       if (!job) {
-        useSmartFilterStore.setState({ jobRunning: false, jobMessage: i18n.t('sf_job_not_found') });
+        useSmartFilterStore.setState({ jobRunning: false, jobStatus: 'error', jobMessage: i18n.t('sf_job_not_found') });
         return;
       }
       const pct = Number(job.progress_pct || 0);
-      useSmartFilterStore.setState({ progressPct: pct, jobMessage: job.message || i18n.t('sf_processing') });
+      const status = String(job.status || 'running');
+      useSmartFilterStore.setState({ jobStatus: status, progressPct: pct, jobMessage: job.message || i18n.t('sf_processing') });
 
-      if (job.status === 'done') {
+      if (status === 'paused') {
+        useSmartFilterStore.setState({ jobRunning: true, jobMessage: i18n.t('sf_job_paused') });
+        return;
+      }
+
+      if (status === 'cancelled') {
+        useSmartFilterStore.setState({ jobRunning: false, jobMessage: i18n.t('sf_job_stopped') });
+        return;
+      }
+
+      if (status === 'done') {
         const result = job.result || {};
         if (kind === 'preview') {
           useSmartFilterStore.setState({
             jobRunning: false,
+            jobStatus: 'done',
             previewToken: String(result.preview_token || ''),
             previewResult: result,
           });
@@ -221,6 +297,7 @@ function pollFilterJob(jobId: string, kind: FilterJobKind) {
         clearBundleCache();
         useSmartFilterStore.setState((s) => ({
           jobRunning: false,
+          jobStatus: 'done',
           applyResult: result,
           previewResult: null,
           previewToken: '',
@@ -228,20 +305,21 @@ function pollFilterJob(jobId: string, kind: FilterJobKind) {
           lastAppliedMode: mode as FilterOperationMode,
           applyCompletedSeq: s.applyCompletedSeq + 1,
         }));
-        toast(
-          mode === 'merge'
-            ? i18n.t('sf_applied_merge')
-            : mode === 'delete_unlabeled'
-              ? i18n.t('sf_applied_delete_unlabeled')
-              : i18n.t('sf_applied_rule'),
-          'success',
-        );
+        // Annotation-changing cleaning tasks must refresh independently of
+        // the dialog hook lifecycle. This also clears focused/highlighted ids
+        // through commitImageBundle -> annotationStore.resetForImage.
+        if (mode !== 'delete_unlabeled' && useImageStore.getState().selectedImageId) {
+          await useImageStore.getState().reloadSelectedImage();
+        }
+        const task = String(result.task_type || store.config.taskType);
+        toast(i18n.t('sf_applied_task', { task: i18n.t(`sf_task_${task}`) }), 'success');
         return;
       }
 
-      if (job.status === 'error') {
+      if (status === 'error') {
         useSmartFilterStore.setState({
           jobRunning: false,
+          jobStatus: 'error',
           jobFailed: true,
           jobMessage: job.error || job.message || i18n.t('sf_job_failed'),
         });
@@ -253,6 +331,7 @@ function pollFilterJob(jobId: string, kind: FilterJobKind) {
       const message = err instanceof Error ? err.message : String(err);
       useSmartFilterStore.setState({
         jobRunning: false,
+        jobStatus: 'error',
         jobFailed: true,
         jobMessage: i18n.t('sf_poll_failed', { error: message }),
       });
@@ -263,10 +342,11 @@ function pollFilterJob(jobId: string, kind: FilterJobKind) {
 export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
   projectId: '',
   config: { ...DEFAULT_CONFIG },
-  activePreset: 'dedupe',
+  activePreset: '',
 
   jobId: '',
   jobKind: null,
+  jobStatus: 'idle',
   jobRunning: false,
   progressPct: 0,
   jobMessage: i18n.t('sf_idle_hint'),
@@ -287,6 +367,18 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
   updateConfig: (partial) =>
     set((s) => ({ config: { ...s.config, ...partial }, activePreset: '', ...previewIdleState() })),
 
+  selectTask: (taskType) => set((s) => ({
+    config: {
+      ...DEFAULT_CONFIG,
+      taskType,
+      operationMode: taskOperation(taskType),
+      classScopeMode: s.config.classScopeMode,
+      ruleClasses: [...s.config.ruleClasses],
+    },
+    activePreset: '',
+    ...previewIdleState(),
+  })),
+
   applyPreset: (preset, classes) => {
     // Legacy applyPreset: reset preview state then seed the config.
     const base: Partial<SmartFilterConfig> = {
@@ -300,19 +392,21 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
     };
     let config: Partial<SmartFilterConfig>;
     if (preset === 'delete_unlabeled') {
-      config = { ...base, operationMode: 'delete_unlabeled' };
+      config = { ...base, taskType: 'delete_unlabeled_images', operationMode: 'delete_unlabeled' };
     } else if (preset === 'cleanup') {
       config = {
         ...base,
+        taskType: 'remove_confidence_range',
         operationMode: 'rule',
-        smallTargetEnabled: true,
         confidenceEnabled: true,
         maxConfidence: 0.35,
+        classScopeMode: 'selected',
         ruleClasses: [...classes],
       };
     } else {
       config = {
         ...base,
+        taskType: preset === 'canonical' ? 'normalize_classes' : 'deduplicate_same_class',
         operationMode: 'merge',
         mergeMode: preset === 'canonical' ? 'canonical_class' : 'same_class',
         spatialMode: 'instance_cover',
@@ -324,8 +418,17 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
   },
 
   startPreview: async () => {
-    const { projectId, config, jobRunning } = get();
-    if (!projectId || jobRunning) return;
+    const state = get();
+    const projectId = resolveProjectId(state.projectId);
+    const { config, jobRunning } = state;
+    if (jobRunning) return;
+    if (!projectId) {
+      const message = i18n.t('sf_project_not_ready');
+      set({ jobFailed: true, jobMessage: message });
+      toast(message, 'error');
+      return;
+    }
+    if (state.projectId !== projectId) set({ projectId });
     let payload: SmartFilterPayload;
     try {
       payload = buildPayload(projectId, config);
@@ -335,6 +438,7 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
     }
     set({
       jobKind: 'preview',
+      jobStatus: 'submitting',
       jobRunning: true,
       jobId: '',
       progressPct: 0,
@@ -348,31 +452,45 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
       const res = await filtersApi.startFilterPreviewJob(payload);
       const job = res?.job || null;
       if (!job?.job_id) throw new Error(i18n.t('sf_no_job_id'));
-      set({ jobId: job.job_id, jobMessage: i18n.t('sf_preview_started') });
+      set({ jobId: job.job_id, jobStatus: String(job.status || 'queued'), jobMessage: i18n.t('sf_preview_started') });
       pollFilterJob(job.job_id, 'preview');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      set({ jobRunning: false, jobFailed: true, jobMessage: message });
+      set({ jobRunning: false, jobStatus: 'error', jobFailed: true, jobMessage: message });
       toast(message, 'error');
     }
   },
 
   startApply: async () => {
-    const { projectId, config, previewToken, jobRunning } = get();
-    if (!projectId || jobRunning) return;
+    const state = get();
+    const projectId = resolveProjectId(state.projectId);
+    const { config, previewToken, previewResult, jobRunning } = state;
+    if (jobRunning) return;
+    if (!projectId) {
+      const message = i18n.t('sf_project_not_ready');
+      set({ jobFailed: true, jobMessage: message });
+      toast(message, 'error');
+      return;
+    }
+    if (state.projectId !== projectId) set({ projectId });
     if (!previewToken) {
       toast(i18n.t('filter_preview_expired'), 'error');
       return;
     }
     let payload: SmartFilterPayload;
     try {
-      payload = { ...buildPayload(projectId, config), preview_token: previewToken };
+      payload = {
+        ...buildPayload(projectId, config),
+        preview_token: previewToken,
+        confirm_preview_failure: previewResult?.preview_artwork?.status === 'failed',
+      };
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), 'error');
       return;
     }
     set({
       jobKind: 'apply',
+      jobStatus: 'submitting',
       jobRunning: true,
       jobId: '',
       progressPct: 0,
@@ -388,8 +506,11 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
       const mode = config.operationMode;
       set({
         jobId: job.job_id,
+        jobStatus: String(job.status || 'queued'),
         jobMessage:
-          mode === 'merge'
+          mode === 'component_noise'
+            ? i18n.t('sf_applied_component')
+            : mode === 'merge'
             ? i18n.t('sf_applying_merge')
             : mode === 'delete_unlabeled'
               ? i18n.t('sf_applying_delete_unlabeled')
@@ -398,14 +519,89 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
       pollFilterJob(job.job_id, 'apply');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      set({ jobRunning: false, jobFailed: true, jobMessage: message });
+      set({ jobRunning: false, jobStatus: 'error', jobFailed: true, jobMessage: message });
       toast(message, 'error');
     }
   },
 
+  pauseJob: async () => {
+    const { jobId, jobKind, jobStatus } = get();
+    if (!jobId || !jobKind || !['queued', 'running'].includes(jobStatus)) return;
+    try {
+      const response = await filtersApi.pauseFilterJob(jobId);
+      const status = String(response.job?.status || 'pausing');
+      set({
+        jobStatus: status,
+        jobRunning: true,
+        jobMessage: status === 'paused' ? i18n.t('sf_job_paused') : i18n.t('sf_job_pausing'),
+      });
+      if (status !== 'paused') pollFilterJob(jobId, jobKind);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error');
+    }
+  },
+
+  resumeJob: async () => {
+    const { jobId, jobKind, jobStatus } = get();
+    if (!jobId || !jobKind || jobStatus !== 'paused') return;
+    try {
+      const response = await filtersApi.resumeFilterJob(jobId);
+      set({
+        jobStatus: String(response.job?.status || 'queued'),
+        jobRunning: true,
+        jobFailed: false,
+        jobMessage: i18n.t('sf_job_resuming'),
+      });
+      pollFilterJob(jobId, jobKind);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error');
+    }
+  },
+
+  cancelJob: async () => {
+    const { config, jobId, jobKind, jobStatus } = get();
+    if (!jobId || !['queued', 'running', 'pausing', 'paused'].includes(jobStatus)) return;
+    if (jobKind === 'apply' && config.operationMode === 'delete_unlabeled') {
+      toast(i18n.t('sf_uninterruptible_delete'), 'error');
+      return;
+    }
+    try {
+      clearFilterTimer();
+      if (jobStatus !== 'paused') {
+        set({ jobStatus: 'stopping', jobRunning: true, jobMessage: i18n.t('sf_job_stopping') });
+        await filtersApi.pauseFilterJob(jobId);
+        let paused = false;
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const response = await filtersApi.getFilterJob(jobId);
+          const status = String(response.job?.status || '');
+          if (status === 'paused') {
+            paused = true;
+            break;
+          }
+          if (['done', 'error', 'cancelled'].includes(status)) {
+            if (jobKind) pollFilterJob(jobId, jobKind);
+            return;
+          }
+          await waitForFilterControl(250);
+        }
+        if (!paused) {
+          set({ jobMessage: i18n.t('sf_stop_waiting') });
+          if (jobKind) pollFilterJob(jobId, jobKind);
+          return;
+        }
+      }
+      await filtersApi.cancelFilterJob(jobId);
+      set({ jobStatus: 'cancelled', jobRunning: false, jobMessage: i18n.t('sf_job_stopped') });
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error');
+      if (jobKind) pollFilterJob(jobId, jobKind);
+    }
+  },
+
   loadLatestRun: async () => {
-    const { projectId } = get();
+    const projectId = resolveProjectId(get().projectId);
     if (!projectId) return;
+    if (get().projectId !== projectId) set({ projectId });
     try {
       const res = await filtersApi.getLatestFilterRun(projectId);
       // Ignore stale responses after a project switch/reset.
@@ -417,8 +613,11 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
   },
 
   rollbackLatestRun: async () => {
-    const { projectId, latestRun, rollbackBusy } = get();
+    const state = get();
+    const projectId = resolveProjectId(state.projectId);
+    const { latestRun, rollbackBusy } = state;
     if (!projectId || !latestRun?.run_id || rollbackBusy) return;
+    if (state.projectId !== projectId) set({ projectId });
     set({ rollbackBusy: true });
     try {
       const res = await filtersApi.rollbackFilterRun(projectId, latestRun.run_id);
@@ -442,9 +641,10 @@ export const useSmartFilterStore = create<SmartFilterStore>((set, get) => ({
     set({
       projectId: '',
       config: { ...DEFAULT_CONFIG },
-      activePreset: 'dedupe',
+      activePreset: '',
       jobId: '',
       jobKind: null,
+      jobStatus: 'idle',
       jobRunning: false,
       progressPct: 0,
       jobMessage: i18n.t('sf_idle_hint'),

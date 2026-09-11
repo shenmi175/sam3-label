@@ -15,7 +15,7 @@ target_dir must be inside a mounted data root
 ## 查看已挂载数据根目录
 
 ```bash
-cd ~/zmb_work/sam3
+cd /path/to/sam3
 ./deploy.sh data-root list
 ```
 
@@ -26,14 +26,14 @@ cd ~/zmb_work/sam3
 例如外置盘目录是：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+/mnt/datasets
 ```
 
 执行：
 
 ```bash
-cd ~/zmb_work/sam3
-./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas --default
+cd /path/to/sam3
+./deploy.sh data-root add /mnt/datasets --default
 ```
 
 脚本会：
@@ -47,8 +47,8 @@ cd ~/zmb_work/sam3
 如果想指定精确的默认上传目录：
 
 ```bash
-./deploy.sh data-root add /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas \
-  --upload-target /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+./deploy.sh data-root add /mnt/datasets \
+  --upload-target /mnt/datasets/uploads
 ```
 
 web-auto 设置页在发现目标目录未挂载时，会自动生成这类命令，复制到服务器终端执行即可。
@@ -58,7 +58,7 @@ web-auto 设置页在发现目标目录未挂载时，会自动生成这类命�
 如果使用 `--default`，默认上传目录会被设置为：
 
 ```text
-/media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas/uploads
+/mnt/datasets/uploads
 ```
 
 也可以进入 web-auto：
@@ -72,13 +72,13 @@ web-auto 设置页在发现目标目录未挂载时，会自动生成这类命�
 ## 删除额外挂载
 
 ```bash
-./deploy.sh data-root remove /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+./deploy.sh data-root remove /mnt/datasets
 ```
 
 不能删除主数据根目录 `WEB_AUTO_HOST_DATA_ROOT`。如果要更换主数据根目录，重新运行：
 
 ```bash
-./deploy.sh install --direct
+./deploy.sh install
 ```
 
 ## 手动检查容器环境
@@ -91,13 +91,13 @@ sudo docker exec sam3-auto-label-web-auto-1 printenv WEB_AUTO_ALLOWED_DATA_ROOTS
 确认容器内能看到目录：
 
 ```bash
-sudo docker exec sam3-auto-label-web-auto-1 ls /media/enabot/f6c408f7-8050-4999-b77c-ce34480ad71b/zmb_datas
+sudo docker exec sam3-auto-label-web-auto-1 ls /mnt/datasets
 ```
 
 ## 推荐目录结构
 
 ```text
-/media/enabot/.../zmb_datas/
+/mnt/datasets/
   uploads/
     project-a/
     project-b/
@@ -108,5 +108,5 @@ sudo docker exec sam3-auto-label-web-auto-1 ls /media/enabot/f6c408f7-8050-4999-
 图片项目的图片目录可以填：
 
 ```text
-/media/enabot/.../zmb_datas/uploads/project-a
+/mnt/datasets/uploads/project-a
 ```

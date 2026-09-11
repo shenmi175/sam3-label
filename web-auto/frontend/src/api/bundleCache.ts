@@ -24,6 +24,8 @@ export interface BundleFlags {
 // --- module singleton state (not reactive) ---
 const bundleCache = new Map<string, ImageBundle>();
 const bundlePromises = new Map<string, Promise<ImageBundle | null>>();
+let bundleCacheGeneration = 0;
+const bundleKeyGenerations = new Map<string, number>();
 
 export function makeImageBundleKey(projectId: string | null, imageId: string | number | null): string {
   return `${projectId || ''}:${String(imageId || '')}`;
@@ -180,11 +182,28 @@ export function updateBundleAnnotations(
 }
 
 export function invalidateBundle(projectId: string | null, imageId: string | number | null): void {
-  invalidateBundleState(bundleCache, bundlePromises, makeImageBundleKey(projectId, imageId));
+  const key = makeImageBundleKey(projectId, imageId);
+  bundleKeyGenerations.set(key, (bundleKeyGenerations.get(key) || 0) + 1);
+  invalidateBundleState(bundleCache, bundlePromises, key);
 }
 
 export function clearBundleCache(): void {
+  bundleCacheGeneration += 1;
+  bundleKeyGenerations.clear();
   clearBundleState(bundleCache, bundlePromises);
+}
+
+/**
+ * Token captured by a bundle request before it starts. A changed token means
+ * the request predates an explicit invalidation and must not repopulate the
+ * cache with stale annotations when it eventually finishes.
+ */
+export function getBundleGeneration(
+  projectId: string | null,
+  imageId: string | number | null,
+): string {
+  const key = makeImageBundleKey(projectId, imageId);
+  return `${bundleCacheGeneration}:${bundleKeyGenerations.get(key) || 0}`;
 }
 
 export function getInflightPromise(promiseKey: string): Promise<ImageBundle | null> | undefined {

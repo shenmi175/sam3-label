@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Paper, Tab, Tabs, Typography } from '@mui/material';
 import { getGlobalConfig, type GlobalConfig } from '../api/config';
@@ -8,8 +8,16 @@ import { useToast } from '../components/common/ToastProvider';
 import { BasicTab } from '../components/settings/BasicTab';
 import { PathsTab } from '../components/settings/PathsTab';
 import { RuntimeTab } from '../components/settings/RuntimeTab';
+import { CacheTab } from '../components/settings/CacheTab';
+import { ShortcutsTab } from '../components/settings/ShortcutsTab';
 
-type SettingsTabValue = 'basic' | 'paths' | 'runtime';
+type SettingsTabValue = 'basic' | 'paths' | 'runtime' | 'cache' | 'shortcuts';
+
+const SETTINGS_TABS = new Set<SettingsTabValue>(['basic', 'paths', 'runtime', 'cache', 'shortcuts']);
+
+function settingsTabValue(value: string | null): SettingsTabValue {
+  return SETTINGS_TABS.has(value as SettingsTabValue) ? value as SettingsTabValue : 'basic';
+}
 
 function stripTrailingSlashes(value: unknown): string {
   return String(value ?? '').replace(/\/+$/, '');
@@ -18,9 +26,10 @@ function stripTrailingSlashes(value: unknown): string {
 export function SettingsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { showToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<SettingsTabValue>('basic');
+  const [activeTab, setActiveTab] = useState<SettingsTabValue>(() => settingsTabValue(searchParams.get('tab')));
   const [config, setConfig] = useState<GlobalConfig>({});
   const [statusLine, setStatusLine] = useState('');
 
@@ -63,6 +72,15 @@ export function SettingsPage() {
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
+
+  useEffect(() => {
+    setActiveTab(settingsTabValue(searchParams.get('tab')));
+  }, [searchParams]);
+
+  const selectTab = (value: SettingsTabValue) => {
+    setActiveTab(value);
+    setSearchParams(value === 'basic' ? {} : { tab: value }, { replace: true });
+  };
 
   return (
     <Box sx={{ height: '100vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
@@ -109,7 +127,7 @@ export function SettingsPage() {
         <Paper sx={{ p: 1.75 }}>
           <Tabs
             value={activeTab}
-            onChange={(_, value: SettingsTabValue) => setActiveTab(value)}
+            onChange={(_, value: SettingsTabValue) => selectTab(value)}
             orientation="vertical"
             variant="scrollable"
             sx={{
@@ -120,6 +138,8 @@ export function SettingsPage() {
             <Tab value="basic" label={t('settings_basic')} />
             <Tab value="paths" label={t('settings_paths')} />
             <Tab value="runtime" label={t('settings_runtime')} />
+            <Tab value="cache" label={t('settings_cache')} />
+            <Tab value="shortcuts" label={t('shortcut_help_title')} />
           </Tabs>
         </Paper>
 
@@ -131,6 +151,8 @@ export function SettingsPage() {
           {activeTab === 'runtime' && (
             <RuntimeTab config={config} onReload={loadConfig} onStatusChange={setStatusLine} />
           )}
+          {activeTab === 'cache' && <CacheTab />}
+          {activeTab === 'shortcuts' && <ShortcutsTab />}
         </Paper>
       </Box>
     </Box>

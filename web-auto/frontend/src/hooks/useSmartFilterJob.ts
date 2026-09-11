@@ -12,12 +12,13 @@ import { useImageNavigation } from './useImageNavigation';
  *   - after an apply job finishes (legacy pollFilterJob done branch):
  *     reload project info; delete_unlabeled → reload the image list and fix
  *     the selection (keep it when still visible, else first image, else
- *     clear); other modes → reload the selected image bundle;
+ *     clear); other modes are reloaded directly by smartFilterStore when the
+ *     apply result arrives, independently of this hook's lifecycle;
  *   - after a rollback: reload project info + selected image.
  * The bundle cache itself is cleared inside the store (legacy
  * ws.clearImageBundleCache()).
  */
-export function useSmartFilterJob(projectId: string) {
+export function useSmartFilterJob(projectId: string, refreshImageWorkspace = true) {
   const { loadImages } = useImageNavigation();
   const applyCompletedSeq = useSmartFilterStore((s) => s.applyCompletedSeq);
   const rollbackCompletedSeq = useSmartFilterStore((s) => s.rollbackCompletedSeq);
@@ -40,6 +41,7 @@ export function useSmartFilterJob(projectId: string) {
       await useProjectStore.getState().loadProjectInfo();
       if (cancelled) return;
       if (lastAppliedMode === 'delete_unlabeled') {
+        if (!refreshImageWorkspace) return;
         await loadImages();
         if (cancelled) return;
         const images = useProjectStore.getState().images;
@@ -54,14 +56,11 @@ export function useSmartFilterJob(projectId: string) {
         }
         return;
       }
-      if (useImageStore.getState().selectedImageId) {
-        await useImageStore.getState().reloadSelectedImage();
-      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [applyCompletedSeq, lastAppliedMode, loadImages]);
+  }, [applyCompletedSeq, lastAppliedMode, loadImages, refreshImageWorkspace]);
 
   // Post-rollback refresh (legacy rollback button handler).
   useEffect(() => {

@@ -25,6 +25,8 @@ interface DatasetUploadDialogProps {
   initialTargetDir: string;
   /** Project id when uploading from a project card's "add data" action. */
   targetProjectId: string;
+  /** Keep an existing project's source directory fixed while adding data. */
+  lockTargetDir?: boolean;
   /** Hint under the target dir input (upload_root_hint or the load error message). */
   hintText: string;
   onClose: () => void;
@@ -36,6 +38,7 @@ export function DatasetUploadDialog({
   open,
   initialTargetDir,
   targetProjectId,
+  lockTargetDir = false,
   hintText,
   onClose,
   onProjectsMaybeChanged,
@@ -225,9 +228,10 @@ export function DatasetUploadDialog({
           </Typography>
           <TextField
             fullWidth
+            disabled={lockTargetDir}
             value={targetDir}
             onChange={(e) => setTargetDir(e.target.value)}
-            placeholder="/home/enabot/datasets/my-dataset"
+            placeholder="/mnt/datasets/my-dataset"
           />
           {hintText && (
             <Typography sx={{ fontSize: 12, color: 'text.secondary', mt: 1 }}>{hintText}</Typography>

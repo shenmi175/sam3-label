@@ -2,15 +2,17 @@ import { create } from 'zustand';
 import { saveAnnotations as saveAnnotationsApi } from '../../api/annotations';
 import * as bundleCache from '../../api/bundleCache';
 import type { Annotation } from '../../api/types';
+import type { AiCandidate } from '../../api/ai';
 import { bboxFromPolygon } from '../../utils/geometry';
 import { toast } from '../../utils/notify';
 import i18n from '../../i18n';
 import { useProjectStore } from './projectStore';
 import { useViewerStore, type SourceFilter } from './viewerStore';
+import { requestNavigationDecision } from './navigationGuardStore';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const AUTOSAVE_DELAY_MS = 700;
+export const AUTOSAVE_DELAY_MS = 0;
 export const HISTORY_LIMIT = 50;
 
 export type SaveStatus = 'saved' | 'unsaved' | 'pending' | 'saving' | 'failed';
@@ -29,13 +31,14 @@ function makeAnnotationId(): string {
   return `ann_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Legacy markManualAnnotation — flags an annotation as manually edited. */
+/** Mark a human edit without changing the annotation's result layer. */
 export function markManualAnnotation(ann: Annotation): Annotation {
   if (!ann || typeof ann !== 'object') return ann;
   const now = new Date().toISOString();
-  const next: Annotation = { ...ann, edited: true, updated_at: now };
-  if (!next.source) next.source = 'manual';
-  else if (next.source !== 'manual') next.modified_by = 'manual';
+  const next: Annotation = { ...ann, edited: true, modified_by: 'manual', updated_at: now };
+  const producer = String(next.source_model || next.source || '').trim();
+  next.source_model = !producer || producer === 'manual' ? 'sam3' : producer;
+  delete next.source;
   if (!next.score) next.score = 1;
   return next;
 }
@@ -52,9 +55,11 @@ export function markManualAnnotation(ann: Annotation): Annotation {
  * stay here.
  */
 interface AnnotationStore {
+  editingEnabled: boolean;
   /** Image the current annotation list belongs to. */
   imageId: string;
   annotations: Annotation[];
+  savedAnnotations: Annotation[];
   dirty: boolean;
   saving: boolean;
   rev: number;
@@ -66,6 +71,7 @@ interface AnnotationStore {
   saveStatus: SaveStatus;
   unmounted: boolean;
 
+  setEditingEnabled: (enabled: boolean) => void;
   resetForImage: (imageId: string, annotations: Annotation[]) => void;
   resetEmptySelection: () => void;
   setAutosaveEnabled: (enabled: boolean) => void;
@@ -80,30 +86,86 @@ interface AnnotationStore {
   markDirty: (reason?: string) => void;
   flushSave: (reason?: string) => Promise<boolean>;
   saveCurrent: () => Promise<boolean>;
+  prepareForNavigation: () => Promise<boolean>;
+  discardChanges: () => void;
   clearAnnotations: () => void;
   deleteAnnotation: (annotationId: string) => void;
   updateClass: (annotationId: string, nextClass: string) => Promise<boolean>;
+  acceptAiCandidate: (candidate: AiCandidate, selectedAnnotationId: string, className: string) => void;
   clearSaveTimer: () => void;
   setUnmounted: (unmounted: boolean) => void;
   reset: () => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveTail: Promise<boolean> = Promise.resolve(true);
+let saveBlocked = false;
+let lastQueuedKey = '';
+let queuedSaves = 0;
 
-function scheduleAutosave(reason: string) {
+function enqueueSnapshot(reason: string, force = false): Promise<boolean> {
   const state = useAnnotationStore.getState();
-  if (!state.imageId) return;
-  if (saveTimer) clearTimeout(saveTimer);
-  useAnnotationStore.setState({ saveStatus: 'pending' });
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    void useAnnotationStore.getState().flushSave(reason);
-  }, AUTOSAVE_DELAY_MS);
+  const projectId = useProjectStore.getState().projectId;
+  if (!state.imageId || !projectId) return Promise.resolve(false);
+  const imageId = state.imageId;
+  const rev = state.rev;
+  const key = `${projectId}:${imageId}:${rev}`;
+  if (!force && key === lastQueuedKey) return saveTail;
+  if (force) saveBlocked = false;
+  if (saveBlocked && !force) return Promise.resolve(false);
+  lastQueuedKey = key;
+  queuedSaves += 1;
+  const annotations = cloneAnnotations(state.annotations);
+  useAnnotationStore.setState({ saveStatus: 'pending', saveImageId: imageId });
+  saveTail = saveTail.then(async (previousOk) => {
+    if ((!previousOk || saveBlocked) && !force) {
+      queuedSaves = Math.max(0, queuedSaves - 1);
+      return false;
+    }
+    try {
+      useAnnotationStore.setState({ saving: true, saveStatus: 'saving' });
+      const classNames = Array.from(new Set(annotations.map((item) => String(item.class_name || '').trim()).filter(Boolean)));
+      await useProjectStore.getState().ensureClasses(classNames);
+      const response = await saveAnnotationsApi(projectId, imageId, annotations);
+      const persisted = Array.isArray(response.saved_annotations)
+        ? cloneAnnotations(response.saved_annotations as Annotation[])
+        : annotations;
+      queuedSaves = Math.max(0, queuedSaves - 1);
+      const current = useAnnotationStore.getState();
+      bundleCache.updateBundleAnnotations(projectId, imageId, '', persisted);
+      useProjectStore.getState().setImageLabeled(imageId, persisted.length > 0);
+      if (current.imageId === imageId && current.rev === rev && queuedSaves === 0) {
+        useAnnotationStore.setState({
+          annotations: cloneAnnotations(persisted),
+          dirty: false,
+          savedAnnotations: cloneAnnotations(persisted),
+          saveImageId: '',
+          saveStatus: 'saved',
+        });
+      } else if (current.imageId === imageId && queuedSaves > 0) {
+        useAnnotationStore.setState({ saveStatus: 'pending' });
+      }
+      return true;
+    } catch (err) {
+      queuedSaves = Math.max(0, queuedSaves - 1);
+      saveBlocked = true;
+      useAnnotationStore.setState({ saveStatus: 'failed' });
+      const message = err instanceof Error ? err.message : String(err);
+      toast(i18n.t('save_failed_msg', { error: message }), 'error');
+      return false;
+    } finally {
+      useAnnotationStore.setState({ saving: false });
+      void reason;
+    }
+  });
+  return saveTail;
 }
 
 export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
+  editingEnabled: true,
   imageId: '',
   annotations: [],
+  savedAnnotations: [],
   dirty: false,
   saving: false,
   rev: 0,
@@ -115,14 +177,19 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   saveStatus: 'saved',
   unmounted: false,
 
+  setEditingEnabled: (enabled) => set({ editingEnabled: Boolean(enabled) }),
+
   resetForImage: (imageId, annotations) => {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
+    saveBlocked = false;
+    lastQueuedKey = '';
     set({
       imageId,
       annotations: Array.isArray(annotations) ? annotations : [],
+      savedAnnotations: cloneAnnotations(annotations),
       history: [],
       redoStack: [],
       dirty: false,
@@ -140,6 +207,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
     set({
       imageId: '',
       annotations: [],
+      savedAnnotations: [],
       history: [],
       redoStack: [],
       dirty: false,
@@ -152,12 +220,14 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   setAutosaveEnabled: (enabled) => set({ autosaveEnabled: Boolean(enabled) }),
 
   triggerAutosave: () => {
-    if (get().dirty) scheduleAutosave('autosave-enabled');
+    if (!get().editingEnabled) return;
+    if (get().dirty) void enqueueSnapshot('autosave-enabled', true);
   },
 
   setSourceFilter: (source) => set({ sourceFilter: source }),
 
   pushHistory: () => {
+    if (!get().editingEnabled) return;
     const { imageId, history, annotations } = get();
     if (!imageId) return;
     const snapshot = cloneAnnotations(annotations);
@@ -169,6 +239,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   undo: () => {
+    if (!get().editingEnabled) return;
     const { history, annotations } = get();
     if (!history.length) return;
     const redoStack = [...get().redoStack, cloneAnnotations(annotations)];
@@ -179,6 +250,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   redo: () => {
+    if (!get().editingEnabled) return;
     const { redoStack, annotations } = get();
     if (!redoStack.length) return;
     const history = [...get().history, cloneAnnotations(annotations)];
@@ -189,6 +261,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   createAnnotation: (shape, className) => {
+    if (!get().editingEnabled) return;
     const { imageId, annotations } = get();
     if (!imageId) {
       toast(i18n.t('select_image_first'), 'error');
@@ -207,15 +280,24 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
     const ann: Annotation = {
       id: makeAnnotationId(),
       class_name: className,
-      label: className,
+      raw_label: className,
+      schema_version: 3,
       bbox: bbox.map((v) => Number(v || 0)) as [number, number, number, number],
+      polygon: polygon && polygon.length >= 3 ? polygon : [],
+      polygons: polygon && polygon.length >= 3 ? [polygon] : [],
+      area: null,
+      mask_url: '',
+      overlay_url: '',
       score: 1,
-      source: 'manual',
+      source_model: get().sourceFilter,
+      component_count: polygon && polygon.length >= 3 ? 1 : 0,
       edited: true,
+      modified_by: 'manual',
+      accepted_by: '',
+      ai_assisted_by: '',
       created_at: now,
       updated_at: now,
     };
-    if (polygon && polygon.length >= 3) ann.polygon = polygon;
 
     const next = [...(annotations || []), ann];
     set({ annotations: next });
@@ -232,11 +314,18 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   handleGeometryUpdated: (annotationId, geometry) => {
+    if (!get().editingEnabled) return;
     const { annotations, imageId } = get();
     if (!annotationId) return;
     const next = annotations.map((ann) => {
       if (String(ann?.id || '') !== String(annotationId)) return ann;
-      return markManualAnnotation({ ...ann, ...geometry });
+      return markManualAnnotation({
+        ...ann,
+        ...geometry,
+        mask_url: '',
+        __invalidate_mask: true,
+        __geometry_edited: true,
+      });
     });
     set({ annotations: next });
     bundleCache.updateBundleAnnotations(useProjectStore.getState().projectId, imageId, '', next);
@@ -244,6 +333,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   markDirty: () => {
+    if (!get().editingEnabled) return;
     const state = get();
     const rev = state.rev + 1;
     set({
@@ -259,7 +349,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
     );
     useProjectStore.getState().setImageLabeled(state.imageId, (state.annotations || []).length > 0);
     if (state.autosaveEnabled) {
-      scheduleAutosave('');
+      void enqueueSnapshot('operation');
     } else {
       set({ saveStatus: 'unsaved' });
     }
@@ -269,48 +359,14 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
     const viewer = useViewerStore.getState();
     if (!viewer.commitPendingManualPolygon()) return false;
     const state = get();
-    if (!state.imageId || state.saving || !state.dirty) return !state.dirty;
-    const projectId = useProjectStore.getState().projectId;
-    const imageId = state.saveImageId || state.imageId;
-    if (!imageId) return false;
-    const cached = bundleCache.getCachedBundle(projectId, imageId);
-    const annotations =
-      String(imageId) === String(state.imageId)
-        ? cloneAnnotations(state.annotations)
-        : cloneAnnotations(cached?.annotations || []);
-    const rev = state.rev;
-    try {
-      set({ saving: true, saveStatus: 'saving' });
-      const classNames = Array.from(
-        new Set(
-          annotations
-            .map((a) => String(a?.class_name || '').trim())
-            .filter(Boolean),
-        ),
-      );
-      await useProjectStore.getState().ensureClasses(classNames);
-      await saveAnnotationsApi(projectId, imageId, annotations);
-      if (get().unmounted) return true;
-      if (String(get().imageId) === String(imageId)) {
-        bundleCache.updateBundleAnnotations(projectId, imageId, '', annotations);
-        useProjectStore.getState().setImageLabeled(imageId, annotations.length > 0);
-        if (get().rev === rev) {
-          set({ dirty: false, saveImageId: '', saveStatus: 'saved' });
-        } else {
-          scheduleAutosave('dirty-during-save');
-        }
-      }
-    } catch (err) {
-      set({ saveStatus: 'failed' });
-      const message = err instanceof Error ? err.message : String(err);
-      toast(i18n.t('save_failed_msg', { error: message }), 'error');
-    } finally {
-      set({ saving: false });
-    }
-    return !get().dirty;
+    if (!state.imageId) return false;
+    if (state.dirty) await enqueueSnapshot('flush', !state.autosaveEnabled || saveBlocked);
+    else await saveTail;
+    return !get().dirty && get().saveStatus !== 'failed';
   },
 
   saveCurrent: async () => {
+    if (!get().editingEnabled) return false;
     const state = get();
     if (!state.imageId) return false;
     const viewer = useViewerStore.getState();
@@ -319,12 +375,48 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
       clearTimeout(saveTimer);
       saveTimer = null;
     }
-    set({ dirty: true, saveImageId: state.imageId, rev: state.rev + 1 });
-    await get().flushSave('manual-save');
+    if (!state.dirty) set({ dirty: true, saveImageId: state.imageId, rev: state.rev + 1 });
+    await enqueueSnapshot('manual-save', true);
     return !get().dirty;
   },
 
+  prepareForNavigation: async () => {
+    const state = get();
+    if (!state.dirty) {
+      await saveTail;
+      return get().saveStatus !== 'failed';
+    }
+    if (state.autosaveEnabled) return get().flushSave('before-navigation');
+    const decision = await requestNavigationDecision();
+    if (decision === 'cancel') return false;
+    if (decision === 'discard') {
+      get().discardChanges();
+      return true;
+    }
+    return get().saveCurrent();
+  },
+
+  discardChanges: () => {
+    const state = get();
+    const restored = cloneAnnotations(state.savedAnnotations);
+    saveBlocked = false;
+    lastQueuedKey = '';
+    set({
+      annotations: restored,
+      dirty: false,
+      history: [],
+      redoStack: [],
+      saveImageId: '',
+      saveStatus: 'saved',
+      rev: state.rev + 1,
+    });
+    bundleCache.updateBundleAnnotations(useProjectStore.getState().projectId, state.imageId, '', restored);
+    useProjectStore.getState().setImageLabeled(state.imageId, restored.length > 0);
+    useViewerStore.getState().setFocusedAnnotation(null);
+  },
+
   clearAnnotations: () => {
+    if (!get().editingEnabled) return;
     const { imageId } = get();
     if (!imageId) return;
     get().pushHistory();
@@ -335,6 +427,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   deleteAnnotation: (annotationId) => {
+    if (!get().editingEnabled) return;
     const { imageId, annotations } = get();
     if (!imageId) return;
     get().pushHistory();
@@ -349,6 +442,7 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
   },
 
   updateClass: async (annotationId, nextClass) => {
+    if (!get().editingEnabled) return false;
     const { imageId, annotations } = get();
     if (!imageId) return false;
     const cleanClass = String(nextClass || '').trim();
@@ -372,7 +466,8 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
       get().pushHistory();
       const next = annotations.map((ann) => {
         if (String(ann?.id || '') !== String(annotationId || '')) return ann;
-        const updated = markManualAnnotation({ ...ann, class_name: cleanClass, label: cleanClass });
+        const updated = markManualAnnotation({ ...ann, class_name: cleanClass, raw_label: cleanClass });
+        delete updated.label;
         delete updated.color;
         return updated;
       });
@@ -389,6 +484,60 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
     }
   },
 
+  acceptAiCandidate: (candidate, selectedAnnotationId, className) => {
+    if (!get().editingEnabled) return;
+    const { imageId, annotations } = get();
+    if (!imageId || !candidate) return;
+    const now = new Date().toISOString();
+    get().pushHistory();
+    let next: Annotation[];
+    if (selectedAnnotationId) {
+      next = annotations.map((annotation) => {
+        if (String(annotation.id || '') !== String(selectedAnnotationId)) return annotation;
+        return markManualAnnotation({
+          ...annotation,
+          bbox: candidate.bbox,
+          polygon: candidate.polygon,
+          polygons: candidate.polygons,
+          area: candidate.area,
+          mask_url: '',
+          ai_quality_score: candidate.score,
+          ai_assisted_by: 'sam3',
+          __invalidate_mask: true,
+          __geometry_edited: true,
+        });
+      });
+    } else {
+      const annotation: Annotation = {
+        id: makeAnnotationId(),
+        schema_version: 3,
+        class_name: className,
+        raw_label: className,
+        bbox: candidate.bbox,
+        polygon: candidate.polygon || [],
+        polygons: candidate.polygons || (candidate.polygon ? [candidate.polygon] : []),
+        area: candidate.area ?? null,
+        mask_url: '',
+        overlay_url: '',
+        score: 1,
+        ai_quality_score: candidate.score,
+        source_model: 'sam3',
+        accepted_by: 'manual',
+        ai_assisted_by: 'sam3',
+        modified_by: '',
+        edited: true,
+        component_count: candidate.polygons?.length || (candidate.polygon ? 1 : 0),
+        created_at: now,
+        updated_at: now,
+      };
+      next = [...annotations, annotation];
+      useViewerStore.getState().setFocusedAnnotation(annotation.id);
+    }
+    set({ annotations: next });
+    bundleCache.updateBundleAnnotations(useProjectStore.getState().projectId, imageId, '', next);
+    get().markDirty('ai-accept');
+  },
+
   clearSaveTimer: () => {
     if (saveTimer) {
       clearTimeout(saveTimer);
@@ -403,9 +552,15 @@ export const useAnnotationStore = create<AnnotationStore>((set, get) => ({
       clearTimeout(saveTimer);
       saveTimer = null;
     }
+    saveBlocked = false;
+    lastQueuedKey = '';
+    queuedSaves = 0;
+    saveTail = Promise.resolve(true);
     set({
+      editingEnabled: true,
       imageId: '',
       annotations: [],
+      savedAnnotations: [],
       dirty: false,
       saving: false,
       rev: 0,

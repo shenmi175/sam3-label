@@ -5,6 +5,7 @@ export interface ImageListFilters {
   imageId?: string;
   status?: string;
   className?: string;
+  sourceModel?: string;
 }
 
 export interface ImageListResponse {
@@ -15,6 +16,7 @@ export interface ImageListResponse {
   image_index?: number;
   status?: string;
   class_name?: string;
+  source_model?: string;
 }
 
 export interface BundleResponse {
@@ -47,6 +49,7 @@ export function getImages(
   if (filters.imageId) params.set('image_id', filters.imageId);
   if (filters.status && filters.status !== 'all') params.set('status', filters.status);
   if (filters.className) params.set('class_name', filters.className);
+  if (filters.className && filters.sourceModel) params.set('source_model', filters.sourceModel);
   return get<ImageListResponse>(
     `/projects/${encodeURIComponent(projectId)}/images?${params.toString()}`,
   );

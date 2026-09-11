@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -93,11 +94,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status = "not_loaded"
         return {
             "status": status,
+            "model_state": state,
             "mode": "eager" if settings.eager_load else "lazy",
             "model_loaded": engine.loaded,
             "last_load_error": engine.load_error,
             "device": settings.device,
             "checkpoint_path": settings.checkpoint_display,
+            "checkpoint_available": (
+                not Path(settings.checkpoint_path).expanduser().is_absolute()
+                or Path(settings.checkpoint_path).expanduser().exists()
+            ),
             "attn_backend": settings.attn_backend,
             "gpu": gpu_status_snapshot(),
         }

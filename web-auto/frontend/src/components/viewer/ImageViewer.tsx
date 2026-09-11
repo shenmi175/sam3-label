@@ -5,12 +5,14 @@ import type { Annotation, PreviewInfo, Prompt, TileInfo } from '../../api/types'
 import { ImageViewerCore } from './viewer-core';
 import type {
   AnnotationCreatedHandler,
+  CanvasContextMenuHandler,
   AnnotationEditStartHandler,
   AnnotationSelectedHandler,
   AnnotationUpdatedHandler,
   ImageBbox,
   ImageSize,
   PromptAddedHandler,
+  InteractionCompleteHandler,
   PromptMode,
   ViewerOptions,
 } from './viewer-core';
@@ -31,19 +33,23 @@ export interface ImageViewerHandle {
 }
 
 export interface ImageViewerProps {
+  editable: boolean;
   tileInfo?: TileInfo | null;
   previewInfo?: PreviewInfo | null;
   annotations?: Annotation[];
   prompts?: Prompt[];
   promptMode?: PromptMode;
-  boxPromptLabel?: 0 | 1;
+  pointPromptLabel?: 0 | 1;
   focusedAnnotationId?: string | null;
+  highlightedAnnotationIds?: string[];
   options?: ViewerOptions | Record<string, unknown>;
   onPromptAdded?: PromptAddedHandler;
   onAnnotationSelected?: AnnotationSelectedHandler;
   onAnnotationEditStart?: AnnotationEditStartHandler;
   onAnnotationUpdated?: AnnotationUpdatedHandler;
   onAnnotationCreated?: AnnotationCreatedHandler;
+  onInteractionComplete?: InteractionCompleteHandler;
+  onCanvasContextMenu?: CanvasContextMenuHandler;
   className?: string;
   style?: CSSProperties;
 }
@@ -54,6 +60,8 @@ interface CallbackBundle {
   onAnnotationEditStart?: AnnotationEditStartHandler;
   onAnnotationUpdated?: AnnotationUpdatedHandler;
   onAnnotationCreated?: AnnotationCreatedHandler;
+  onInteractionComplete?: InteractionCompleteHandler;
+  onCanvasContextMenu?: CanvasContextMenuHandler;
 }
 
 /**
@@ -64,19 +72,23 @@ interface CallbackBundle {
  */
 export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(function ImageViewer(
   {
+    editable,
     tileInfo,
     previewInfo,
     annotations,
     prompts,
     promptMode,
-    boxPromptLabel,
+    pointPromptLabel,
     focusedAnnotationId,
+    highlightedAnnotationIds,
     options,
     onPromptAdded,
     onAnnotationSelected,
     onAnnotationEditStart,
     onAnnotationUpdated,
     onAnnotationCreated,
+    onInteractionComplete,
+    onCanvasContextMenu,
     className,
     style,
   },
@@ -100,6 +112,8 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
     onAnnotationEditStart,
     onAnnotationUpdated,
     onAnnotationCreated,
+    onInteractionComplete,
+    onCanvasContextMenu,
   });
   useEffect(() => {
     callbacksRef.current = {
@@ -108,8 +122,10 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
       onAnnotationEditStart,
       onAnnotationUpdated,
       onAnnotationCreated,
+      onInteractionComplete,
+      onCanvasContextMenu,
     };
-  }, [onPromptAdded, onAnnotationSelected, onAnnotationEditStart, onAnnotationUpdated, onAnnotationCreated]);
+  }, [onPromptAdded, onAnnotationSelected, onAnnotationEditStart, onAnnotationUpdated, onAnnotationCreated, onInteractionComplete, onCanvasContextMenu]);
 
   // Create the core exactly once; destroy it on unmount.
   useEffect(() => {
@@ -121,6 +137,8 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
     core.onAnnotationEditStart = (annotation) => callbacksRef.current.onAnnotationEditStart?.(annotation);
     core.onAnnotationUpdated = (annotation, info) => callbacksRef.current.onAnnotationUpdated?.(annotation, info);
     core.onAnnotationCreated = (draft) => callbacksRef.current.onAnnotationCreated?.(draft);
+    core.onInteractionComplete = () => callbacksRef.current.onInteractionComplete?.();
+    core.onCanvasContextMenu = (info) => callbacksRef.current.onCanvasContextMenu?.(info);
     coreRef.current = core;
     return () => {
       core.destroy();
@@ -146,16 +164,24 @@ export const ImageViewer = forwardRef<ImageViewerHandle, ImageViewerProps>(funct
   }, [prompts]);
 
   useEffect(() => {
+    coreRef.current?.setEditable(editable);
+  }, [editable]);
+
+  useEffect(() => {
     coreRef.current?.setPromptMode(promptMode ?? 'none');
   }, [promptMode]);
 
   useEffect(() => {
-    coreRef.current?.setBoxPromptLabel(boxPromptLabel ?? 1);
-  }, [boxPromptLabel]);
+    coreRef.current?.setPointPromptLabel(pointPromptLabel ?? 1);
+  }, [pointPromptLabel]);
 
   useEffect(() => {
     coreRef.current?.setFocusedAnnotation(focusedAnnotationId ?? null);
   }, [focusedAnnotationId]);
+
+  useEffect(() => {
+    coreRef.current?.setHighlightedAnnotations(highlightedAnnotationIds ?? []);
+  }, [highlightedAnnotationIds]);
 
   useEffect(() => {
     coreRef.current?.setOptions(options ?? {});

@@ -84,10 +84,10 @@
 {
   "config": {
     "cache_dir": "/data/web-auto",
-    "upload_root": "/home/enabot/datasets",
-    "allowed_data_roots": ["/home/enabot/datasets", "/media/enabot/disk/zmb_datas"],
-    "default_upload_target_dir": "/home/enabot/datasets/uploads",
-    "upload_target_dir": "/home/enabot/datasets",
+    "upload_root": "/mnt/datasets",
+    "allowed_data_roots": ["/mnt/datasets", "/srv/shared-datasets"],
+    "default_upload_target_dir": "/mnt/datasets/uploads",
+    "upload_target_dir": "/mnt/datasets",
     "sam3_api_base_url": "http://sam3-api:8001",
     "allowed_sam3_api_base_urls": ["http://sam3-api:8001"],
     "restart_supported": true
@@ -104,7 +104,7 @@
 ```json
 {
   "cache_dir": "/data/web-auto",
-  "upload_target_dir": "/home/enabot/datasets/default",
+  "upload_target_dir": "/mnt/datasets/default",
   "sam3_api_base_url": "http://sam3-api:8001"
 }
 ```
@@ -181,6 +181,12 @@
 - `offset`
 - `limit`
 - `image_id`
+- `status`
+- `class_name`
+- `source_model`
+
+当同时传入 `class_name` 和 `source_model` 时，只返回该标注来源下包含该类别的图片；
+前端图片类别筛选使用“推理设置”中的后端作为 `source_model`。
 
 响应：
 
@@ -239,8 +245,8 @@
 
 ```json
 {
-  "host_data_root": "/home/enabot/datasets",
-  "default_target_dir": "/home/enabot/datasets"
+  "host_data_root": "/mnt/datasets",
+  "default_target_dir": "/mnt/datasets"
 }
 ```
 
@@ -260,7 +266,7 @@
 ```json
 {
   "ok": true,
-  "path": "/home/enabot/datasets/demo/images/0001.jpg",
+  "path": "/mnt/datasets/demo/images/0001.jpg",
   "relative_path": "demo/images/0001.jpg",
   "size": 1024
 }
@@ -316,6 +322,7 @@
   "points": [],
   "boxes": [],
   "threshold": 0.5,
+  "save_ai_features": false,
   "api_base_url": "http://127.0.0.1:8001"
 }
 ```
@@ -329,34 +336,10 @@
 
 - `text`
 - `points`
-- `boxes`
 
 ### `POST /api/infer/preview`
 
 单图推理预览，不保存。
-
-### `POST /api/infer/example_preview`
-
-当前图范例分割预览。
-
-请求：
-
-```json
-{
-  "project_id": "prj_xxx",
-  "image_id": "img_xxx",
-  "active_class": "cat",
-  "boxes": [[100, 100, 300, 300, 1], [320, 100, 420, 240, 0]],
-  "threshold": 0.5,
-  "api_base_url": "http://127.0.0.1:8001"
-}
-```
-
-说明：
-
-- 这就是前端“框选找同类”按钮应调用的接口
-- 始终使用纯视觉提示；`active_class` 只用于保存结果类别
-- `boxes` 第五位为标签：`1` 正框、`0` 负框，且至少需要一个正框
 
 ## 7. 图片批量推理
 
@@ -379,10 +362,8 @@
   - 仅支持 `model_backend="sam3"`
   - 启动前会检查 sam3-api 可达且 locate-anything-api 未占用显存，否则返回 409 与 `code="SAM3_NOT_READY"`
 
-`contour_mode` 适用于所有 sam3 推理接口（单图 / 预览 / 批量）：
-
-- `"split"`（默认）：一个实例的每个连通域各生成一条标注
-- `"merged"`：一个实例只生成一条标注，全部轮廓保存在 `polygons` 字段中
+所有 sam3 推理接口固定使用单实例格式：一个模型实例只生成一条标注，全部连通区域保存在
+`polygons`，实际数量写入 `component_count`。请求不再接受 `contour_mode`。
 
 ### `GET /api/infer/jobs/active?project_id=...`
 
@@ -442,12 +423,14 @@
 
 ```json
 {
+  "schema_version": 2,
   "project_id": "prj_xxx",
-  "merge_mode": "same_class",
-  "coverage_threshold": 0.98,
-  "canonical_class": "",
-  "source_classes": [],
-  "area_mode": "instance",
+  "task_type": "deduplicate_same_class",
+  "class_scope": {"mode": "all", "classes": []},
+  "params": {
+    "spatial_mode": "instance_cover",
+    "coverage_threshold": 0.98
+  },
   "preview_token": ""
 }
 ```
@@ -456,90 +439,108 @@
 
 - `start_preview` 完成后会返回 `preview_token`
 - `start_apply` 必须带同一次预览返回的 `preview_token`
-- 确认合并会直接复用预览缓存结果，不再重复扫描项目
+- 每个 v2 请求只运行一个 `task_type`；`params` 严格拒绝该任务不认识的字段
+- `class_scope.mode` 必须显式为 `all` 或 `selected`；`selected` 必须提供非空 `classes`
+- 应用会直接复用预览阶段生成的 annotation-ID 变更计划，不再重复扫描项目
+- 所有任务都通过 `preview_samples` 返回一张按实际影响量选择的稳定中位数样例；目标框以描边显示，分割以真实蒙版显示：
+
+```json
+{
+  "preview_samples": [
+    {
+      "image_id": "img_xxx",
+      "rel_path": "images/a.jpg",
+      "kind": "annotation_change",
+      "geometry_type": "mixed",
+      "annotation_count": 12,
+      "candidate_count": 4,
+      "relabel_count": 0,
+      "before_url": "/api/filter/intelligent/artifacts/sfp_xxx/samples/img_xxx_mixed_before.webp",
+      "after_url": "/api/filter/intelligent/artifacts/sfp_xxx/samples/img_xxx_mixed_after.webp"
+    }
+  ]
+}
+```
+
+`kind` 为 `annotation_change` 或 `image_delete`；`geometry_type` 为 `mixed`、`segmentation` 或 `image`。`annotation_count`、`candidate_count` 和 `relabel_count` 是当前样本计数。同类去重始终按几何类型隔离：目标框只和目标框比较，分割只和分割比较；阈值使用原始浮点值判断。类别归一只改类，不做空间匹配或删除。除永久删除无标注图片外，其余任务共享预览、确认应用与完整 JSON/Mask 回滚流程。旧顶层计数和 `operation_mode` 暂留一版兼容，新客户端应使用 `task_type`、`effect_type`、`summary`、`hits` 与 `warnings`。
+
+预览结果同时返回版本化产物状态：
+
+```json
+{
+  "preview_artwork": {
+    "version": 1,
+    "status": "ready",
+    "error_code": ""
+  }
+}
+```
+
+- `ready`：已生成对比图。
+- `not_needed`：没有命中项，不需要生成对比图。
+- `failed`：统计仍有效，但对比图生成失败；应用请求必须额外传 `confirm_preview_failure: true`，否则被拒绝。
+
+当前任务类型为：`remove_small_components`、`remove_edge_spurs`、`shortest_bridge`、`morph_close`、`fill_small_holes`、`deduplicate_same_class`、`remove_small_instances`、`remove_confidence_range`、`remove_position_region`、`delete_by_box_count`、`normalize_classes`、`delete_unlabeled_images`。v1 请求只在能无歧义对应一个任务时迁移；同时启用多个功能会返回 `ambiguous_legacy_filter` 和冲突列表。
 
 ## 9. 导出
 
 ### `POST /api/export`
 
-图片项目导出：
+执行已经预检并确认的 profile 导出：
 
 ```json
 {
   "project_id": "prj_xxx",
-  "format": "coco",
-  "include_bbox": true,
-  "include_mask": false,
-  "output_dir": "D:/export",
+  "profile": "yolo_instance",
+  "output_dir": "/srv/exports",
   "source_models": ["sam3", "manual"],
-  "classes": [],
-  "val_ratio": 0.0,
-  "write_data_yaml": true
+  "classes": ["bed", "chair"],
+  "val_ratio": 0.2,
+  "yolo_multipart_policy": "official_bridge",
+  "image_mode": "none",
+  "expected_content_rev": 12,
+  "confirmed_issue_codes": ["YOLO_MULTIPART_BRIDGE"]
 }
 ```
 
-参数：
+`profile` 必须是 `native_json_v2`、`coco_detection`、`coco_instance`、`yolo_detection`、`yolo_instance` 之一。`source_models` 和 `classes` 必须显式提供至少一项；所有 profile 都使用 `expected_content_rev` 防止预检后内容变化。
 
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `project_id` | 必填 | 项目 id |
-| `format` | 必填 | `coco` / `yolo` / `json` |
-| `include_bbox` | `true` | 导出检测框。YOLO 下 `include_bbox` 且不含 mask 走 det 模式 |
-| `include_mask` | `false` | 导出多边形。YOLO 下走 seg 模式（与 det 互斥，seg 优先） |
-| `output_dir` | `null` | 留空时写入项目 `exports` 目录（旧行为是写进图片目录，已修正） |
-| `source_models` | `["sam3", "manual"]` | 按标注来源筛选，可选 `sam3` / `locate-anything` / `manual` |
-| `classes` | `[]` | 类别白名单，空表示使用项目类别表全部类别 |
-| `val_ratio` | `0.0` | 仅 YOLO，`0~0.9`，划分验证集比例 |
-| `write_data_yaml` | `true` | 仅 YOLO，是否写 `data.yaml` |
-
-`source_models` 默认排除 `locate-anything`：LA 标注只有 bbox、没有轮廓，而 LA 框→分割生成的 SAM3 掩码标注与之一一对应，同时导出会让每个实例重复出现一次。
-
-返回：
+成功返回服务器产物路径和统一统计：
 
 ```json
 {
   "ok": true,
-  "output": "/path/to/exports/coco_20260731_120000",
+  "profile": "yolo_instance",
+  "output": "/srv/exports/project_yolo_instance_20260819_120000",
   "classes": ["bed", "chair"],
   "stats": {
     "images_total": 40,
-    "images_written": 38,
-    "images_missing": 2,
-    "annotations_total": 520,
-    "annotations_written": 480,
-    "skipped_source": 20,
-    "skipped_class": 4,
-    "skipped_no_polygon": 16,
-    "skipped_no_bbox": 0,
-    "by_source": { "sam3": 500, "manual": 20 },
-    "by_class": { "bed": 300, "chair": 200 }
+    "images_written": 40,
+    "negative_images": 2,
+    "raw_records_total": 480,
+    "canonical_instances_total": 470,
+    "canonical_instances_selected": 470,
+    "annotations_selected": 470,
+    "instances_written": 470,
+    "regions_written": 492,
+    "multipart_instances": 22,
+    "output_records": 470
   }
-}
-```
-
-`by_source` / `by_class` 统计的是通过来源+类别筛选后的标注数；`skipped_*` 分别是被来源、类别、无轮廓、无有效框跳过的数量。
-
-筛选后一条标注都不剩（但项目本身有标注）时返回 400：
-
-```json
-{
-  "code": "EXPORT_EMPTY",
-  "message": "...",
-  "by_source": { "locate-anything": 7951 },
-  "by_class": { "bed": 7951 },
-  "selected_sources": ["sam3", "manual"]
 }
 ```
 
 格式行为：
 
-- 类别 id 只来自项目类别表（或 `classes` 白名单）的固定顺序，表外类别跳过并计入 `skipped_class`，同一项目多次导出 id 稳定。
-- COCO：`include_mask=true` 时没有轮廓的标注会被跳过并计入 `skipped_no_polygon`，不再写出非法的 `segmentation: []`；merged 模式的多轮廓写成同一标注的多个子多边形。
-- YOLO-seg：YOLO 格式没有多部件实例表示，merged 模式的每个轮廓会拆成独立一行（class id 相同）。掩码像素不丢，但实例行数会多于标注数。
-- YOLO 产物：`classes.txt`、`labels/`、`train.txt`、`val.txt`（`val_ratio > 0` 时）、`data.yaml`（`write_data_yaml=true` 时）。
+- 导出按图片调用 `parse_image_annotations`，筛选和规范化均消费 canonical 实例。带 `contour_index` 或 `contour_count` 的旧拆分记录返回 `UNSUPPORTED_SPLIT_ANNOTATION` 并阻断，不再运行时重组。
+- 历史拆分标注已经完成一次性迁移；运行时不再提供旧数据迁移 CLI。
+- detection profile 接受 bbox-only；polygon 无效但 bbox 有效时会警告并回退到 bbox。instance profile 遇到 bbox-only 时会在用户明确确认后跳过，遇到无效 polygon 仍会阻断。有效区域的 BBox 和 area 均从最终规范化几何重新计算。
+- `image_mode=none` 时 Native JSON、COCO 和 YOLO 均输出 ZIP；ZIP 内每张项目图片对应一个标注文件，负样本对应空标注文件，不生成全项目共用的单一标注文件。
+- COCO 的每个 `annotations/**/*.json` 都是可独立加载的单图 COCO 文档。COCO detection 每个实例写一个仅含紧致 BBox 的 annotation；COCO instance 在同一个 annotation 的 `segmentation` polygon list 中保留多个区域。类别 ID 为 1-based。
+- YOLO detection 使用 0-based 归一化 union BBox。YOLO instance 单区域写一行；multipart 的 `official_bridge` 使用 Ultralytics 官方 `merge_multi_segment` 保持一实例一行，必须确认；`reject` 直接阻断。
+- 默认 YOLO ZIP 包含按 `labels/train/`、`labels/val/` 划分的逐图标签、`classes.txt`、`image_index.json`、`manifest.json`、README 和 `train.txt` / `val.txt`，不生成 `data.yaml`，负样本保留空标签。
+- 所有 profile 的 `image_mode` 均支持 `none`、`symlink`、`copy`：`none` 输出标注 ZIP；`symlink` 输出目录并在 `images/` 创建原图绝对软链接；`copy` 输出可移动目录并复制原图。YOLO 的图片与标签进一步按 train/val 分目录，并生成可供 Ultralytics 直接训练的 `data.yaml`。旧参数 `link_images=true` 仍兼容并等价于 `image_mode=symlink`。
 - train/val 划分由 `image_id` 的 sha1 决定，同一项目多次导出结果完全一致。
-- **不复制也不软链图片**，`train.txt` / `val.txt` / `data.yaml` 直接引用原图绝对路径。
-- 图片文件缺失时跳过该图并计入 `images_missing`，不会让整个导出失败。
+- 所有产物均在临时位置验证后发布，并使用唯一名称，绝不覆盖旧产物。
 
 ### `POST /api/export/preview`
 
@@ -567,6 +568,65 @@
 
 `no_polygon_by_source` 表示各来源下没有轮廓的标注数，用来提示用户勾选该来源后 mask 导出会跳过多少条。
 
+### `POST /api/export/preflight`
+
+所有 profile 共用本接口预检，只检查、不写文件：
+
+```json
+{
+  "project_id": "prj_xxx",
+  "profile": "yolo_instance",
+  "output_dir": "/srv/exports",
+  "source_models": ["sam3", "manual"],
+  "classes": ["bed", "chair"],
+  "val_ratio": 0.2,
+  "yolo_multipart_policy": "official_bridge",
+  "image_mode": "none",
+  "confirmed_issue_codes": []
+}
+```
+
+返回 `project_content_rev`、统一统计、`warnings`、`blockers`、`confirmation_required_codes` 和格式专用 `format_details`。YOLO bridge 报告受影响实例数、连接数、新增像素、桥接前后像素面积、IoU 和面积变化，不设置自动质量阈值：
+
+```json
+{
+  "ok": true,
+  "profile": "yolo_instance",
+  "project_content_rev": 12,
+  "confirmation_required_codes": ["YOLO_MULTIPART_BRIDGE"],
+  "format_details": {
+    "multipart_bridge": {
+      "affected_instances": 22,
+      "connections": 24,
+      "added_pixels": 180,
+      "iou": 0.9912,
+      "area_change_ratio": 0.0089
+    }
+  },
+  "warnings": [{ "code": "YOLO_MULTIPART_BRIDGE", "severity": "warning", "count": 22 }],
+  "blockers": []
+}
+```
+
+存在 blocker 时 `ok=false`。导出时缺少所需确认返回 `409 EXPORT_CONFIRMATION_REQUIRED`；版本变化返回 `409 EXPORT_STALE`；其他预检阻断返回 `400 EXPORT_PREFLIGHT_BLOCKED`。执行数据清洗后必须重新预检。
+
+Native JSON v2 ZIP 结构：
+
+```text
+manifest.json
+classes.json
+image_index.json
+README.txt
+annotations/<图片相对目录>/<标注文件名>.json
+```
+
+- schema 为 `web-auto.annotation-bundle.v2`；逐图文件包含图像引用和规范化的 `instances[]/regions[]`。
+- 多区域实例保持一个实例、多条 region；BBox 和面积由有效区域重新计算，bbox-only 实例保留有效 BBox。
+- 未知安全元数据放入 `attributes`；递归删除 mask/overlay/Base64、内部资源地址和绝对路径。
+- ZIP 只允许 JSON 和固定 `README.txt`，不包含原图、mask PNG、overlay 或任何图像二进制。
+- `image_index.json` 提供原图相对路径、标注路径和可用的宽高，供接收方绑定自己的图像。
+- ZIP 先在目标目录生成临时文件，通过校验后原子改名；同名时自动追加序号，不覆盖已有导出。
+
 ## 10. UI 状态
 
 这组接口是可选能力，供前端保存界面状态。
@@ -583,7 +643,6 @@
 - 阈值设定
 - API测试
 - 类别添加
-- 同图框选找同类
 - 批量推理停止/继续
 - 智能过滤任务化与预览复用
 
@@ -631,6 +690,23 @@ Result / job fields added for large-dataset review:
 - `class_additions`
 - `image_results`
 - `selection`
+- `feature_failed`
+
+`save_ai_features` 仅对 `mode="text"` 且 SAM3 后端生效。特征固定写入项目
+`feature/`；关闭时不会创建该目录。暂停、继续和失败重试会保留原任务的开关值。
+
+### 人工标注 AI 辅助
+
+- `POST /api/ai/session/open`
+- `POST /api/ai/point`
+- `POST /api/ai/prompts/clear`
+- `POST /api/ai/mask/accept`
+- `POST /api/ai/session/close`
+- `GET /api/ai/features/status?project_id=...&image_id=...`
+- `POST /api/ai/features/delete`
+
+会话只返回候选 polygon/polygons、bbox 和质量分数；接受前不会修改标注存储。
+删除接口要求 `confirmed=true`，项目有正在写特征的批量任务时返回 409。
 
 ### Smart Filter Job Payload
 

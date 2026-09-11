@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useInference } from '../../hooks/useInference';
 import { InferenceSettingsDialog } from './InferenceSettingsDialog';
+import { logFeatureEvent } from '../../api/audit';
+import { useProjectStore } from '../../stores/workspace/projectStore';
 
 /**
  * Auto-annotate toolbar panel — compact single-row variant of the legacy
@@ -15,19 +17,19 @@ import { InferenceSettingsDialog } from './InferenceSettingsDialog';
  *     InferenceSettingsDialog; edits there apply instantly via settingsStore
  *     and the summary refreshes on close.
  *   - the execution buttons stay inline: infer-current / batch-infer /
- *     la-boxes-batch / example-segment.
+ *     la-boxes-batch.
  */
 export function AutoAnnotatePanel() {
   const { t } = useTranslation();
   const defaultBackend = useSettingsStore((s) => s.defaultBackend);
   const threshold = useSettingsStore((s) => s.threshold);
   const batchSize = useSettingsStore((s) => s.batchSize);
+  const projectId = useProjectStore((s) => s.projectId);
 
-  const { runSingle, startBatchTask, startLaBoxesBatchTask, runBoxPromptInference } = useInference();
+  const { runSingle, startBatchTask, startLaBoxesBatchTask } = useInference();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inferring, setInferring] = useState(false);
-  const [findingSimilar, setFindingSimilar] = useState(false);
 
   const isLocate = defaultBackend === 'locate-anything';
 
@@ -44,17 +46,8 @@ export function AutoAnnotatePanel() {
     }
   };
 
-  const handleExample = async () => {
-    setFindingSimilar(true);
-    try {
-      await runBoxPromptInference();
-    } finally {
-      setFindingSimilar(false);
-    }
-  };
-
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'nowrap', minWidth: 0, overflowX: 'auto' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'nowrap', minWidth: 0, overflowX: 'auto' }}>
       {/* Merged backend+params entry point (opens InferenceSettingsDialog) */}
       <Button
         size="small"
@@ -81,7 +74,7 @@ export function AutoAnnotatePanel() {
       <Button
         size="small"
         variant="outlined"
-        onClick={() => void startBatchTask()}
+        onClick={() => { logFeatureEvent('open_full_image_inference', projectId); void startBatchTask(); }}
         sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}
       >
         {t('batch_infer')}
@@ -94,16 +87,6 @@ export function AutoAnnotatePanel() {
       >
         {t('la_boxes_batch')}
       </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        disabled={isLocate || findingSimilar}
-        onClick={() => void handleExample()}
-        sx={{ height: 32, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0, opacity: isLocate ? 0.45 : 1 }}
-      >
-        {findingSimilar ? t('finding_similar') : t('example_segment')}
-      </Button>
-
       <InferenceSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </Box>
   );

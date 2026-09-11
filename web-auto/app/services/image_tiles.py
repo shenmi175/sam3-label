@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import xml.etree.ElementTree as ET
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -39,6 +40,7 @@ class ImageTileService:
         max_workers: int = 2,
         logger: logging.Logger | None = None,
         lock: threading.Lock | None = None,
+        maintenance_lock: threading.RLock | None = None,
     ):
         self.get_current_data_dir = get_current_data_dir
         self.max_workers = max(1, int(max_workers or 1))
@@ -52,6 +54,11 @@ class ImageTileService:
         self._start_lock = threading.Lock()
         # Kept only for backward-compatible construction by older callers.
         self._legacy_lock = lock
+        self.maintenance_lock = maintenance_lock
+
+    def has_active_jobs(self) -> bool:
+        with self._jobs_lock:
+            return any(state.status in {'queued', 'generating'} for state in self._jobs.values())
 
     @staticmethod
     def image_file_path_or_404(image: dict[str, Any]) -> Path:
@@ -118,20 +125,22 @@ class ImageTileService:
                     if rank > self._priority_rank(state.priority):
                         continue
 
-                tile_dir = Path(key)
-                with self._lock_for_key(key):
-                    metadata = self.read_dzi_metadata(tile_dir)
-                    if metadata:
-                        self._set_job_state(key, 'ready', priority)
-                        continue
-                    self._set_job_state(key, 'generating', priority)
-                    try:
-                        self.generate_image_tiles(tile_dir, image_path)
-                        self._set_job_state(key, 'ready', priority)
-                        self.logger.info('generated DZI tiles for %s/%s', project_id, image_id)
-                    except Exception as exc:  # noqa: BLE001
-                        self._set_job_state(key, 'error', priority, str(exc))
-                        self.logger.warning('failed to generate DZI tiles for %s/%s: %s', project_id, image_id, exc)
+                gate = self.maintenance_lock if self.maintenance_lock is not None else nullcontext()
+                with gate:
+                    tile_dir = Path(key)
+                    with self._lock_for_key(key):
+                        metadata = self.read_dzi_metadata(tile_dir)
+                        if metadata:
+                            self._set_job_state(key, 'ready', priority)
+                            continue
+                        self._set_job_state(key, 'generating', priority)
+                        try:
+                            self.generate_image_tiles(tile_dir, image_path)
+                            self._set_job_state(key, 'ready', priority)
+                            self.logger.info('generated DZI tiles for %s/%s', project_id, image_id)
+                        except Exception as exc:  # noqa: BLE001
+                            self._set_job_state(key, 'error', priority, str(exc))
+                            self.logger.warning('failed to generate DZI tiles for %s/%s: %s', project_id, image_id, exc)
             finally:
                 self._queue.task_done()
 
@@ -170,17 +179,19 @@ class ImageTileService:
         }
 
     def ensure_image_tiles(self, project_id: str, image_id: str, image_path: Path) -> tuple[Path, dict[str, Any]]:
-        tile_dir = self.tile_cache_dir(project_id, image_id, image_path)
-        metadata = self.read_dzi_metadata(tile_dir)
-        if metadata:
-            return tile_dir, metadata
-
-        key = self._job_key(tile_dir)
-        with self._lock_for_key(key):
+        gate = self.maintenance_lock if self.maintenance_lock is not None else nullcontext()
+        with gate:
+            tile_dir = self.tile_cache_dir(project_id, image_id, image_path)
             metadata = self.read_dzi_metadata(tile_dir)
             if metadata:
                 return tile_dir, metadata
-            return self.generate_image_tiles(tile_dir, image_path)
+
+            key = self._job_key(tile_dir)
+            with self._lock_for_key(key):
+                metadata = self.read_dzi_metadata(tile_dir)
+                if metadata:
+                    return tile_dir, metadata
+                return self.generate_image_tiles(tile_dir, image_path)
 
     def tile_status(
         self,
@@ -191,34 +202,36 @@ class ImageTileService:
         enqueue: bool = False,
         priority: str = 'medium',
     ) -> dict[str, Any]:
-        tile_dir = self.tile_cache_dir(project_id, image_id, image_path)
-        key = self._job_key(tile_dir)
-        metadata = self.read_dzi_metadata(tile_dir)
-        if metadata:
-            self._set_job_state(key, 'ready', priority)
-            return {
-                'status': 'ready',
-                'tile_dir': tile_dir,
-                'metadata': metadata,
-                'error': '',
-            }
-
-        if enqueue:
-            self.enqueue_tile_job(project_id, image_id, image_path, priority=priority)
-
-        state = self._job_state(key)
-        status = state.status if state else 'missing'
-        if status == 'ready':
+        gate = self.maintenance_lock if self.maintenance_lock is not None else nullcontext()
+        with gate:
+            tile_dir = self.tile_cache_dir(project_id, image_id, image_path)
+            key = self._job_key(tile_dir)
             metadata = self.read_dzi_metadata(tile_dir)
             if metadata:
-                return {'status': 'ready', 'tile_dir': tile_dir, 'metadata': metadata, 'error': ''}
-            status = 'missing'
-        return {
-            'status': status,
-            'tile_dir': tile_dir,
-            'metadata': None,
-            'error': state.error if state else '',
-        }
+                self._set_job_state(key, 'ready', priority)
+                return {
+                    'status': 'ready',
+                    'tile_dir': tile_dir,
+                    'metadata': metadata,
+                    'error': '',
+                }
+
+            if enqueue:
+                self.enqueue_tile_job(project_id, image_id, image_path, priority=priority)
+
+            state = self._job_state(key)
+            status = state.status if state else 'missing'
+            if status == 'ready':
+                metadata = self.read_dzi_metadata(tile_dir)
+                if metadata:
+                    return {'status': 'ready', 'tile_dir': tile_dir, 'metadata': metadata, 'error': ''}
+                status = 'missing'
+            return {
+                'status': status,
+                'tile_dir': tile_dir,
+                'metadata': None,
+                'error': state.error if state else '',
+            }
 
     def enqueue_tile_job(self, project_id: str, image_id: str, image_path: Path, *, priority: str = 'medium') -> None:
         priority = self._normalize_priority(priority)

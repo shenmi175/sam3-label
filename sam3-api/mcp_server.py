@@ -165,29 +165,6 @@ def build_mcp_server(config: Optional[Sam3McpConfig] = None) -> FastMCP:
             return _tool_error("sam3_image_infer_points", exc)
 
     @mcp.tool()
-    def sam3_image_infer_boxes(
-        image_path: str,
-        boxes: list[list[float | int]],
-        threshold: float = 0.5,
-        include_mask_png: bool = False,
-        max_detections: int = 100,
-    ) -> CallToolResult:
-        """Run single-image box prompting through /v1/infer."""
-        try:
-            with _client() as client:
-                payload = client.image_infer(
-                    image_path=image_path,
-                    mode="boxes",
-                    boxes=boxes,
-                    threshold=threshold,
-                    include_mask_png=include_mask_png,
-                    max_detections=max_detections,
-                )
-            return _tool_result(payload)
-        except Exception as exc:  # noqa: BLE001
-            return _tool_error("sam3_image_infer_boxes", exc)
-
-    @mcp.tool()
     def sam3_image_infer_batch_text(
         image_paths: list[str],
         prompt: str,
@@ -208,31 +185,6 @@ def build_mcp_server(config: Optional[Sam3McpConfig] = None) -> FastMCP:
             return _tool_result(payload)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("sam3_image_infer_batch_text", exc)
-
-    @mcp.tool()
-    def sam3_semantic_infer(
-        image_path: str,
-        boxes: list[list[float | int]],
-        threshold: float = 0.5,
-        include_mask_png: bool = False,
-        max_detections: int = 100,
-        input_size: int = 0,
-    ) -> CallToolResult:
-        """Run official semantic exemplar segmentation through /v1/semantic/infer."""
-        try:
-            with _client() as client:
-                payload = client.semantic_infer(
-                    image_path=image_path,
-                    boxes=boxes,
-                    threshold=threshold,
-                    include_mask_png=include_mask_png,
-                    max_detections=max_detections,
-                    input_size=input_size,
-                )
-            return _tool_result(payload)
-        except Exception as exc:  # noqa: BLE001
-            return _tool_error("sam3_semantic_infer", exc)
-
 
     @mcp.tool()
     def sam3_video_start_session(

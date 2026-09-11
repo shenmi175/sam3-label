@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -26,6 +26,12 @@ class Settings:
     video_force_tracker_state_fp32: bool
     video_apply_temporal_disambiguation: bool
     expected_ckpt_generation: str
+    instance_interactivity_enabled: bool = True
+    feature_allowed_roots: list[Path] = field(default_factory=list)
+    feature_format_version: str = "sam3-inst-v1"
+    feature_gpu_lru_size: int = 5
+    feature_write_workers: int = 2
+    feature_write_max_pending: int = 32
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
@@ -67,6 +73,18 @@ def _parse_cors_origins() -> list[str]:
         return ["*"]
     values = [x.strip() for x in raw.split(",") if x.strip()]
     return values or ["*"]
+
+
+def _parse_feature_allowed_roots(project_root: Path) -> list[Path]:
+    raw = os.getenv("SAM3_API_FEATURE_ALLOWED_ROOTS", "").strip()
+    if not raw:
+        return [project_root.resolve()]
+    roots: list[Path] = []
+    for item in raw.split(os.pathsep):
+        value = item.strip()
+        if value:
+            roots.append(Path(value).expanduser().resolve())
+    return roots or [project_root.resolve()]
 
 
 def _resolve_eager_load() -> bool:
@@ -117,4 +135,10 @@ def get_settings() -> Settings:
         # For interactive labeling stability, default to False to reduce aggressive suppression.
         video_apply_temporal_disambiguation=_env_bool("SAM3_API_VIDEO_APPLY_TEMPORAL_DISAMBIGUATION", False),
         expected_ckpt_generation=os.getenv("SAM3_API_EXPECTED_CKPT_GENERATION", "v1").strip() or "v1",
+        instance_interactivity_enabled=_env_bool("SAM3_API_ENABLE_INSTANCE_INTERACTIVITY", True),
+        feature_allowed_roots=_parse_feature_allowed_roots(project_root),
+        feature_format_version=os.getenv("SAM3_API_FEATURE_FORMAT_VERSION", "sam3-inst-v1").strip() or "sam3-inst-v1",
+        feature_gpu_lru_size=max(1, int(os.getenv("SAM3_API_FEATURE_GPU_LRU_SIZE", "5") or 5)),
+        feature_write_workers=max(1, int(os.getenv("SAM3_API_FEATURE_WRITE_WORKERS", "2") or 2)),
+        feature_write_max_pending=max(1, int(os.getenv("SAM3_API_FEATURE_WRITE_MAX_PENDING", "32") or 32)),
     )

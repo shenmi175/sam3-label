@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import DEFAULT_API_BASE_URL
 
@@ -12,26 +12,25 @@ DEFAULT_LOCATE_API_BASE_URL = 'http://127.0.0.1:8004'
 
 ModelBackend = Literal['sam3', 'locate-anything']
 
-ContourMode = Literal['split', 'merged']
-
-
 class InferIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     project_id: str
     image_id: str
-    mode: str = Field(pattern='^(text|points|boxes)$')
+    mode: str = Field(pattern='^(text|points)$')
     classes: list[str] = Field(default_factory=list)
     active_class: str = ''
     points: list[list[float | int]] = Field(default_factory=list)
-    boxes: list[list[float | int]] = Field(default_factory=list)
     threshold: float = 0.5
     api_base_url: str = DEFAULT_API_BASE_URL
     model_backend: ModelBackend = 'sam3'
     locate_api_base_url: str = DEFAULT_LOCATE_API_BASE_URL
     score_default: float = Field(default=0.5, ge=0.0, le=1.0)
-    contour_mode: ContourMode = 'split'
 
 
 class InferBatchIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     project_id: str
     mode: Literal['text', 'la_boxes'] = 'text'
     classes: list[str] = Field(default_factory=list)
@@ -39,6 +38,7 @@ class InferBatchIn(BaseModel):
     retry_image_ids: list[str] = Field(default_factory=list)
     all_images: bool = False
     scope_mode: str = Field(default='all', pattern='^(all|unlabeled|class_related|class_related_unlabeled)$')
+    merge_mode: Literal['replace', 'append'] = 'replace'
     related_classes: list[str] = Field(default_factory=list)
     batch_size: int = 8
     threshold: float = 0.5
@@ -46,7 +46,7 @@ class InferBatchIn(BaseModel):
     model_backend: ModelBackend = 'sam3'
     locate_api_base_url: str = DEFAULT_LOCATE_API_BASE_URL
     score_default: float = Field(default=0.5, ge=0.0, le=1.0)
-    contour_mode: ContourMode = 'split'
+    save_ai_features: bool = False
 
 
 class HealthApiIn(BaseModel):
@@ -74,3 +74,4 @@ class InferJobResumeIn(BaseModel):
     model_backend: Optional[ModelBackend] = None
     locate_api_base_url: Optional[str] = None
     score_default: Optional[float] = None
+    save_ai_features: Optional[bool] = None

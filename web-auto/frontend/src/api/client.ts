@@ -8,6 +8,8 @@ export interface ApiError extends Error {
 export interface RequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  cache?: RequestCache;
+  keepalive?: boolean;
 }
 
 export async function request<T = unknown>(
@@ -21,6 +23,8 @@ export async function request<T = unknown>(
     method,
     headers: { ...(requestOptions.headers || {}) },
     signal: requestOptions.signal,
+    cache: requestOptions.cache,
+    keepalive: requestOptions.keepalive,
   };
   if (data && !isFormData) {
     (options.headers as Record<string, string>)['Content-Type'] = 'application/json';

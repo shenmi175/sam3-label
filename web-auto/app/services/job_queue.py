@@ -1,25 +1,114 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import re
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from app.utils import new_id, now_ts
+from app.audit import AuditLogger, current_audit_context
+from app.utils import (
+    atomic_write_json,
+    ensure_dir,
+    InterProcessLock,
+    new_id,
+    now_ts,
+    read_json,
+)
 
 
 NONTERMINAL_STATUSES = {'queued', 'running', 'pausing', 'paused'}
+TERMINAL_STATUSES = {'done', 'error', 'cancelled'}
+
+_DETAIL_FIELDS = (
+    'image_results',
+    'errors',
+    'failed_image_ids',
+    'skipped_image_ids',
+    'preview_entry',
+    'result',
+)
+_RESULT_DUPLICATE_FIELDS = (
+    'image_results',
+    'errors',
+    'failed_image_ids',
+    'skipped_image_ids',
+)
+_SUMMARY_OBJECT_FIELDS = {'summary', 'selection', 'class_additions', 'rule'}
+_MAX_SUMMARY_OBJECT_BYTES = 16 * 1024
+logger = logging.getLogger('web_auto.jobs')
+
+
+def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the deliberately small, path-free task parameter summary."""
+    summary: dict[str, Any] = {}
+    aliases = {
+        'classes': 'classes',
+        'related_classes': 'related_classes',
+        'scope_mode': 'scope',
+        'merge_mode': 'append_mode',
+        'batch_size': 'batch_size',
+        'save_ai_features': 'save_features',
+        'all_images': 'all_images',
+        'target_count': 'target_count',
+    }
+    for source, target in aliases.items():
+        value = payload.get(source)
+        if isinstance(value, list):
+            summary[target] = [str(item)[:128] for item in value[:100]]
+        elif value is None or isinstance(value, (str, int, float, bool)):
+            summary[target] = value
+    for key in ('image_ids', 'retry_image_ids', 'targets'):
+        value = payload.get(key)
+        if isinstance(value, list):
+            summary[f'{key}_count'] = len(value)
+    return summary
+
+
+def summarize_error_for_audit(error: Any) -> dict[str, str]:
+    if isinstance(error, dict):
+        code = str(error.get('error_code') or error.get('code') or '')[:128]
+        raw_message = str(error.get('message') or error.get('error') or '')
+    else:
+        code = type(error).__name__ if isinstance(error, BaseException) else ''
+        raw_message = str(error or '')
+    # Errors may contain dataset paths or upstream URLs. They are useful in the
+    # durable job result, but the audit stream keeps only a bounded safe sample.
+    message = re.sub(r'https?://\S+', '[UPSTREAM]', raw_message)
+    message = re.sub(r'(?<!\w)/(?:[^\s:]+/?)+', '[PATH]', message)
+    message = re.sub(r'[A-Za-z]:\\[^\s]+', '[PATH]', message)
+    return {'code': code, 'message': message[:256]}
 
 
 class PersistentJobQueue:
     """Small single-host durable queue backed by the existing SQLite database."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        details_dir: Path | None = None,
+        audit: AuditLogger | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self.details_dir = (
+            Path(details_dir) if details_dir is not None else self.db_path.parent / '.job-results'
+        )
         self._lock = threading.RLock()
+        self.audit = audit
         self._init_db()
+
+    def _audit(self, **event: Any) -> None:
+        if self.audit is None:
+            return
+        try:
+            self.audit.emit(**event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('task audit collection failed: %s', exc)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
@@ -76,8 +165,102 @@ class PersistentJobQueue:
             return {}
         return value if isinstance(value, dict) else {}
 
-    def _row_state(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _details_path(self, job_id: str) -> Path:
+        digest = hashlib.sha256(str(job_id).encode('utf-8')).hexdigest()
+        return self.details_dir / f'{digest}.json'
+
+    def _update_lock(self, job_id: str) -> InterProcessLock:
+        digest = hashlib.sha256(str(job_id).encode('utf-8')).hexdigest()
+        return InterProcessLock(self.db_path.parent / '.locks' / f'job_{digest}.lock')
+
+    @staticmethod
+    def _result_summary(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        summary: dict[str, Any] = {}
+        for key, item in value.items():
+            if item is None or isinstance(item, (str, int, float, bool)):
+                summary[str(key)] = item
+                continue
+            if str(key) not in _SUMMARY_OBJECT_FIELDS:
+                continue
+            try:
+                encoded = json.dumps(item, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            except (TypeError, ValueError):
+                continue
+            if len(encoded) <= _MAX_SUMMARY_OBJECT_BYTES:
+                summary[str(key)] = item
+        return summary
+
+    def _load_details(self, job_id: str) -> dict[str, Any]:
+        payload = read_json(self._details_path(job_id), {})
+        if not isinstance(payload, dict) or int(payload.get('version') or 0) != 1:
+            return {}
+        details = payload.get('details', {})
+        return dict(details) if isinstance(details, dict) else {}
+
+    def _hydrate_details(self, job_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        if not bool(state.get('details_available')):
+            return state
+        details = self._load_details(job_id)
+        if not details:
+            out = dict(state)
+            out['details_missing'] = True
+            return out
+        out = dict(state)
+        out.update(details)
+        return out
+
+    def _externalize_terminal_state(self, job_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        details = {key: state[key] for key in _DETAIL_FIELDS if key in state}
+        result = details.get('result')
+        if isinstance(result, dict):
+            normalized_result = dict(result)
+            for key in _RESULT_DUPLICATE_FIELDS:
+                if key in details and normalized_result.get(key) == details[key]:
+                    normalized_result.pop(key, None)
+            if (
+                normalized_result.get('items') == normalized_result.get('hits')
+                and 'hits' in normalized_result
+            ):
+                normalized_result.pop('hits', None)
+            details['result'] = normalized_result
+
+        if not details:
+            return state
+
+        ensure_dir(self.details_dir)
+        path = self._details_path(job_id)
+        atomic_write_json(path, {'version': 1, 'job_id': str(job_id), 'details': details})
+
+        compact = dict(state)
+        for key in _DETAIL_FIELDS:
+            compact.pop(key, None)
+        compact['result'] = self._result_summary(details.get('result'))
+        compact['details_available'] = True
+        compact['details_version'] = 1
+        compact['details_bytes'] = int(path.stat().st_size)
+        compact['details_fields'] = sorted(details)
+        compact['image_results_count'] = (
+            len(details.get('image_results', []))
+            if isinstance(details.get('image_results'), list)
+            else 0
+        )
+        compact['errors_count'] = (
+            len(details.get('errors', [])) if isinstance(details.get('errors'), list) else 0
+        )
+        compact['failed_image_ids_count'] = (
+            len(details.get('failed_image_ids', [])) if isinstance(details.get('failed_image_ids'), list) else 0
+        )
+        preview_entry = details.get('preview_entry')
+        if isinstance(preview_entry, dict):
+            compact['preview_token'] = str(preview_entry.get('preview_token') or '')
+        return compact
+
+    def _row_state(self, row: sqlite3.Row, *, include_details: bool = False) -> dict[str, Any]:
         state = self._decode(row['state_json'])
+        if include_details:
+            state = self._hydrate_details(str(row['job_id']), state)
         state.update(
             {
                 'job_id': str(row['job_id']),
@@ -89,6 +272,9 @@ class PersistentJobQueue:
                 'attempt': int(row['attempt'] or 0),
             }
         )
+        for key in tuple(state):
+            if key.startswith('_audit_'):
+                state.pop(key, None)
         return state
 
     def enqueue(
@@ -106,6 +292,9 @@ class PersistentJobQueue:
         job_id = str(existing_job_id or '').strip() or new_id('job_')
         next_state = dict(state)
         next_state.update({'job_id': job_id, 'project_id': project_id, 'job_type': job_type, 'updated_at': now_ts()})
+        audit_context = current_audit_context()
+        next_state['_audit_actor'] = audit_context['actor']
+        next_state['_audit_request_id'] = audit_context['request_id']
         with self._lock:
             conn = self._connect()
             try:
@@ -141,16 +330,39 @@ class PersistentJobQueue:
                 conn.commit()
                 row = conn.execute('SELECT * FROM background_jobs WHERE job_id = ?', (job_id,)).fetchone()
                 assert row is not None
+                logger.info(
+                    'job_enqueued job_id=%s project_id=%s job_type=%s status=queued resumed=%s',
+                    job_id,
+                    project_id,
+                    job_type,
+                    bool(existing_job_id),
+                )
+                self._audit(
+                    category='task',
+                    action='enqueue',
+                    outcome='accepted',
+                    actor=next_state['_audit_actor'],
+                    request_id=next_state['_audit_request_id'],
+                    project_id=project_id,
+                    job_id=job_id,
+                    message='Task enqueued',
+                    details={
+                        'job_type': job_type,
+                        'resource_class': resource_class,
+                        'resumed': bool(existing_job_id),
+                        'parameters': _payload_summary(payload),
+                    },
+                )
                 return self._row_state(row)
             finally:
                 conn.close()
 
-    def get(self, job_id: str) -> dict[str, Any] | None:
+    def get(self, job_id: str, *, include_details: bool = True) -> dict[str, Any] | None:
         with self._lock:
             conn = self._connect()
             try:
                 row = conn.execute('SELECT * FROM background_jobs WHERE job_id = ?', (str(job_id),)).fetchone()
-                return self._row_state(row) if row is not None else None
+                return self._row_state(row, include_details=include_details) if row is not None else None
             finally:
                 conn.close()
 
@@ -176,13 +388,16 @@ class PersistentJobQueue:
                 conn.close()
 
     def update(self, job_id: str, **updates: Any) -> dict[str, Any] | None:
-        with self._lock:
+        with self._update_lock(str(job_id)), self._lock:
             conn = self._connect()
             try:
                 row = conn.execute('SELECT * FROM background_jobs WHERE job_id = ?', (str(job_id),)).fetchone()
                 if row is None:
                     return None
+                old_status = str(row['status'])
                 state = self._decode(row['state_json'])
+                if str(row['status']) in TERMINAL_STATUSES:
+                    state = self._hydrate_details(str(job_id), state)
                 state.update(updates)
                 total = int(state.get('progress_total') or 0)
                 done = int(state.get('progress_done') or 0)
@@ -190,13 +405,56 @@ class PersistentJobQueue:
                     state['progress_pct'] = max(0.0, min(100.0, float(done) * 100.0 / float(total)))
                 state['updated_at'] = now_ts()
                 status = str(updates.get('status') or row['status'])
+                if status in TERMINAL_STATUSES:
+                    state = self._externalize_terminal_state(str(job_id), state)
                 conn.execute(
                     'UPDATE background_jobs SET status=?, state_json=?, updated_epoch=? WHERE job_id=?',
                     (status, json.dumps(state, ensure_ascii=False), time.time(), str(job_id)),
                 )
                 conn.commit()
                 refreshed = conn.execute('SELECT * FROM background_jobs WHERE job_id = ?', (str(job_id),)).fetchone()
-                return self._row_state(refreshed) if refreshed is not None else None
+                if old_status != status:
+                    logger.info(
+                        'job_status_changed job_id=%s project_id=%s job_type=%s from=%s to=%s message=%s',
+                        job_id,
+                        str(row['project_id']),
+                        str(row['job_type']),
+                        old_status,
+                        status,
+                        str(state.get('message') or ''),
+                    )
+                    transition_details: dict[str, Any] = {
+                        'job_type': str(row['job_type']),
+                        'from': old_status,
+                        'to': status,
+                    }
+                    if status in TERMINAL_STATUSES:
+                        transition_details['duration_ms'] = max(
+                            0, int((time.time() - float(row['created_epoch'] or time.time())) * 1000)
+                        )
+                        transition_details['summary'] = {
+                            key: int(state.get(key) or 0)
+                            for key in ('requested', 'succeeded', 'failed', 'skipped')
+                        }
+                        transition_details['error_code'] = str(state.get('error_code') or '')
+                        errors = state.get('errors', [])
+                        if isinstance(errors, list) and errors:
+                            transition_details['representative_errors'] = [
+                                summarize_error_for_audit(error) for error in errors[:3]
+                            ]
+                    self._audit(
+                        category='task',
+                        action='status_transition',
+                        outcome=status,
+                        level='error' if status == 'error' else 'info',
+                        actor=str(state.get('_audit_actor') or 'system'),
+                        request_id=str(state.get('_audit_request_id') or ''),
+                        project_id=str(row['project_id']),
+                        job_id=str(job_id),
+                        message=f'Task status changed from {old_status} to {status}',
+                        details=transition_details,
+                    )
+                return self._row_state(refreshed, include_details=True) if refreshed is not None else None
             finally:
                 conn.close()
 
@@ -215,7 +473,7 @@ class PersistentJobQueue:
             conn = self._connect()
             try:
                 row = conn.execute(sql, params).fetchone()
-                return self._row_state(row) if row is not None else None
+                return self._row_state(row, include_details=True) if row is not None else None
             finally:
                 conn.close()
 
@@ -230,7 +488,7 @@ class PersistentJobQueue:
             conn = self._connect()
             try:
                 row = conn.execute(sql, params).fetchone()
-                return self._row_state(row) if row is not None else None
+                return self._row_state(row, include_details=True) if row is not None else None
             finally:
                 conn.close()
 
@@ -242,32 +500,39 @@ class PersistentJobQueue:
                     'SELECT * FROM background_jobs WHERE project_id=? ORDER BY created_epoch DESC LIMIT ?',
                     (str(project_id), max(1, min(int(limit), 500))),
                 ).fetchall()
-                return [self._row_state(row) for row in rows]
+                return [self._row_state(row, include_details=False) for row in rows]
             finally:
                 conn.close()
 
     def request_pause(self, job_id: str) -> bool:
         current = self.get(job_id)
         if not current or str(current.get('status')) not in NONTERMINAL_STATUSES:
+            self._audit(category='task', action='pause_request', outcome='rejected', job_id=job_id, message='Pause request rejected')
             return False
         if str(current.get('status')) == 'paused':
+            self._audit(category='task', action='pause_request', outcome='accepted', project_id=str(current.get('project_id') or ''), job_id=job_id, message='Task already paused')
             return True
         status = 'paused' if str(current.get('status')) == 'queued' else 'pausing'
         self.update(job_id, status=status, running=status == 'pausing')
+        self._audit(category='task', action='pause_request', outcome='accepted', project_id=str(current.get('project_id') or ''), job_id=job_id, message='Pause request accepted', details={'previous_status': current.get('status')})
         return True
 
     def resume(self, job_id: str) -> bool:
         current = self.get(job_id)
         if not current or str(current.get('status') or '') != 'paused':
+            self._audit(category='task', action='resume_request', outcome='rejected', job_id=job_id, message='Resume request rejected')
             return False
         self.update(job_id, status='queued', running=False, error='', finished_at='')
+        self._audit(category='task', action='resume_request', outcome='accepted', project_id=str(current.get('project_id') or ''), job_id=job_id, message='Resume request accepted')
         return True
 
     def cancel(self, job_id: str) -> bool:
         current = self.get(job_id)
         if not current or str(current.get('status') or '') not in NONTERMINAL_STATUSES:
+            self._audit(category='task', action='cancel_request', outcome='rejected', job_id=job_id, message='Cancel request rejected')
             return False
         self.update(job_id, status='cancelled', running=False, finished_at=now_ts(), message='cancelled')
+        self._audit(category='task', action='cancel_request', outcome='accepted', project_id=str(current.get('project_id') or ''), job_id=job_id, message='Cancel request accepted', details={'previous_status': current.get('status')})
         return True
 
     def should_pause(self, job_id: str) -> bool:
@@ -327,6 +592,36 @@ class PersistentJobQueue:
                 )
                 conn.commit()
                 claimed = conn.execute('SELECT * FROM background_jobs WHERE job_id=?', (str(row['job_id']),)).fetchone()
+                logger.info(
+                    'job_status_changed job_id=%s project_id=%s job_type=%s from=queued to=running worker_id=%s',
+                    str(row['job_id']),
+                    str(row['project_id']),
+                    str(row['job_type']),
+                    worker_id,
+                )
+                claimed_state = self._decode(claimed['state_json']) if claimed is not None else {}
+                self._audit(
+                    category='task',
+                    action='worker_claim',
+                    outcome='accepted',
+                    actor=str(claimed_state.get('_audit_actor') or 'system'),
+                    request_id=str(claimed_state.get('_audit_request_id') or ''),
+                    project_id=str(row['project_id']),
+                    job_id=str(row['job_id']),
+                    message='Worker claimed task',
+                    details={'job_type': str(row['job_type']), 'worker_id': worker_id, 'attempt': int(row['attempt'] or 0) + 1},
+                )
+                self._audit(
+                    category='task',
+                    action='status_transition',
+                    outcome='running',
+                    actor=str(claimed_state.get('_audit_actor') or 'system'),
+                    request_id=str(claimed_state.get('_audit_request_id') or ''),
+                    project_id=str(row['project_id']),
+                    job_id=str(row['job_id']),
+                    message='Task status changed from queued to running',
+                    details={'job_type': str(row['job_type']), 'from': 'queued', 'to': 'running'},
+                )
                 return self._row_state(claimed) if claimed is not None else None
             finally:
                 conn.close()
@@ -428,16 +723,65 @@ class PersistentJobQueue:
             finally:
                 conn.close()
 
-    def cleanup_terminal(self, *, retention_days: int = 30) -> int:
-        cutoff = time.time() - max(1, int(retention_days)) * 86400
+    def compact_terminal_details(self, *, limit: int = 100) -> int:
+        """Move large legacy terminal state out of SQLite.
+
+        New terminal updates are compacted immediately. This bounded migration
+        lets the hourly worker maintenance convert rows written by older builds.
+        """
+        compacted = 0
         with self._lock:
             conn = self._connect()
             try:
+                rows = conn.execute(
+                    "SELECT * FROM background_jobs WHERE status IN ('done','error','cancelled') "
+                    'ORDER BY length(state_json) DESC LIMIT ?',
+                    (max(1, min(int(limit), 1000)),),
+                ).fetchall()
+                for row in rows:
+                    raw_state = str(row['state_json'] or '{}')
+                    state = self._decode(raw_state)
+                    if bool(state.get('details_available')):
+                        continue
+                    if not any(key in state for key in _DETAIL_FIELDS):
+                        continue
+                    job_id = str(row['job_id'])
+                    compact = self._externalize_terminal_state(job_id, state)
+                    cur = conn.execute(
+                        "UPDATE background_jobs SET state_json=?, updated_epoch=? WHERE job_id=? AND state_json=? "
+                        "AND status IN ('done','error','cancelled')",
+                        (json.dumps(compact, ensure_ascii=False), time.time(), job_id, raw_state),
+                    )
+                    compacted += int(cur.rowcount or 0)
+                conn.commit()
+            finally:
+                conn.close()
+        return compacted
+
+    def cleanup_terminal(self, *, retention_days: int = 30) -> int:
+        cutoff = time.time() - max(1, int(retention_days)) * 86400
+        job_ids: list[str] = []
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+                rows = conn.execute(
+                    "SELECT job_id FROM background_jobs WHERE status IN ('done','error','cancelled') "
+                    'AND updated_epoch < ?',
+                    (cutoff,),
+                ).fetchall()
+                job_ids = [str(row['job_id']) for row in rows]
                 cur = conn.execute(
                     "DELETE FROM background_jobs WHERE status IN ('done','error','cancelled') AND updated_epoch < ?",
                     (cutoff,),
                 )
                 conn.commit()
-                return int(cur.rowcount or 0)
+                deleted = int(cur.rowcount or 0)
             finally:
                 conn.close()
+        for job_id in job_ids:
+            try:
+                self._details_path(job_id).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return deleted

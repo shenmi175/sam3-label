@@ -55,11 +55,90 @@ export function controlService(service: string, action: string) {
   );
 }
 
+export type ModelLoadJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface ModelLoadJobError {
+  code?: string;
+  message?: string;
+}
+
+export interface ModelLoadJob {
+  job_id: string;
+  service: string;
+  status: ModelLoadJobStatus | string;
+  created_at?: number;
+  updated_at?: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  summary?: {
+    duration_ms?: number;
+    detection_count?: number;
+  } | null;
+  error?: ModelLoadJobError | null;
+}
+
+export interface ModelLoadJobResponse {
+  job: ModelLoadJob | null;
+}
+
+/** POST /api/services/{service}/model-load-jobs */
+export function startModelLoadJob(service: string) {
+  return post<ModelLoadJobResponse & { job_id?: string; created?: boolean }>(
+    `/services/${encodeURIComponent(service)}/model-load-jobs`,
+  );
+}
+
+/** GET /api/services/{service}/model-load-jobs/latest */
+export function getLatestModelLoadJob(service: string) {
+  return get<ModelLoadJobResponse>(
+    `/services/${encodeURIComponent(service)}/model-load-jobs/latest`,
+  );
+}
+
+/** GET /api/services/model-load-jobs/{job_id} */
+export function getModelLoadJob(jobId: string) {
+  return get<ModelLoadJobResponse>(
+    `/services/model-load-jobs/${encodeURIComponent(jobId)}`,
+  );
+}
+
 /** GET /api/services/{service}/logs */
 export function getServiceLogs(service: string, tail = 120) {
   return get<Record<string, unknown>>(
     `/services/${encodeURIComponent(service)}/logs?tail=${tail}`,
   );
+}
+
+/** GET /api/logs/download — the backend streams the unified archive from ops-api. */
+export async function downloadLogs(): Promise<string> {
+  const response = await fetch('/api/logs/download');
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const data = await response.json();
+      detail = String(data?.detail || data?.message || detail);
+    } catch {
+      // Non-JSON proxy error.
+    }
+    throw new Error(`API Error ${response.status}: ${detail}`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([A-Za-z0-9_.-]+)"?/i);
+  const filename = match?.[1] || 'sam3-logs.zip';
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  return filename;
 }
 
 /** POST /api/sam3/health */

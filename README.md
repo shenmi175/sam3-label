@@ -13,7 +13,6 @@ sapiens-api       Sapiens2 位姿推理（可选，profile: sapiens）
 locate-anything-api  LocateAnything 检测（可选，profile: locate）
 ops-api           运维接口
 task-worker       后台批量任务 worker
-caddy             可选反代（proxy 模式）
 
 external/sam3     上游 SAM3 源码（子模块，sam3-api 构建时正常 pip 安装）
 external/sapiens2 上游 Sapiens2 源码（子模块）
